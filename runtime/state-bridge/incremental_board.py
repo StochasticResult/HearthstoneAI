@@ -16,7 +16,6 @@ sys.path.insert(0, str(HERE.parent / "state-upstream" / "src"))
 from hearthstone_cli import board  # noqa: E402
 
 MAX_LINE = 64 * 1024
-MAX_GAME_BYTES = 5 * 1024 * 1024
 MAX_ENTITIES = 4096
 MAX_EVENTS = 5000
 MAX_BLOCK_DEPTH = 64
@@ -156,9 +155,8 @@ class IncrementalBoard:
             self._observe_options(line)
             return
         self.game_bytes += byte_count
-        if self.game_bytes > MAX_GAME_BYTES:
-            self.invalidate("game byte limit exceeded")
-            return
+        # Bytes already parsed are discarded. Bound retained state below,
+        # not the lifetime byte counter (which is not memory consumption).
         tm = board.TRUNCATE_RE.search(line)
         if tm:
             self.invalidate("game log truncated")

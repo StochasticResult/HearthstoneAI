@@ -2,7 +2,8 @@
 """Capture one future game's local Power.log in bounded, private chunks.
 
 Run *before* starting Hearthstone.  This tool reads local files only; it sends
-no game inputs. It refuses truncation/rotation or a capture above its cap.
+no game inputs. It refuses truncation/rotation, but reaching the evidence cap
+only stops copying: the independent live parser keeps reading the source.
 The output may contain account identifiers and must not be uploaded.
 """
 import argparse
@@ -27,6 +28,8 @@ class Capture:
         stat = os.fstat(self.reader.fileno())
         self.identity = (stat.st_dev, stat.st_ino)
         self.offset = 0
+        self.written = 0
+        self.capped = False
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         self.writer = os.fdopen(os.open(self.destination, flags, 0o600), "wb", buffering=0)
 
@@ -34,14 +37,21 @@ class Capture:
         stat = self.source.stat()
         if (stat.st_dev, stat.st_ino) != self.identity or stat.st_size < self.offset:
             raise CaptureError("source rotated or truncated")
+        if self.written >= self.max_bytes:
+            skipped = stat.st_size - self.offset
+            self.capped = self.capped or skipped > 0
+            self.offset = stat.st_size
+            self.reader.seek(self.offset)
+            return skipped
         total = 0
         while True:
             data = self.reader.read(64 * 1024)
             if not data:
                 break
-            if self.offset + len(data) > self.max_bytes:
-                raise CaptureError("capture size limit")
-            self.writer.write(data)
+            saved = data[:max(0, self.max_bytes-self.written)]
+            self.writer.write(saved)
+            self.written += len(saved)
+            self.capped = self.capped or len(saved) < len(data)
             self.offset += len(data)
             total += len(data)
         return total
@@ -83,7 +93,7 @@ def main():
             except (CaptureError, OSError):
                 # Retain the observed prefix but never pretend it is complete.
                 print("source ended or changed; captured prefix only", flush=True)
-            nbytes = cap.offset
+            nbytes = cap.written
             cap.close()
             print("captured_bytes=%d" % nbytes, flush=True)
     return 0 if cap and cap.offset else 2

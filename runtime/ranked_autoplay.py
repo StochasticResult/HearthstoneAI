@@ -1,11 +1,15 @@
 """Continuous guarded Standard play; reviews never interrupt an active game."""
 import json
+import fcntl
 import os
 import signal
+import subprocess
 import time
 
 from match_review import save
 from resource_guard import swap_used, MIB
+from maintenance import cleanup, readiness
+from navigation import stop_child
 
 
 class AutoplayCancelled(RuntimeError):
@@ -44,10 +48,20 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
     learning.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = learning / 'autoplay-state.json'
     pause_path = learning / 'pause-after-game.json'
+    # Cover maintenance/cooldown as well as matches. A second coordinator
+    # must not launch a game while the first is waiting for resources.
+    lock = (data / 'autoplay.lock').open('a+')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        config['api_key'] = ''
+        raise RuntimeError('已有自动天梯程序在运行或等待资源') from None
     state = {'status': 'running', 'pid': os.getpid(), 'started_at': time.time(),
              'autoplay_id': str(time.time_ns()), 'runs': [], 'completed_games': 0,
              'last_reviewed_game': 0, 'review_due': False, 'stop_reason': None}
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    awake = None
 
     def cancel(_signal, _frame):
         raise AutoplayCancelled('已收到停止指令')
@@ -58,6 +72,40 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
     def persist():
         state['updated_at'] = time.time()
         save(path, state)
+
+    def check_parent():
+        if parent_pid and os.getppid() != parent_pid:
+            raise AutoplayCancelled('应用已退出，停止连续对局')
+
+    def maintain(baseline):
+        # Called only outside run_one. The single-game supervisor has already
+        # closed its children and descriptors before control returns here.
+        state.update(status='maintenance', maintenance=cleanup(data))
+        persist()
+        previous_reasons = None
+        while True:
+            check_parent()
+            if deferred_stop():
+                return False
+            sample = readiness(baseline)
+            state['resources'] = sample
+            if sample['ready']:
+                state.update(status='running', stop_reason=None)
+                persist()
+                if previous_reasons is not None:
+                    emit('局间资源已恢复，程序自动继续排队', play_status='资源已恢复 · 继续自动天梯')
+                return True
+            state.update(status='waiting_for_resources', stop_reason=None)
+            persist()
+            reasons = tuple(sample['reasons'])
+            if reasons != previous_reasons:
+                emit('已完成局间清理，等待资源恢复：' + '；'.join(reasons),
+                     play_status='等待资源恢复 · 将自动继续', resources=sample)
+                previous_reasons = reasons
+            # No game, screenshot, focus change, API call or launch retry.
+            # SIGTERM is immediate; the deferred-stop file is checked at most
+            # 15 seconds later. The process remains idle between samples.
+            pause(15)
 
     def deferred_stop():
         request = read_small(pause_path)
@@ -72,14 +120,20 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
         return True
 
     try:
+        # Keep the already-authorized awake assertion through resource waits
+        # and cooldowns too. It expires with this coordinator, never persists
+        # as a changed system setting or unlocks a locked Mac.
+        awake = subprocess.Popen(['/usr/bin/caffeinate', '-dimsu', '-w', str(os.getpid())],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         swap_baseline = swap_used()
         state['swap_baseline_mib'] = round(swap_baseline / MIB, 1)
         persist()
         emit('开始自动天梯：持续运行；正常复盘不打断对局，无局数或时间配额')
         while True:
-            if parent_pid and os.getppid() != parent_pid:
-                raise AutoplayCancelled('应用已退出，停止连续对局')
+            check_parent()
             if deferred_stop():
+                return state
+            if not maintain(swap_baseline):
                 return state
             state['current_game'] = state['completed_games'] + 1
             persist()
@@ -118,5 +172,11 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
         raise
     finally:
         config['api_key'] = ''
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
+        for sig in previous_handlers:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            stop_child(awake)
+        finally:
+            lock.close()
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)

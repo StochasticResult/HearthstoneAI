@@ -84,21 +84,57 @@ def swap_exceeded(current, baseline, maximum=None, growth=256*MIB):
     return (maximum is not None and current > maximum) or current - baseline > growth
 
 
-def memory_stop_reason(current, baseline, pressure, free_pct, maximum=None, growth=256*MIB):
+def memory_stop_reason(current, baseline, pressure, free_pct, maximum=None, growth=256*MIB, *, defer_maintenance=False):
     if type(pressure) is not int or pressure not in (1, 2, 4) or type(free_pct) not in (int, float) or not 0 <= free_pct <= 100:
         return "unknown system memory status"
     if pressure == 4:
         return "critical system memory pressure"
-    if free_pct < 20:
+    if free_pct < (10 if defer_maintenance else 20):
         return "system memory availability threshold"
-    if current - baseline > growth:
+    if current - baseline > growth and not defer_maintenance:
         return "swap growth threshold"
     if maximum is not None and current > maximum:
         return "explicit swap total threshold"
     # A warning asks clients to reduce caches; it is not a critical state.
-    # Record it and clean up at the existing game boundary. Critical pressure,
-    # low availability, and growth limits above remain immediate stops.
+    # During play, ordinary availability/swap maintenance waits for game end.
+    # Critical pressure, very low availability and explicit development caps
+    # are still emergencies. This does not reset the session growth baseline.
     return None
+
+
+def disk_stop_reason(free, reserve, *, defer_maintenance=False):
+    return "disk reserve" if free < (min(reserve, 2*GIB) if defer_maintenance else reserve) else None
+
+
+class DiagnosticOutput:
+    """Keep a bounded prefix and recent tail, while always draining the child.
+
+    The prefix retains opening/mulligan evidence. The tail retains terminal
+    results even in a very long game. Neither file feeds the live game parser.
+    """
+    def __init__(self, path, limit):
+        self.path = path
+        self.limit = limit
+        self.tail_limit = min(64*1024, limit//4)
+        self.prefix_limit = limit - self.tail_limit
+        self.handle = path.open('wb')
+        self.tail = b''
+        self.total = 0
+
+    def write(self, data):
+        self.total += len(data)
+        remaining = max(0, self.prefix_limit - self.handle.tell())
+        self.handle.write(data[:remaining]); self.handle.flush()
+        overflow = data[remaining:]
+        if overflow:
+            self.tail = (self.tail + overflow)[-self.tail_limit:]
+            # Partial leading lines are ignored by the review JSON reader.
+            tail_path = self.path.with_name(self.path.stem + '-tail' + self.path.suffix)
+            with tail_path.open('wb') as stream:
+                stream.write(self.tail)
+
+    def close(self):
+        self.handle.close()
 
 
 def group_usage(pgid):
@@ -159,10 +195,13 @@ def main():
     p.add_argument("--max-cpu", type=float, default=160)
     p.add_argument("--max-output-mib", type=int, default=4)
     p.add_argument("--parent-pid", type=int)
+    p.add_argument("--defer-maintenance", action="store_true", help="gameplay only: defer ordinary storage/swap maintenance until game end")
     p.add_argument("command", nargs=argparse.REMAINDER)
     a = p.parse_args()
     if a.timeout < 0:
         p.error("timeout must be nonnegative")
+    if a.max_output_mib < 1:
+        p.error("output limit must be positive")
     if a.swap_baseline_mib is not None and (not math.isfinite(a.swap_baseline_mib) or a.swap_baseline_mib < 0):
         p.error("swap baseline must be finite and nonnegative")
     if a.max_swap_growth_mib < 0 or (a.max_swap_mib is not None and a.max_swap_mib < 0):
@@ -202,7 +241,8 @@ def main():
     reported = False
     proc = None
     selector = selectors.DefaultSelector()
-    with a.log.open("wb") as log:
+    log = DiagnosticOutput(a.log, a.max_output_mib * MIB)
+    try:
         try:
             proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
             assert proc.stdout is not None
@@ -218,9 +258,8 @@ def main():
                         selector.unregister(key.fileobj)
                     else:
                         output_bytes += len(data)
-                        log.write(data[:max(0, a.max_output_mib * MIB - log.tell())])
-                        log.flush()
-                        if output_bytes > a.max_output_mib * MIB:
+                        log.write(data)
+                        if output_bytes > a.max_output_mib * MIB and not a.defer_maintenance:
                             reason = "output limit"
                 now = time.monotonic()
                 if now >= sample_at:
@@ -233,7 +272,10 @@ def main():
                     pressure = memory_pressure_level()
                     free_pct = memory_free_percentage()
                     memory_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
-                                                       maximum_swap, a.max_swap_growth_mib*MIB)
+                                                       maximum_swap, a.max_swap_growth_mib*MIB,
+                                                       defer_maintenance=a.defer_maintenance)
+                    maintenance_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
+                                                            maximum_swap, a.max_swap_growth_mib*MIB)
                     if pressure != previous_pressure:
                         print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
                                           'swap_mib': round(used_swap/MIB,1)}), flush=True)
@@ -241,7 +283,7 @@ def main():
                     consecutive_high_cpu = consecutive_high_cpu + 1 if cpu > a.max_cpu else 0
                     if rss > a.max_rss_mib * MIB:
                         reason = "process group memory limit"
-                    elif free < a.min_free_gib * GIB:
+                    elif disk_stop_reason(free, a.min_free_gib * GIB, defer_maintenance=a.defer_maintenance):
                         reason = "disk reserve"
                     elif memory_reason:
                         reason = memory_reason
@@ -257,7 +299,9 @@ def main():
                     if now - last_status >= 10:
                         print(json.dumps({"elapsed_s": round(now-started, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "members": members, "thermal_state": tstate, "free_gib": round(free/GIB, 2),
                                           "memory_pressure_level": pressure, "memory_free_pct": free_pct,
-                                          "swap_mib": round(used_swap/MIB,1), "swap_baseline_mib": round(swap_baseline/MIB,1)}), flush=True)
+                                          "swap_mib": round(used_swap/MIB,1), "swap_baseline_mib": round(swap_baseline/MIB,1),
+                                          "maintenance_pending": maintenance_reason or disk_stop_reason(free, a.min_free_gib*GIB),
+                                          "diagnostics_capped": output_bytes > log.prefix_limit}), flush=True)
                         last_status = now
                     sample_at = now + 2
                 if a.timeout and now - started > a.timeout:
@@ -283,11 +327,16 @@ def main():
             selector.close()
             if proc is not None:
                 terminate_group(proc.pid, proc)
+                proc.wait(timeout=5)
+                if proc.stdout:
+                    proc.stdout.close()
             if not reported:
                 print(json.dumps({"result": {"exit_code": proc.poll() if proc else None,
                     "reason": reason or "interrupted", "duration_s": round(time.monotonic()-started, 2),
                     "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1),
                     "output_bytes": output_bytes}}), flush=True)
+    finally:
+        log.close()
 
 
 if __name__ == "__main__":

@@ -39,7 +39,9 @@ class DriverTests(unittest.TestCase):
     def test_zero_quotas_still_enter_the_loop_and_observe_game_end(self):
         driver=Driver.__new__(Driver)
         driver.poll=Mock();driver.game_result=Mock(return_value='WON')
+        driver.advisor = Mock()
         with patch('builtins.print'):driver.run(0,0)
+        driver.advisor.record.assert_called_once_with({'event':'game_complete','outcome':'WON'})
         driver.poll.assert_called_once();driver.game_result.assert_called_once()
     def test_second_player_waits_for_first_observed_mana_without_defaulting_to_zero(self):
         p=IncrementalBoard();p.feed(fixture());player=p.game['entities'][3]

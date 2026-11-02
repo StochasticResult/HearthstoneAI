@@ -244,7 +244,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
                 break
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
             "--log", str(dest / "actions.log"), "--timeout", "0", "--max-rss-mib", "200", "--max-cpu", "130",
-            "--parent-pid", str(os.getpid())] + baseline_args + ["--", "/usr/bin/nice", "-n", "10", sys.executable,
+            "--defer-maintenance", "--parent-pid", str(os.getpid())] + baseline_args + ["--", "/usr/bin/nice", "-n", "10", sys.executable,
             str(ROOT / "state-bridge/practice_driver.py"), "--new-session", "--evidence", str(dest / "Power.log"),
             "--deck-snapshot", str(dest / "selected-deck.json"),
             "--watchdog-pid", str(watchdog.pid), "--seconds", "0", "--max-actions", "0", "--mode", mode, "--openai-config-stdin"] + reconnect_args,
@@ -259,8 +259,9 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
             raise SessionError("AI 进程资源保护启动失败")
         streams = {p.stdout: getattr(p, "_pending_line_bytes", b"") for p in (watchdog, driver)}
         sources = {watchdog.stdout: "游戏守护", driver.stdout: "AI 守护"}
-        caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-w", str(os.getpid())],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if swap_baseline is None:  # Autoplay owns one assertion across all games and resource waits.
+            caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-w", str(os.getpid())],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Establish the driver's log baseline before launching. This is the
         # only application launched; no global app-switch shortcut is used.
         time.sleep(.8)
@@ -346,7 +347,8 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
                     stream = getattr(child, stream_name, None)
                     if stream and not stream.closed:
                         stream.close()
-        if watchdog is not None and processes(GAME_EXEC):
+        game_closed = not bool(processes(GAME_EXEC)) if watchdog is not None else None
+        if game_closed is False:
             emit("AI 已停止，但炉石进程仍在运行，关闭尚未确认", stopped=True, game_closed=False, error=True)
         else:
             emit("已停止：子进程已回收，设置恢复结果见上方记录", stopped=True,
@@ -354,7 +356,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
         try:
             if dest:
                 from match_review import write_review
-                review_summary = write_review(dest, DATA / "learning")
+                review_summary = write_review(dest, DATA / "learning", game_closed=game_closed)
                 emit("对局复盘已保存：%s；%s" % (review_summary["outcome"],
                      "下次开局前需复盘" if review_summary["review_before_next_game"] else "已记录决策和资源指标"),
                      review_outcome=review_summary["outcome"])

@@ -42,3 +42,12 @@ class MemoryPolicyTests(unittest.TestCase):
             with patch('resource_guard.subprocess.run', return_value=SimpleNamespace(stdout=level)):
                 with self.assertRaises((RuntimeError,ValueError)):
                     memory_pressure_level()
+
+    def test_ordinary_maintenance_defers_but_emergencies_still_stop_in_game(self):
+        self.assertIsNone(memory_stop_reason(1400*MIB,1031*MIB,2,15,defer_maintenance=True))
+        self.assertEqual(memory_stop_reason(1400*MIB,1031*MIB,2,15),'system memory availability threshold')
+        for pressure,available in ((4,40),(1,9),(0,40)):
+            self.assertIsNotNone(memory_stop_reason(0,0,pressure,available,defer_maintenance=True))
+        from resource_guard import disk_stop_reason, GIB
+        self.assertIsNone(disk_stop_reason(9*GIB,10*GIB,defer_maintenance=True))
+        self.assertIsNotNone(disk_stop_reason(GIB,10*GIB,defer_maintenance=True))

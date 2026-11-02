@@ -10,6 +10,7 @@ import json
 import plistlib
 import re
 import ssl
+import statistics
 import subprocess
 import sys
 import time
@@ -331,6 +332,16 @@ class OpenAIAdvisor:
             self.client_build = None
         self.audit = None
         self.audit_bytes = 0
+        self.audit_path = Path(audit_path) if audit_path is not None else None
+        self.audit_limit = 2 * 1024 * 1024
+        self.latencies = []
+        # Fixed-size counters survive the detailed-log cap. No credentials or
+        # card/identity data are stored here; there is one outstanding action.
+        self.summary = {'api_responses': 0, 'api_tokens': 0, 'confirmed_decisions': 0,
+                        'unconfirmed_decisions': [], 'local_calculations': 0,
+                        'models': [], 'game_type': None, 'first_decision_game_turn': None,
+                        'mulligan_confirmed': False, 'outcome': 'INCOMPLETE',
+                        'diagnostics_capped': False}
         self.decision_seq = 0
         if audit_path is not None:
             import os
@@ -339,13 +350,45 @@ class OpenAIAdvisor:
             os.chmod(path, 0o600)
 
     def record(self, event):
+        kind = event.get('event')
+        if kind == 'proposed':
+            pending = self.summary['unconfirmed_decisions']
+            if len(pending) >= 64:
+                raise AdvisorError('Too many outstanding unconfirmed decisions')
+            pending.append(self.decision_seq)
+            view = event.get('observation') or {}
+            if self.summary['game_type'] is None:
+                self.summary['game_type'] = view.get('game_type')
+            if self.summary['first_decision_game_turn'] is None:
+                self.summary['first_decision_game_turn'] = view.get('game_turn')
+            if isinstance(event.get('elapsed_ms'), int):
+                self.summary['api_responses'] += 1
+                self.summary['api_tokens'] += event.get('tokens', 0)
+                self.latencies = (self.latencies + [event['elapsed_ms']])[-256:]
+            if event.get('local_rule'):
+                self.summary['local_calculations'] += 1
+            model = event.get('model')
+            if isinstance(model, str) and model[:160] not in self.summary['models']:
+                self.summary['models'] = (self.summary['models'] + [model[:160]])[-4:]
+        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target'):
+            pending = self.summary['unconfirmed_decisions']
+            if self.decision_seq in pending:
+                pending.remove(self.decision_seq)
+                self.summary['confirmed_decisions'] += 1
+        elif kind == 'mulligan_confirmed':
+            self.summary['mulligan_confirmed'] = True
+            self.summary['game_type'] = event.get('game_type', self.summary['game_type'])
+        elif kind == 'game_complete' and event.get('outcome') in ('WON', 'LOST', 'TIED'):
+            self.summary['outcome'] = event['outcome']
         if self.audit is None:
             return
         line = json.dumps({"decision_id": self.decision_seq, **event}, ensure_ascii=False) + "\n"
         size = len(line.encode())
-        if self.audit_bytes + size <= 2 * 1024 * 1024:
+        if not self.summary['diagnostics_capped'] and self.audit_bytes + size <= self.audit_limit:
             self.audit.write(line); self.audit.flush()
             self.audit_bytes += size
+        else:
+            self.summary['diagnostics_capped'] = True
 
     def observe_deck(self, deck):
         if not isinstance(deck, dict) or not isinstance(deck.get("cards"), list) or not deck["cards"]:
@@ -536,6 +579,10 @@ class OpenAIAdvisor:
         if self.audit:
             self.audit.close()
             self.audit = None
+            from match_review import save
+            self.summary.update(median_decision_ms=statistics.median(self.latencies) if self.latencies else None,
+                                latency_sample_size=len(self.latencies))
+            save(self.audit_path.with_name('decision-summary.json'), self.summary)
 
 
 def worker():

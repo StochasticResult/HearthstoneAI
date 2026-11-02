@@ -120,8 +120,7 @@ def main():
     game_start = None
     previous_status = start
     last_memory_check = start
-    cpu_over = 0
-    cpu_very_high = 0
+    high_cpu_since = None
     max_rss = 0
     max_cpu = 0.0
     reason = None
@@ -154,41 +153,49 @@ def main():
                     break
                 _, rss, cpu = current
                 max_rss = max(max_rss, rss); max_cpu = max(max_cpu, cpu)
-                cpu_over = cpu_over + 1 if cpu > 250 else 0
-                cpu_very_high = cpu_very_high + 1 if cpu > 300 else 0
+                # %CPU counts cores. Startup routinely uses 3-4 cores even
+                # in successfully completed games; that is not overheating.
+                # Sustained load is recorded for boundary maintenance. Actual
+                # heat, process RAM and power remain independent safeguards.
+                high_cpu_since = (high_cpu_since or now) if cpu > 250 and now-game_start >= 60 else None
                 ac, pct = battery_status()
                 if now - last_memory_check >= 5:
                     free_memory_pct = memory_free_percentage()
                     last_memory_check = now
                 current_swap = swap_used()
                 pressure = memory_pressure_level()
-                memory_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct)
+                memory_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct,
+                                                   defer_maintenance=True)
+                maintenance_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct)
+                tstate = thermal_state()
+                free_disk = shutil.disk_usage('/System/Volumes/Data').free
+                if not maintenance_reason and tstate == 1:
+                    maintenance_reason = 'fair thermal state'
+                if not maintenance_reason and high_cpu_since and now-high_cpu_since >= 60:
+                    maintenance_reason = 'sustained game CPU load'
+                if not maintenance_reason and free_disk < 10*GIB:
+                    maintenance_reason = 'disk reserve'
                 if pressure != previous_pressure:
                     print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
                                       'swap_mib': round(current_swap/MIB,1)}), flush=True)
                     previous_pressure = pressure
-                if thermal_state() >= 1:
-                    reason = "thermal state above nominal"
+                if tstate >= 2:
+                    reason = "serious or critical thermal state"
                 elif not ac or pct <= initial_pct - 1:
                     reason = "power or battery threshold"
                 elif rss > 1800 * MIB:
                     reason = "game memory threshold"
-                # A few seconds of startup multicore activity was observed
-                # before the game settled below one core. Memory, thermal,
-                # battery and disk protection remain active throughout.
-                elif (now - game_start < 15 and (cpu_over >= 6 or cpu_very_high >= 6)) or \
-                     (now - game_start >= 15 and (cpu_over >= 4 or cpu_very_high >= 3)):
-                    reason = "sustained game CPU threshold"
                 elif memory_reason:
                     reason = memory_reason
-                elif shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
+                elif free_disk < 2 * GIB:
                     reason = "disk reserve"
                 elif args.run_seconds and now - game_start >= args.run_seconds:
                     reason = "short test deadline"
                 if now - previous_status >= 10:
-                    print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": thermal_state(), "memory_free_pct": free_memory_pct,
+                    print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": tstate, "memory_free_pct": free_memory_pct,
                                       "swap_mib": round(current_swap/MIB,1), "initial_swap_mib": round(initial_swap/MIB,1),
-                                      "swap_baseline_mib": round(swap_baseline/MIB,1), "memory_pressure_level": pressure}), flush=True)
+                                      "swap_baseline_mib": round(swap_baseline/MIB,1), "memory_pressure_level": pressure,
+                                      "maintenance_pending": maintenance_reason, 'free_gib': round(free_disk/GIB,2)}), flush=True)
                     previous_status = now
                 if reason:
                     break

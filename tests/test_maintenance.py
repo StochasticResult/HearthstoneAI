@@ -1,0 +1,154 @@
+import contextlib
+import io
+import itertools
+import json
+import signal
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from maintenance import cleanup, readiness
+from resource_guard import DiagnosticOutput, GIB, MIB
+
+
+class MaintenanceTests(unittest.TestCase):
+    def test_cleanup_only_prunes_owned_old_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data=Path(tmp);root=data/'runs';root.mkdir()
+            for n in range(9):
+                (root/('run-%02d'%n)).mkdir()
+            outside=data/'unrelated';outside.mkdir();(outside/'keep').write_text('keep')
+            (root/'run-linked').symlink_to(outside,target_is_directory=True)
+            (root/'other-files').mkdir()
+            self.assertEqual(cleanup(data)['old_runs_removed'],4)
+            self.assertEqual(len([p for p in root.glob('run-*') if not p.is_symlink()]),5)
+            self.assertEqual((outside/'keep').read_text(),'keep')
+            self.assertTrue((root/'other-files').exists())
+
+    def test_ready_after_recovery_uses_original_session_swap_baseline(self):
+        with patch('maintenance.battery_status',return_value=(True,80)), \
+             patch('maintenance.memory_pressure_level',return_value=1), \
+             patch('maintenance.memory_free_percentage',return_value=45), \
+             patch('maintenance.thermal_state',return_value=0), \
+             patch('maintenance.shutil.disk_usage',return_value=SimpleNamespace(free=12*GIB)), \
+             patch('maintenance.swap_used',side_effect=[1400*MIB,1031*MIB]):
+            self.assertEqual(readiness(1031*MIB)['reasons'],['swap growth threshold'])
+            self.assertTrue(readiness(1031*MIB)['ready'])
+
+    def test_output_cap_retains_start_and_terminal_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'actions.log';log=DiagnosticOutput(p,4096)
+            try:
+                log.write(b'mulligan: kept starting hand\n')
+                for _ in range(100):
+                    log.write(('有界日志数据\n'*20).encode())
+                log.write(b'{"game_result":"WON"}\n')
+            finally:
+                log.close()
+            self.assertTrue(p.read_text(errors='replace').startswith('mulligan:'))
+            tail=p.with_name('actions-tail.log')
+            self.assertIn('"WON"',tail.read_text(errors='replace'))
+            self.assertLessEqual(p.stat().st_size+tail.stat().st_size,4096)
+            from match_review import summarize
+            self.assertEqual(summarize(Path(tmp))[0]['outcome'],'WON')
+
+    def test_guard_does_not_kill_child_for_deferred_swap_or_output_limit(self):
+        import resource_guard as guard
+        with tempfile.TemporaryDirectory() as tmp:
+            args=['guard','--log',str(Path(tmp)/'actions.log'),'--timeout','0',
+                  '--max-output-mib','1','--defer-maintenance','--',
+                  '/usr/bin/python3','-c',
+                  'import sys; sys.stdout.write("diagnostic\\n"*300000); print("TERMINAL_RESULT")']
+            handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
+            swaps=iter([1031*MIB])
+            try:
+                with patch('sys.argv',args), patch.object(guard,'battery_status',return_value=(True,80)), \
+                     patch.object(guard,'swap_used',side_effect=lambda:next(swaps,1400*MIB)), \
+                     patch.object(guard,'memory_pressure_level',return_value=2), \
+                     patch.object(guard,'memory_free_percentage',return_value=40), \
+                     patch.object(guard,'thermal_state',return_value=0), \
+                     patch.object(guard.shutil,'disk_usage',return_value=SimpleNamespace(free=12*GIB)), \
+                     contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(guard.main(),0)
+                self.assertIn('TERMINAL_RESULT',(Path(tmp)/'actions-tail.log').read_text())
+                result=json.loads(output.getvalue().splitlines()[-1])['result']
+                self.assertIsNone(result['reason'])
+                self.assertGreater(result['output_bytes'],MIB)
+            finally:
+                for sig,handler in handlers.items():signal.signal(sig,handler)
+
+    def test_compact_decision_totals_survive_capped_diagnostics(self):
+        from openai_advisor import OpenAIAdvisor
+        from match_review import summarize
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            a=OpenAIAdvisor({'api_key':'fake-testing-key-123456789'},audit_path=root/'decisions.jsonl')
+            a.audit_limit=600
+            a.record({'event':'mulligan_confirmed'})
+            for n in range(300):
+                a.decision_seq=n+1
+                a.record({'event':'proposed','observation':{'game_type':'GT_RANKED','game_turn':'1'},
+                          'elapsed_ms':n+1,'tokens':5,'model':'gpt-6.1-sol'})
+                a.record({'event':'confirmed'})
+            a.record({'event':'game_complete','outcome':'WON'});a.close()
+            result=summarize(root)[0]
+            self.assertEqual(result['outcome'],'WON')
+            self.assertEqual(result['api_responses'],300)
+            self.assertEqual(result['api_tokens'],1500)
+            self.assertEqual(result['confirmed_decisions'],300)
+            self.assertEqual(result['unconfirmed_decisions'],[])
+            self.assertTrue(result['mulligan_confirmed'])
+            self.assertTrue(result['diagnostics_capped'])
+            self.assertEqual(result['latency_sample_size'],256)
+            self.assertLessEqual((root/'decisions.jsonl').stat().st_size,600)
+            self.assertLess((root/'decision-summary.json').stat().st_size,8192)
+            self.assertNotIn('fake-testing-key',(root/'decision-summary.json').read_text())
+
+    def test_multicore_startup_does_not_end_game_when_memory_and_heat_are_normal(self):
+        import game_watchdog as guard
+        handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
+        clock=itertools.count()
+        try:
+            with patch('sys.argv',['watchdog','--expected','/bin/sleep','--claim-pid','42424','--run-seconds','25']), \
+                 patch.object(guard,'battery_status',return_value=(True,80)), \
+                 patch.object(guard,'swap_used',return_value=1031*MIB), \
+                 patch.object(guard,'memory_pressure_level',return_value=2), \
+                 patch.object(guard,'memory_free_percentage',return_value=40), \
+                 patch.object(guard,'thermal_state',return_value=0), \
+                 patch.object(guard.shutil,'disk_usage',return_value=SimpleNamespace(free=12*GIB)), \
+                 patch.object(guard,'processes',return_value=[(42424,900*MIB,390.7)]), \
+                 patch.object(guard.time,'monotonic',side_effect=lambda:next(clock)), \
+                 patch.object(guard.time,'sleep'),patch.object(guard,'stop_exact') as stop, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(guard.main(),0)
+                stop.assert_called_once_with(42424,'/bin/sleep')
+            result=json.loads(output.getvalue().splitlines()[-1])
+            self.assertEqual(result['watchdog_result'],'short test deadline')
+            self.assertEqual(result['peak_sampled_cpu_pct'],390.7)
+        finally:
+            for sig,handler in handlers.items():signal.signal(sig,handler)
+
+    def test_critical_pressure_still_terminates_only_the_isolated_child(self):
+        import resource_guard as guard
+        with tempfile.TemporaryDirectory() as tmp:
+            args=['guard','--log',str(Path(tmp)/'actions.log'),'--timeout','0','--defer-maintenance','--','/bin/sleep','15']
+            handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
+            pressure=iter([1])
+            try:
+                with patch('sys.argv',args), patch.object(guard,'battery_status',return_value=(True,80)), \
+                     patch.object(guard,'swap_used',return_value=1031*MIB), \
+                     patch.object(guard,'memory_pressure_level',side_effect=lambda:next(pressure,4)), \
+                     patch.object(guard,'memory_free_percentage',return_value=40), \
+                     patch.object(guard,'thermal_state',return_value=0), \
+                     patch.object(guard.shutil,'disk_usage',return_value=SimpleNamespace(free=12*GIB)), \
+                     contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(guard.main(),124)
+                rows=list(map(json.loads,output.getvalue().splitlines()))
+                self.assertEqual(rows[-1]['result']['reason'],'critical system memory pressure')
+                import os
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(rows[1]['started_pid'],0)
+            finally:
+                for sig,handler in handlers.items():signal.signal(sig,handler)

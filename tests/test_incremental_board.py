@@ -207,6 +207,14 @@ class IncrementalTests(unittest.TestCase):
             parser.feed(b"x" * (inc.MAX_LINE + 1))
         self.assertIsNone(parser.game)
 
+    def test_lifetime_byte_counter_does_not_discard_a_bounded_live_state(self):
+        parser = inc.IncrementalBoard()
+        parser.feed(fixture())
+        parser.game_bytes = 6*1024*1024
+        parser.feed(power('TAG_CHANGE Entity=1 tag=TURN value=8').encode())
+        self.assertEqual(parser.snapshot(1)['game_turn'],'8')
+        self.assertGreater(parser.game_bytes,6*1024*1024)
+
     def test_unmodeled_armor_and_secret_are_blocked(self):
         parser = inc.IncrementalBoard()
         parser.feed(fixture() + power("TAG_CHANGE Entity=11 tag=ARMOR value=1").encode())

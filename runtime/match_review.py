@@ -15,7 +15,7 @@ def rows(path, limit):
     if path.stat().st_size > limit:
         raise ValueError('Review input exceeds its bound')
     result = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(errors='replace').splitlines():
         try:
             row = json.loads(line)
         except ValueError:
@@ -27,7 +27,7 @@ def rows(path, limit):
 
 def summarize(dest):
     decisions = rows(dest / 'decisions.jsonl', 2 * 1024 * 1024)
-    actions = rows(dest / 'actions.log', 4 * 1024 * 1024)
+    actions = rows(dest / 'actions.log', 4 * 1024 * 1024) + rows(dest / 'actions-tail.log', 64 * 1024)
     events = rows(dest / 'session-events.jsonl', 1024 * 1024)
     proposed = [r for r in decisions if r.get('event') == 'proposed']
     confirmed = {r.get('decision_id') for r in decisions
@@ -76,7 +76,12 @@ def summarize(dest):
                'needs_review': outcome in ('LOST', 'INCOMPLETE') or bool(pending)}
     action_path = dest / 'actions.log'
     if action_path.is_file() and not action_path.is_symlink():
-        action_text = action_path.read_text()
+        action_text = action_path.read_text(errors='replace')
+        tail_path = dest / 'actions-tail.log'
+        if tail_path.is_file() and not tail_path.is_symlink():
+            if tail_path.stat().st_size > 64*1024:
+                raise ValueError('Action tail exceeds its bound')
+            action_text += '\n' + tail_path.read_text(errors='replace')
         summary['reconnect_recovery_used'] = any(word in action_text for word in
              ('reconnect options incomplete', 'restored explicitly observed', 'restored previous legal options'))
         summary['mulligan_confirmed'] = 'mulligan: kept starting hand' in action_text
@@ -85,9 +90,26 @@ def summarize(dest):
                   if line.startswith('practice driver stopped: ')]
         if errors:
             summary['driver_stop_detail'] = errors[-1][:240]
+    compact_path = dest / 'decision-summary.json'
+    if compact_path.is_file() and not compact_path.is_symlink():
+        if compact_path.stat().st_size > 8192:
+            raise ValueError('Decision summary exceeds its bound')
+        compact = json.loads(compact_path.read_text())
+        for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
+                    'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
+                    'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):
+            summary[key] = compact[key]
+        if compact.get('outcome') in ('WON', 'LOST', 'TIED'):
+            summary['outcome'] = compact['outcome']
+        summary['started_without_mulligan'] = bool(compact['confirmed_decisions'] or compact['unconfirmed_decisions']) and not compact['mulligan_confirmed']
+        summary['needs_review'] = summary['outcome'] in ('LOST','INCOMPLETE') or bool(compact['unconfirmed_decisions'])
+        # A capped prefix may end between a proposal and its confirmation.
+        # The runtime counters, not a missing diagnostic line, are authority.
+        pending = [r for r in proposed if r.get('decision_id') in compact['unconfirmed_decisions']]
     # Proposed actions may have failed to execute; this is a review queue, not
     # an assertion that every selected decision was bad chess/card play.
-    samples = pending[-1:] if pending else proposed[-1:] if outcome == 'LOST' else []
+    outcome = summary['outcome']
+    samples = pending[-1:] if pending else proposed[-1:] if outcome == 'LOST' and not summary.get('diagnostics_capped') else []
     review_cases = [{'run': dest.name, 'outcome': outcome, 'status': 'awaiting_review',
                     'reason_for_review': 'unconfirmed_input' if pending else 'lost_game_final_decision',
                     'decision': {k: r[k] for k in ('decision_id', 'observation', 'actions', 'action', 'reason', 'model') if k in r}}
@@ -104,8 +126,10 @@ def save(path, obj):
     temporary.replace(path)
 
 
-def write_review(dest, learning):
+def write_review(dest, learning, *, game_closed=None):
     summary, cases = summarize(dest)
+    if game_closed is not None:
+        summary['game_closed'] = game_closed
     learning.mkdir(parents=True, exist_ok=True, mode=0o700)
     history_path, queue_path = learning / 'match-history.json', learning / 'review-queue.json'
     def previous(path, limit):

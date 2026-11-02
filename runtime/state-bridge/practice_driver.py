@@ -528,6 +528,7 @@ class Driver:
             self.poll()
             outcome = self.game_result()
             if outcome:
+                self.advisor.record({'event': 'game_complete', 'outcome': outcome})
                 print(json.dumps({"game_result": outcome, "actions": actions}), flush=True)
                 return
             try:
@@ -556,6 +557,7 @@ class Driver:
                 checked_geometry()
                 click((735, 708))
                 self.wait_until(lambda: self.parser.pending_choice(own) is None, 10)
+                self.advisor.record({'event': 'mulligan_confirmed', 'game_type': self.parser.game['meta'].get('GameType')})
                 print("mulligan: kept starting hand", flush=True)
                 actions += 1
                 time.sleep(5)

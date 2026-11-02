@@ -13,16 +13,15 @@ class Stop(Exception):
     pass
 
 
-def login_intro_backdrop(status, launch_time, log_root=Path('/Applications/Hearthstone/Logs')):
-    """Return an empty backdrop point only for the authenticated startup overlay."""
+def login_intro_page(status, launch_time, log_root=Path('/Applications/Hearthstone/Logs')):
+    """Identify a newly displayed pre-game overlay by its client notification line."""
     scene = status.get('scene') or {}
     if (scene.get('mode') != 2 or scene.get('sceneLoaded') is not True
             or scene.get('transitioning') is not False or status.get('popup') is not True
             or status.get('game_type') != 0 or status.get('format') != 0
             or any(status.get(key) is not False for key in ('shop_open','game_menu','mulligan_waiting'))):
         return None
-    # Check only this launch's Login.log. Older quest and reconnect messages
-    # cannot authorize input. No match or account data is needed here.
+    # Older quest and reconnect messages cannot authorize input.
     try:
         sessions = [p for p in log_root.glob('Hearthstone_*') if not p.is_symlink()
                     and p.is_dir() and p.stat().st_ctime >= launch_time]
@@ -36,10 +35,20 @@ def login_intro_backdrop(status, launch_time, log_root=Path('/Applications/Heart
         login = lines.find(b'We are now logged in, stopping processing challenges')
         if len(lines) > 4096 or login < 0 or b'Initial download done, Waiting Intro popup...' not in lines[login:]:
             return None
+        client_log = sessions[0] / 'Hearthstone.log'
+        if client_log.is_symlink() or not client_log.is_file():
+            return None
+        with client_log.open('rb') as stream:
+            offset = max(0, stream.seek(0, os.SEEK_END) - 16384)
+            stream.seek(offset)
+            tail = stream.read(16384)
+        marker = b'Hiding notification HelpTooltip_Tutorial because something else is being shown.'
+        index = tail.rfind(marker)
+        if index >= 0 and b'\n' in tail[index + len(marker):]:
+            return (sessions[0].name, offset + index)
     except OSError:
         return None
-    # Outside the task cards and any central modal buttons in the calibrated window.
-    return (180,155)
+    return None
 
 
 def next_navigation(stage, status):

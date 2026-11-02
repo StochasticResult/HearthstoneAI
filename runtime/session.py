@@ -15,7 +15,7 @@ from pathlib import Path
 from input_command import input_command
 from deck_observation import save_selected_deck
 from game_watchdog import GAME_EXEC, processes
-from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_backdrop, next_navigation, next_ranked_navigation, read_json_line, stop_child
+from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
 from game_boundary import LogBoundary, result_dismissal
 
@@ -411,6 +411,8 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
             raise SessionError("启动前资源保护已经停止")
         reuse=bool(client and client.launched)
         launch_time = None
+        last_intro_page = None
+        next_intro_check = 0
         if not reuse:
             launch_time = time.time()
             launch_hearthstone()
@@ -456,15 +458,19 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                     # Mirror may attach before Unity has created a window.
                     # Do not attempt foreground/input until a known scene loads.
                     if not scene_ready(status):
-                        if launch_time is not None and login_intro_backdrop(status, launch_time):
-                            focus_hearthstone()
-                            point = login_intro_backdrop(read_status() or {}, launch_time)
-                            if point:
-                                navigation_click(point)
-                                emit('已点按登录展示的空白背景，等待主菜单')
-                            launch_time = None
+                        if launch_time is not None and time.monotonic() >= next_intro_check:
+                            next_intro_check = time.monotonic() + 2
+                            page = login_intro_page(status, launch_time)
+                            if page is not None and page != last_intro_page:
+                                focus_hearthstone()
+                                if login_intro_page(read_status() or {}, launch_time) == page:
+                                    # Empty backdrop, outside the cards and central controls.
+                                    navigation_click((180,155))
+                                    last_intro_page = page
+                                    emit('已点按登录展示的空白背景，等待新页面或主菜单')
                         time.sleep(.5)
                         continue
+                    launch_time = None
                     if not focused:
                         focus_hearthstone()
                         focused = True

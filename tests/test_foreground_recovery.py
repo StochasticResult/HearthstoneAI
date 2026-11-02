@@ -1,6 +1,5 @@
 import contextlib
 import io
-import json
 import os
 import subprocess
 import tempfile
@@ -11,7 +10,7 @@ from unittest.mock import Mock, patch
 import practice_driver as driver
 import session
 from ranked_autoplay import AfterGameStop
-from ranked_focus import FocusLost
+from ranked_focus import FocusLost, PointCovered
 from incremental_board import IncrementalBoard
 from openai_advisor import OpenAIAdvisor
 from test_incremental_board import fixture, power
@@ -47,7 +46,7 @@ class ForegroundRecoveryTests(unittest.TestCase):
                  patch('session.navigation_click', side_effect=FocusLost('pre-input')) as click, \
                  patch('session.stop_child') as stop:
                 c.return_to_menu()
-            click.assert_called_once_with((735,845), managed=True)
+            click.assert_called_once_with((735,833), managed=True, game_pid=59343)
             stop.assert_not_called()
             self.assertEqual(c.boundary.check.call_count,4)
             self.assertTrue(all(x.args==(59343,) for x in c.focus.bind.call_args_list))
@@ -73,6 +72,22 @@ class ForegroundRecoveryTests(unittest.TestCase):
                 c.click_if_ready((1070,735))
             self.assertEqual(run.call_count,4)
 
+    def test_foreground_overlay_cannot_receive_the_result_click(self):
+        c=session.PersistentClient(None,0); c.pid=67558; c.focus=Mock()
+        geometry=subprocess.CompletedProcess([],0,'{"x":0,"y":33,"width":1470,"height":846}','')
+        click=subprocess.CompletedProcess([],0,'','')
+        with patch.object(c,'foreground_ready',return_value=True), \
+             patch('session.check_point',side_effect=[PointCovered(),None]) as hit, \
+             patch('session.subprocess.run',side_effect=[geometry,geometry,click]) as run:
+            # The actual covered point and clear point measured after the 14:50 game.
+            self.assertTrue(c.click_if_ready((735,845),((735,833),)))
+            self.assertEqual([x.args for x in hit.call_args_list],[(67558,735,845),(67558,735,833)])
+            self.assertEqual([x.args[0][-2:] for x in run.call_args_list if 'click' in x.args[0]],[['735','833']])
+        with patch.object(c,'foreground_ready',return_value=True),patch('session.check_point',side_effect=PointCovered()), \
+             patch('session.subprocess.run',return_value=geometry) as run:
+            self.assertFalse(c.click_if_ready((735,833),((735,845),)))
+            self.assertFalse(any('click' in x.args[0] for x in run.call_args_list))
+
     def test_observe_game_end_during_locked_focus_wait_without_api_or_mouse(self):
         d=waiting_driver()
         d.game_result=Mock(side_effect=[None,None,'WON'])
@@ -92,6 +107,7 @@ class ForegroundRecoveryTests(unittest.TestCase):
             rejected = subprocess.CompletedProcess([],1,'','Hearthstone is not the frontmost app')
             ok = subprocess.CompletedProcess([],0,'','')
             with patch.object(driver,'FOCUS_LEASE',lease), patch.object(driver,'posted_inputs',0), \
+                 patch.object(driver,'check_point'), \
                  patch('practice_driver.subprocess.run',side_effect=[rejected,ok]) as native:
                 cmd=['native','--input','drag',1,2,3,4]
                 with self.assertRaises(FocusLost):driver.run_checked(cmd)
@@ -100,6 +116,17 @@ class ForegroundRecoveryTests(unittest.TestCase):
                 os.pwrite(lease.fileno(),b'W',4)
                 with self.assertRaises(FocusLost):driver.run_checked(cmd)
                 self.assertEqual(native.call_count,2)
+
+    def test_covered_drag_destination_never_starts_a_drag(self):
+        with tempfile.TemporaryFile() as lease:
+            lease.write((67558).to_bytes(4,'little')+b'F');lease.flush()
+            with patch.object(driver,'FOCUS_LEASE',lease),patch.object(driver,'posted_inputs',0), \
+                 patch.object(driver,'check_point',side_effect=[None,PointCovered()]) as hit, \
+                 patch('practice_driver.subprocess.run') as native:
+                with self.assertRaises(PointCovered):driver.run_checked(['native','--input','drag',700,817,735,510])
+                self.assertEqual([c.args for c in hit.call_args_list],[(67558,700,817),(67558,735,510)])
+                native.assert_not_called()
+                self.assertEqual(driver.posted_inputs,0)
 
     def test_live_driver_reuses_only_an_unsent_decision_on_an_identical_board(self):
         for board_changed in (False, True):

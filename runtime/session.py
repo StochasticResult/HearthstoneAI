@@ -18,7 +18,7 @@ from game_watchdog import GAME_EXEC, processes
 from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
 from game_boundary import FaultedMatchEnd, LogBoundary, result_dismissal
-from ranked_focus import FocusLost, rejected_before_input
+from ranked_focus import FocusLost, PointCovered, check_point, rejected_before_input
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path.home() / "Library/Application Support/HearthstoneAI"
@@ -207,7 +207,7 @@ def focus_hearthstone():
                    check=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def navigation_click(point, *, managed=False):
+def navigation_click(point, *, managed=False, game_pid=None):
     geometry = subprocess.run(input_command("geometry"),
                               capture_output=True, text=True, timeout=3, check=not managed)
     if managed and geometry.returncode:
@@ -222,6 +222,8 @@ def navigation_click(point, *, managed=False):
     # Never retry a successful click or an uncertain input failure.
     deadline = time.monotonic() + .8
     while True:
+        if game_pid is not None:
+            check_point(game_pid, *point)
         result = subprocess.run(input_command("click", *point),
                                 capture_output=True, text=True, timeout=4)
         if result.returncode == 0:
@@ -248,6 +250,7 @@ class PersistentClient:
         self.match_at_risk = False
         self.focus = self.on_foreground_change = None
         self.last_focus_state = None
+        self.covered_point = None
 
     def foreground_ready(self):
         if self.focus is None:
@@ -271,19 +274,27 @@ class PersistentClient:
             self.last_focus_state = code
         return code == b'F'
 
-    def click_if_ready(self, point):
+    def click_if_ready(self, point, alternatives=()):
         if self.focus is None:
             navigation_click(point)
             return True
         if not self.foreground_ready():
             return False
-        try:
-            navigation_click(point, managed=True)
-            return True
-        except FocusLost:
-            # No mouse event was posted. The caller must fetch the scene and
-            # validate a new point before trying again.
-            return False
+        for candidate in (point, *alternatives):
+            try:
+                navigation_click(candidate, managed=True, game_pid=self.pid)
+                if self.covered_point is not None or candidate != point:
+                    emit('已在炉石自己的窗口中恢复点击', game_pid=self.pid, navigation_point=candidate)
+                self.covered_point = None
+                return True
+            except PointCovered:
+                continue  # Only another point on the same verified control.
+            except FocusLost:
+                return False
+        if self.covered_point != point:
+            self.covered_point = point
+            emit('按钮位置受到其他窗口遮挡，等待炉石可点击位置', play_status='等待按钮露出 · 炉石保持运行')
+        return False
 
     def observe(self, event, source):
         if source == '游戏守护' and type(event.get('claimed_pid')) is int:
@@ -355,7 +366,12 @@ class PersistentClient:
                         return
                 point = next_ranked_navigation(0,status) if mode==3 else result_dismissal(status,self.previous['outcome'])
                 if point and (last_click is None or time.monotonic()-last_click>=5):
-                    if self.click_if_ready(point):
+                    # Confirmed result label in the 1470×846 window. Its lower
+                    # edge can be covered by a floating remote-viewing control.
+                    alternatives = ()
+                    if mode == 4 and point == (735,845) and self.focus is not None:
+                        point, alternatives = (735,833), (point,)
+                    if self.click_if_ready(point, alternatives):
                         last_click=time.monotonic()
                         emit('正在退出已结束的对局结算',game_pid=self.pid)
             time.sleep(1)

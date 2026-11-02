@@ -1,4 +1,6 @@
 """Foreground and emergency hotkey lease, private to one ranked coordinator."""
+import ctypes
+from functools import cache
 import os
 import struct
 import subprocess
@@ -10,6 +12,24 @@ from navigation import read_json_line, stop_child
 
 class FocusLost(RuntimeError):
     """The native helper rejected this operation before posting any input."""
+
+
+class PointCovered(FocusLost):
+    """A foreground game can still have another window above the click point."""
+
+
+@cache
+def _point_checker():
+    lib = ctypes.CDLL(str(Path(__file__).with_name('pointer-target.dylib')))
+    check = lib.hs_point_owned
+    check.argtypes = (ctypes.c_int,ctypes.c_double,ctypes.c_double)
+    check.restype = ctypes.c_int
+    return check
+
+
+def check_point(pid, x, y):
+    if not _point_checker()(pid, float(x), float(y)):
+        raise PointCovered('目标位置被遮挡，未发送鼠标输入')
 
 
 def rejected_before_input(detail):

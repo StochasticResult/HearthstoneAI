@@ -19,6 +19,9 @@ def build_focus(destination):
     subprocess.run(["/usr/bin/xcrun", "clang", "-Os", "-Wall", "-Wextra", "-Werror",
                     "-Wno-deprecated-declarations", str(ROOT / "native/RankedFocus.c"),
                     "-framework", "Carbon", "-framework", "ApplicationServices", "-o", str(destination)], check=True)
+    subprocess.run(["/usr/bin/xcrun", "clang", "-dynamiclib", "-Os", "-Wall", "-Wextra", "-Werror",
+                    str(ROOT / "native/PointerTarget.c"), "-framework", "ApplicationServices",
+                    "-o", str(destination.with_name('pointer-target.dylib'))], check=True)
 
 
 def main():

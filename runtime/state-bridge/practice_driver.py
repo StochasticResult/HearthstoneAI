@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from input_command import input_command
 from deck_observation import public_selected_deck
 from game_mode import expected_type
-from ranked_focus import FocusLost, rejected_before_input
+from ranked_focus import FocusLost, check_point, rejected_before_input
 
 from capture_practice import Capture, CaptureError, LOG_ROOT
 from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board, choice_for_player
@@ -85,6 +85,11 @@ def run_checked(args, timeout=4):
     native = len(args) > 2 and args[1] == '--input'
     if native and not focus_ready():
         raise FocusLost('炉石暂不在前台')
+    if native and FOCUS_LEASE is not None and args[2] in ('click','move','drag'):
+        game_pid = int.from_bytes(os.pread(FOCUS_LEASE.fileno(),4,0), sys.byteorder)
+        check_point(game_pid, args[3], args[4])
+        if args[2] == 'drag':
+            check_point(game_pid, args[5], args[6])
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
     if native and FOCUS_LEASE is not None and result.returncode:
         detail = result.stderr.strip()

@@ -158,8 +158,20 @@ def summarize(dest):
                     break
     outcome = summary['outcome']
     if summary.get('game_type') == 'GT_RANKED' and outcome in ('WON', 'LOST', 'TIED'):
+        if pending and not summary.get('diagnostics_capped'):
+            from turn_end_attack import reconcile
+            proofs = reconcile(dest, outcome, pending, decisions)
+            if proofs:
+                resolved_at_end = {proof['decision_id'] for proof in proofs}
+                summary['turn_end_attacks'] = proofs
+                summary['unconfirmed_decisions'] = [i for i in summary['unconfirmed_decisions'] if i not in resolved_at_end]
+                pending = [r for r in pending if r.get('decision_id') not in resolved_at_end]
+                summary['needs_review'] = (outcome == 'LOST' or bool(summary['unconfirmed_decisions'])
+                                           or bool(summary.get('result_after_ai_fault')))
         from coaching import strategy_sample
         summary['strategy_sample'] = strategy_sample(decisions, summary.get('diagnostics_capped', False))
+        if summary.get('turn_end_attacks'):
+            summary['strategy_sample']['turn_end_attacks'] = summary['turn_end_attacks']
     samples = pending[-1:]
     if not samples and outcome == 'LOST' and not summary.get('diagnostics_capped'):
         samples = [r for r in proposed if r.get('decision_id') in confirmed][-1:]

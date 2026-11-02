@@ -790,24 +790,26 @@ class Driver:
                             self.parser.game is not None and not self.parser.partial and
                             all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")), 10)
         elif advice["kind"] == "attack":
+            turn = board._num(state.get('game_turn'))
             def attacked():
-                if self.parser.sent_options <= before_submissions:
+                if (self.parser.sent_options != before_submissions + 1 or self.parser.partial
+                        or self.parser.last_targeted_option != (state['options_id'], source, advice['target_id'])):
                     return False
                 game = self.parser.game
                 if any(event['type'] == 'attack' and event.get('actor') == own
-                       and event.get('turn') == board._num(state['game_turn'])
+                       and event.get('turn') == turn
                        and board._ref_id(event.get('atk_ref') or '') == source
                        and board._ref_id(event.get('tgt_ref') or '') == advice['target_id']
                        for event in game['events'][before_events:]):
                     return True
-                if self.game_result():
-                    return True
                 current = board._game_entity(game)
-                if not current or current['tags'].get('TURN') != state['game_turn']:
+                if RUN_MODE == 'ranked' and (self.game_result() or (current and turn is not None
+                        and board._tag_int(current,'TURN') > turn and self.opponent_turn())):
+                    raise ActionUnconfirmed('attack submission crossed a game or turn boundary without a matching combat record')
+                if not current or turn is None or board._num(current['tags'].get('TURN')) != turn:
                     return False
                 entity = game["entities"].get(source)
-                return bool(entity and (entity.get("zone") != "PLAY" or
-                            board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks))
+                return bool(entity and board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks)
             self.wait_until(attacked, 10)
         print("confirmed", advice["kind"], flush=True)
         print(json.dumps({"action_timing": {"kind": advice["kind"],
@@ -1092,7 +1094,8 @@ class Driver:
                 print("等待服务器确认，暂停输入并保留当前对局", flush=True)
                 unsent = self.wait_for_action_boundary(own, window, state['options_id'])
                 event = 'expired_without_submission' if unsent else 'resumed_after_uncertain_input'
-                self.advisor.record({'event':event, 'action':advice, 'game_turn':state.get('game_turn')})
+                self.advisor.record({'event':event, 'action':advice, 'game_turn':state.get('game_turn'),
+                                     'options_id':state['options_id'], 'sent_before':window[2]})
                 print("已读到新的行动窗口，从当前局面重新判断", flush=True)
                 borrowed_options = state['options_id']
                 awaiting_fresh_options = True

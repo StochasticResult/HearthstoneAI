@@ -70,6 +70,7 @@ class IncrementalBoard:
         self.confirming_choice = None
         self.sent_options = 0
         self.last_end_turn_options_id = None
+        self.last_targeted_option = None
         self.public_card_memory = {}
         self.identity_changes = set()
         self.saw_mulligan = False
@@ -85,6 +86,16 @@ class IncrementalBoard:
         self.visual_step = self.visual_turn = None
         self.visual_game_entity = False
         self.last_end_turn_options_id = None
+        self.last_targeted_option = None
+
+    def targeted_option(self, index, target):
+        if self.options_id is None or target <= 0:
+            return None
+        sources = [o['id'] for o in self.options if o['index'] == index and o['type'] in ('POWER','ATTACK')
+                   and o['error'] == 'NONE' and not o.get('has_sub_options') and (target,'NONE') in o['targets']]
+        if len(sources) == 1 and type(sources[0]) is int:
+            return (self.options_id, sources[0], target)
+        return None
 
     def _observe_options(self, line):
         option_prefix = "GameState.DebugPrintOptions() -"
@@ -165,6 +176,7 @@ class IncrementalBoard:
             self.confirming_choice = None
             self.sent_options = 0
             self.last_end_turn_options_id = None
+            self.last_targeted_option = None
             self.public_card_memory = {}
             self.identity_changes = set()
             self.saw_mulligan = False
@@ -189,6 +201,7 @@ class IncrementalBoard:
             self.sent_options += 1
             self.last_end_turn_options_id = None
             index = int(sent[1])
+            self.last_targeted_option = self.targeted_option(index, int(sent[3])) if sent[2] == '-1' else None
             if (sent.group(2, 3) == ('-1', '0') and
                     any(o.get('index') == index and o['type'] == 'END_TURN' and not o.get('has_sub_options')
                         and o['id'] is None and not o['targets'] and o['error'] in ('NONE','INVALID')

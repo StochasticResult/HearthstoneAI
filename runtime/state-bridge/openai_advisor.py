@@ -531,6 +531,15 @@ class OpenAIAdvisor:
             view['turn_pace'] = {'seconds_since_first_decision': elapsed, 'legal_face_attackers_now': face,
                 'compare': 'Time spent, not a rope countdown. Secure valuable attacks before optional draw, Discover or '
                            'marginal buffs if delay risks losing the attacks. Preserve necessary trades, lethal buffs and secret tests.'}
+        else:
+            taunts = {c['id'] for c in view.get('enemy_board', []) if c.get('taunt')}
+            trades = [[a['source_id'], a['target_id']] for a in menu.values()
+                      if a.get('kind') == 'attack' and a.get('target_id') in taunts]
+            if trades:
+                view['turn_pace'] = {'seconds_since_first_decision': elapsed, 'legal_taunt_attacks_now': trades,
+                    'compare': 'The listed attacks are legal now. If you already intend a necessary trade, weigh taking '
+                               'it before optional draw or setup. Re-evaluate after each hit for Reborn, triggers and '
+                               'changed targets. Drawing first may be necessary for an immediate out.'}
 
     def select(self, view, menu):
         self.decision_seq += 1

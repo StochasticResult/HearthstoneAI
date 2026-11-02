@@ -9,6 +9,12 @@ ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "dist/Hearthstone AI.app"
 
 
+def build_awake(destination):
+    subprocess.run(["/usr/bin/xcrun", "clang", "-Os", "-Wall", "-Wextra", "-Werror",
+                    str(ROOT / "native/KeepAwake.c"), "-framework", "CoreFoundation",
+                    "-framework", "IOKit", "-o", str(destination)], check=True)
+
+
 def main():
     if APP.exists():
         shutil.rmtree(APP)
@@ -24,6 +30,7 @@ def main():
                     str(ROOT / "native/InputCommands.swift"),
                     "-o", str(macos / "HearthstoneAI")], check=True)
     shutil.copytree(ROOT / "runtime", resources / "runtime", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    build_awake(resources / "runtime/app-awake")
     with (APP / "Contents/Info.plist").open("wb") as f:
         plistlib.dump({"CFBundleName": "Hearthstone AI", "CFBundleDisplayName": "Hearthstone AI",
             "CFBundleIdentifier": "local.hearthstoneai.app", "CFBundleExecutable": "HearthstoneAI",

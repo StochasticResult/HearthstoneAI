@@ -11,6 +11,7 @@ from match_review import save
 from resource_guard import swap_used, MIB
 from maintenance import cleanup, readiness, RESOURCE_CHECK_SECONDS, WAIT_LABELS
 from navigation import stop_child
+from app_awake import AppWake
 
 
 class AutoplayCancelled(RuntimeError):
@@ -96,6 +97,7 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
              'last_reviewed_game': 0, 'review_due': False, 'stop_reason': None}
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     awake = None
+    app_wake = None
     client = None
 
     def cancel(_signal, _frame):
@@ -159,11 +161,16 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         return True
 
     try:
-        # Keep the already-authorized awake assertion through resource waits
-        # and cooldowns too. It expires with this coordinator, never persists
-        # as a changed system setting or unlocks a locked Mac.
-        awake = subprocess.Popen(['/usr/bin/caffeinate', '-dimsu', '-w', str(os.getpid())],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if parent_pid:
+            check_parent()
+            app_wake = AppWake.acquire(data, parent_pid)
+            state['keep_awake'] = {'app_pid': parent_pid, 'holder_pid': app_wake.pid,
+                                   'policy': 'on_ac_through_review'}
+            emit('保持唤醒已启用 · 接通电源时覆盖对局、等待和复盘，手动停止或退出应用时释放')
+        else:
+            # A standalone invocation has no GUI owner beyond this process.
+            awake = subprocess.Popen(['/usr/bin/caffeinate', '-di', '-w', str(os.getpid())],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         from build_identity import current_build
         from version_stats import status as version_status, display
         build=current_build()
@@ -236,7 +243,19 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             try:
                 if client:client.close()
             finally:
-                stop_child(awake)
+                try:
+                    if app_wake is not None:
+                        # A request can arrive while the single-game driver is
+                        # unwinding a fault. An explicit stop takes precedence.
+                        request = read_small(pause_path)
+                        if request and request.get('reason') == 'user_requested_stop':
+                            deferred_stop()
+                        if state['status'] in ('needs_review', 'paused_for_review'):
+                            emit('复盘期间保持唤醒 · 退出应用可结束')
+                        else:
+                            app_wake.release()
+                finally:
+                    stop_child(awake)
         finally:
             lock.close()
             for sig, handler in previous_handlers.items():

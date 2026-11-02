@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,32 @@ def completed(name='run-1', outcome='WON', losses=0):
 
 
 class RankedAutoplayTests(unittest.TestCase):
+    def test_gui_wake_lifetime_follows_user_intent_across_reviews_and_faults(self):
+        for reason, expected, release in (('review_update','paused_for_review',False),
+                                          ('user_requested_stop','cancelled',True),
+                                          ('fault','needs_review',False),
+                                          ('fault_with_stop','cancelled',True)):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp, \
+                 patch('ranked_autoplay.AppWake.acquire') as acquire:
+                acquire.return_value.pid=42
+                data=Path(tmp)
+                def game(*_,**__):
+                    if reason!='fault':
+                        request='user_requested_stop' if reason=='fault_with_stop' else reason
+                        (data/'learning/pause-after-game.json').write_text(json.dumps({'reason':request}))
+                    if reason.startswith('fault'):
+                        raise RuntimeError('driver failed')
+                    return completed()
+                if reason.startswith('fault'):
+                    with self.assertRaisesRegex(RuntimeError,'driver failed'):
+                        run_autoplay({'api_key':'fake'},os.getppid(),data,game,Mock(),Mock())
+                    state=json.loads((data/'learning/autoplay-state.json').read_text())
+                else:
+                    state=run_autoplay({'api_key':'fake'},os.getppid(),data,game,Mock(),Mock())
+                self.assertEqual(state['status'],expected)
+                self.assertEqual(acquire.return_value.release.called,release)
+                self.awake.assert_not_called()
+
     def test_planned_resume_preserves_old_baseline_instead_of_hiding_growth(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'state.json'

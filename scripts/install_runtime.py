@@ -7,6 +7,7 @@ import subprocess
 import hashlib
 import json
 import plistlib
+from build_app import build_awake
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path.home() / "Library/Application Support/HearthstoneAI"
@@ -25,6 +26,7 @@ def main():
     for path in (staging, backup):
         if path.exists(): shutil.rmtree(path)
     shutil.copytree(ROOT / "runtime", staging, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    build_awake(staging / 'app-awake')
     digest=hashlib.sha256()
     for path in sorted(p for p in staging.rglob('*') if p.is_file() and p.name!='build-info.json'):
         digest.update(str(path.relative_to(staging)).encode()+b'\0')

@@ -16,12 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from input_command import input_command
+from deck_observation import public_selected_deck
 
 from capture_practice import Capture, CaptureError, LOG_ROOT
 from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board
 from mirror_identity import practice_identity, mulligan_identity
 from practice_state import META, prepare
-from reconnect_options import restore_observed_options
+from reconnect_options import restore_observed_options, restore_zero_hand_costs
 from openai_advisor import AdvisorError, OpenAIAdvisor, action_menu, signature
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -217,7 +218,7 @@ def choice_index(choice, board_count, mana):
 
 
 class Driver:
-    def __init__(self, path, evidence, watchdog, advisor=None):
+    def __init__(self, path, evidence, watchdog, advisor=None, deck_snapshot=None, reconnect_evidence=()):
         self.parser = IncrementalBoard()
         self.follower = LogFollower(path, self.parser)
         self.capture = Capture(path, evidence)
@@ -228,6 +229,9 @@ class Driver:
         self.owner = None
         self.identity_game = None
         self.board_mismatch_since = None
+        self.deck_snapshot = deck_snapshot
+        self.reconnect_evidence = tuple(reconnect_evidence)[:4]
+        self.recovered_previous = None
 
     def close(self):
         self.advisor.close()
@@ -236,6 +240,24 @@ class Driver:
 
     def snapshot(self, own, **_kwargs):
         return self.parser.snapshot(own, allow_practice=True, extended=True)
+
+    def recover_observed_zero_cost(self, own):
+        paths, self.reconnect_evidence = self.reconnect_evidence, ()
+        for path in paths:
+            if not path.is_file() or path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
+                continue
+            previous = IncrementalBoard()
+            reader = LogFollower(path, previous)
+            try:
+                while reader.poll():
+                    pass
+            finally:
+                reader.close()
+            if restore_zero_hand_costs(self.parser, previous, own):
+                self.recovered_previous = previous
+                print("restored explicitly observed zero cost after matching the same game and turn", flush=True)
+                return True
+        return False
 
     def game_result(self):
         if not self.parser.game or not board.is_game_over(self.parser.game):
@@ -310,7 +332,14 @@ class Driver:
             raise Stop("local identity changed")
         self.owner = candidate
         self.identity_game = self.parser.game
-        self.advisor.observe_deck(status.get("selected_deck"))
+        self.advisor.observe_deck(status.get("selected_deck_details", status.get("selected_deck")))
+        if self.advisor.starting_deck is None and self.deck_snapshot and self.deck_snapshot.exists():
+            if self.deck_snapshot.stat().st_size > 8192:
+                raise Stop("selected deck observation exceeds its bound")
+            deck = public_selected_deck(json.loads(self.deck_snapshot.read_text()))
+            if deck is None:
+                raise Stop("invalid selected deck observation")
+            self.advisor.observe_deck(deck)
         return candidate
 
     def wait_until(self, predicate, seconds=8):
@@ -375,6 +404,50 @@ class Driver:
         print(json.dumps({"hover_probe": observed}), flush=True)
         raise Stop("could not verify the requested hand card by hover")
 
+    def revalidate_target(self, own, choice, state):
+        self.poll()
+        current = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
+        if self.parser.pending_choice(own) != choice or signature(current) != signature(state):
+            raise Stop("target choice or board changed during decision")
+        fresh_status = mirror()
+        if fresh_status.get("popup") or fresh_status.get("shop_open") or fresh_status.get("game_menu"):
+            raise Stop("target choice is covered by a menu")
+        self.identify(fresh_status)
+        checked_geometry()
+
+    def execute_target(self, own, choice, state, advice):
+        # Reconnect can expose the server choice before the client accepts a
+        # click. Retry only the same still-pending target, never a sent choice.
+        cid = choice["id"]
+        def confirmed():
+            return self.choice_confirmed(cid, [advice["target_id"]])
+        for attempt in range(3):
+            self.poll()
+            if confirmed():
+                return
+            if self.parser.choices.get(cid, {}).get("sent"):
+                self.wait_until(confirmed, 6)
+                return
+            self.revalidate_target(own, choice, state)
+            point = target_point(state, advice["target_id"])
+            print(json.dumps({"attempt":"choose_target", "target_id":advice["target_id"],
+                              "point":point, "attempt_number":attempt+1}),flush=True)
+            click(point)
+            try:
+                self.wait_until(confirmed, 4)
+                return
+            except Stop as error:
+                if str(error) != "action was not confirmed in game log" or attempt == 2:
+                    raise
+
+    def choice_confirmed(self, cid, expected):
+        observed = self.parser.choices.get(cid, {})
+        if observed.get("confirmed") is not True:
+            return False
+        if observed.get("chosen_ids") != expected:
+            raise Stop("game confirmed a different choice; no further input was sent")
+        return True
+
     def run(self, max_seconds, max_actions, diagnose_hover=False, previous=None):
         deadline = time.monotonic() + max_seconds
         actions = 0
@@ -386,6 +459,8 @@ class Driver:
         fresh_options_deadline = None
         first_options_deadline = None
         mirror_wait_started = None
+        resolving_since = None
+        visual_wait_since = None
         while time.monotonic() < deadline and actions < max_actions:
             self.poll()
             outcome = self.game_result()
@@ -422,6 +497,16 @@ class Driver:
                 actions += 1
                 time.sleep(5)
                 continue
+            if choice and choice["type"] == "TARGET":
+                target_state = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
+                advice = self.advisor.target(choice, target_state)
+                time.sleep(.4)
+                self.execute_target(own, choice, target_state, advice)
+                self.advisor.confirm_target(advice)
+                print("confirmed target choice", flush=True)
+                actions += 1
+                time.sleep(1.5)
+                continue
             if choice and choice["type"] == "GENERAL":
                 if not choice["shown"]:
                     choice_deadline = choice_deadline or (time.monotonic() + 12)
@@ -443,7 +528,7 @@ class Driver:
                 checked_geometry()
                 click((xs[index], 455))
                 before_id = choice["id"]
-                self.wait_until(lambda: (self.parser.pending_choice(own) or {}).get("id") != before_id, 10)
+                self.wait_until(lambda: self.choice_confirmed(before_id, [choice["items"][index]["id"]]), 10)
                 self.advisor.confirm_choice(choice, index)
                 print("choice resolved", flush=True)
                 actions += 1
@@ -452,16 +537,28 @@ class Driver:
             try:
                 state = self.snapshot(own)
             except UnsafeState as error:
+                if str(error) == "missing COST" and self.recover_observed_zero_cost(own):
+                    previous = self.recovered_previous
+                    continue
                 if str(error) not in ("incomplete trailing log line", "game is resolving an action or choice", "mulligan is not supported"):
                     raise Stop("unsupported game state: " + str(error)) from error
+                resolving_since = resolving_since or time.monotonic()
+                if time.monotonic() - resolving_since >= 20:
+                    raise Stop("game state remained unresolved for twenty seconds: " + str(error)) from error
                 time.sleep(.5)
                 continue
+            resolving_since = None
             if not state["own_turn"]:
+                visual_wait_since = None
                 time.sleep(.7)
                 continue
             if not visual_ready(state):
+                visual_wait_since = visual_wait_since or time.monotonic()
+                if time.monotonic() - visual_wait_since >= 20:
+                    raise Stop("visual turn did not become actionable within twenty seconds")
                 time.sleep(.5)
                 continue
+            visual_wait_since = None
             if state["options_id"] is None:
                 if previous is not None and restore_observed_options(self.parser, previous, own):
                     state = self.snapshot(own)
@@ -609,6 +706,8 @@ def main():
     ap.add_argument("--max-actions", type=int, default=20)
     ap.add_argument("--diagnose-hover", action="store_true")
     ap.add_argument("--prior-evidence", type=Path)
+    ap.add_argument("--deck-snapshot", type=Path)
+    ap.add_argument("--reconnect-evidence", type=Path, action="append", default=[])
     ap.add_argument("--openai-config-stdin", action="store_true", help="read API settings privately from stdin")
     args = ap.parse_args()
     if not 1 <= args.seconds <= 300 or not 1 <= args.max_actions <= 80:
@@ -656,7 +755,8 @@ def main():
                 pass
         finally:
             reader.close()
-    driver = Driver(path, args.evidence, args.watchdog_pid, advisor=api_advisor)
+    driver = Driver(path, args.evidence, args.watchdog_pid, advisor=api_advisor, deck_snapshot=args.deck_snapshot,
+                    reconnect_evidence=args.reconnect_evidence)
     try:
         driver.run(args.seconds, args.max_actions, diagnose_hover=args.diagnose_hover, previous=previous)
     except ClientFatal as error:

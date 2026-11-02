@@ -101,6 +101,7 @@ def terminate_group(pgid, proc=None):
 
 def main():
     def interrupted(signum, _frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise RuntimeError("supervisor interrupted by signal %d" % signum)
 
     signal.signal(signal.SIGTERM, interrupted)
@@ -140,6 +141,7 @@ def main():
     max_cpu = 0.0
     output_bytes = 0
     reason = None
+    reported = False
     proc = None
     selector = selectors.DefaultSelector()
     with a.log.open("wb") as log:
@@ -205,11 +207,19 @@ def main():
             # Also stop any descendants left in this isolated group.
             terminate_group(proc.pid, proc)
             print(json.dumps({"result": {"exit_code": return_code, "reason": reason, "duration_s": round(time.monotonic()-started, 2), "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1), "output_bytes": output_bytes}}), flush=True)
+            reported = True
             return 124 if reason else return_code
         finally:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
             selector.close()
             if proc is not None:
                 terminate_group(proc.pid, proc)
+            if not reported:
+                print(json.dumps({"result": {"exit_code": proc.poll() if proc else None,
+                    "reason": reason or "interrupted", "duration_s": round(time.monotonic()-started, 2),
+                    "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1),
+                    "output_bytes": output_bytes}}), flush=True)
 
 
 if __name__ == "__main__":

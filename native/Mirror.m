@@ -9,6 +9,7 @@
 - (id)getGameType;
 - (id)getFormat;
 - (id)getSelectedDeck;
+- (id)getDecks;
 - (id)getMulliganState;
 - (id)getBoardState:(BOOL)includeOpposing;
 - (id)getBigCardState;
@@ -53,8 +54,17 @@ static id jsonValue(id value, int depth) {
 
 int main(int argc, const char **argv) {
     @autoreleasepool {
-        if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--board") != 0 && strcmp(argv[2], "--hover") != 0)) {
-            fprintf(stderr, "Usage: game_status PATH_TO_HEARTHMIRROR [--board|--hover]\n"); return 2;
+        BOOL deckLookup = argc == 3 && strncmp(argv[2], "--deck=", 7) == 0;
+        NSNumber *requestedDeck = nil;
+        if (deckLookup) {
+            const char *number = argv[2] + 7;
+            char *end = NULL;
+            unsigned long long deckId = strtoull(number, &end, 10);
+            if (!*number || strlen(number) > 19 || !deckId || *end || *number < '0' || *number > '9') return 2;
+            requestedDeck = @(deckId);
+        }
+        if (argc < 2 || argc > 3 || (argc == 3 && !deckLookup && strcmp(argv[2], "--board") != 0 && strcmp(argv[2], "--hover") != 0)) {
+            fprintf(stderr, "Usage: game_status PATH_TO_HEARTHMIRROR [--board|--hover|--deck=ID]\n"); return 2;
         }
         NSArray *apps = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"unity.Blizzard Entertainment.Hearthstone"];
         if (apps.count != 1) { fprintf(stderr, "Expected one running Hearthstone instance.\n"); return 1; }
@@ -70,7 +80,25 @@ int main(int argc, const char **argv) {
         out[@"scene"] = jsonValue([h getSceneMgrState], 0);
         out[@"game_type"] = jsonValue([h getGameType], 0);
         out[@"format"] = jsonValue([h getFormat], 0);
-        out[@"selected_deck"] = jsonValue([h getSelectedDeck], 0);
+        id selected = [h getSelectedDeck];
+        out[@"selected_deck"] = jsonValue(selected, 0);
+        // getSelectedDeck is an ID, not a MirrorDeck. Only menu polling needs
+        // the collection lookup; normal board reads must remain lightweight.
+        id lookupId = requestedDeck ?: selected;
+        if ((argc == 2 || deckLookup) && [lookupId isKindOfClass:[NSNumber class]]) {
+            id decks = [h getDecks];
+            if ([decks isKindOfClass:[NSArray class]] && [decks count] <= 1000) {
+                for (id deck in decks) {
+                    if (![NSStringFromClass([deck class]) isEqualToString:@"MirrorDeck"]) continue;
+                    id deckId = [deck valueForKey:@"id"];
+                    if ([deckId isEqual:lookupId]) {
+                        out[deckLookup ? @"deck_details" : @"selected_deck_details"] = @{@"id": deckId,
+                            @"cards": jsonValue([deck valueForKey:@"cards"], 0)};
+                        break;
+                    }
+                }
+            }
+        }
         out[@"popup"] = @([h isPopupShowing]);
         out[@"game_menu"] = @([h isGameMenuVisible]);
         out[@"shop_open"] = @([h isShopOpen]);

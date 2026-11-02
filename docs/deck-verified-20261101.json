@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-01",
+  "source": "HearthMirror.getDecks, exact previously selected Practice deck ID",
+  "cards": {
+    "TLC_451": 2,
+    "BE_726": 2,
+    "CORE_UNG_205": 2,
+    "CATA_210": 2,
+    "TLC_603": 2,
+    "BE_094": 2,
+    "TIME_026": 2,
+    "BE_085": 2,
+    "CORE_SCH_713": 2,
+    "TIME_025": 2,
+    "BE_729": 2,
+    "CAP_405": 1,
+    "EDR_856": 1,
+    "BE_086": 2,
+    "BE_728": 1,
+    "TIME_029": 2,
+    "BE_090": 1
+  },
+  "matches_reference": true,
+  "total": 30
+}

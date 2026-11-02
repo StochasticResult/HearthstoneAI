@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from input_command import input_command
+from deck_observation import save_selected_deck
 from game_watchdog import GAME_EXEC, processes
 from navigation import FRAMEWORK, Stop as SupervisorError, next_navigation, read_json_line, stop_child
 
@@ -201,11 +202,18 @@ def run(config, parent_pid):
         guard_event(json.dumps(armed).encode(), "游戏守护")
         if armed.get("watchdog") != "armed":
             raise SessionError("游戏资源保护启动失败")
+        reconnect_args = []
+        for previous in sorted(dest.parent.glob("run-*"), reverse=True):
+            if previous != dest and previous.is_dir() and not previous.is_symlink() and (previous / "Power.log").is_file():
+                reconnect_args.extend(["--reconnect-evidence", str(previous / "Power.log")])
+            if len(reconnect_args) == 8:
+                break
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
             "--log", str(dest / "actions.log"), "--timeout", "430", "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", "/usr/bin/nice", "-n", "10", sys.executable,
             str(ROOT / "state-bridge/practice_driver.py"), "--new-session", "--evidence", str(dest / "Power.log"),
-            "--watchdog-pid", str(watchdog.pid), "--seconds", "300", "--max-actions", "80", "--openai-config-stdin"],
+            "--deck-snapshot", str(dest / "selected-deck.json"),
+            "--watchdog-pid", str(watchdog.pid), "--seconds", "300", "--max-actions", "80", "--openai-config-stdin"] + reconnect_args,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         driver.stdin.write((json.dumps(config) + "\n").encode())
         driver.stdin.close()
@@ -254,6 +262,8 @@ def run(config, parent_pid):
             if not in_game:
                 status = read_status()
                 if status:
+                    if save_selected_deck(status, dest / "selected-deck.json"):
+                        emit("已从选牌菜单读取完整 30 张牌表")
                     scene = status.get("scene") or {}
                     summary = {k: scene.get(k) for k in ("mode", "sceneLoaded", "transitioning")}
                     if summary != previous_scene:
@@ -300,7 +310,11 @@ def run(config, parent_pid):
         if tail:
             tail.close()
         lock.close()
-        emit("已停止：子进程已回收，设置恢复结果见上方记录", stopped=True)
+        if watchdog is not None and processes(GAME_EXEC):
+            emit("AI 已停止，但炉石进程仍在运行，关闭尚未确认", stopped=True, game_closed=False, error=True)
+        else:
+            emit("已停止：子进程已回收，设置恢复结果见上方记录", stopped=True,
+                 game_closed=True if watchdog is not None else None)
 
 
 def main():

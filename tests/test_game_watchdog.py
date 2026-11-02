@@ -1,6 +1,8 @@
 """Watchdog deadline test against a disposable child, not the game."""
 import subprocess
 import tempfile
+import time
+import json
 from pathlib import Path
 from game_watchdog import change_fps, memory_free_percentage
 
@@ -34,3 +36,27 @@ finally:
     if child.poll() is None:
         child.terminate()
         child.wait(timeout=3)
+
+# A stubborn disposable child keeps cleanup in progress when a second stop
+# arrives, reproducing the native-app/session double-termination race.
+child = subprocess.Popen(["/bin/sh", "-c", "trap '' TERM; exec /bin/sleep 15"])
+guard_proc = None
+try:
+    guard_proc = subprocess.Popen(["/usr/bin/python3", str(guard), "--expected", "/bin/sleep",
+        "--claim-pid", str(child.pid), "--startup-seconds", "3", "--run-seconds", "10"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert json.loads(guard_proc.stdout.readline())["watchdog"] == "armed"
+    assert json.loads(guard_proc.stdout.readline())["claimed_pid"] == child.pid
+    guard_proc.terminate()
+    time.sleep(.15)
+    guard_proc.terminate()
+    output, _ = guard_proc.communicate(timeout=7)
+    child.wait(timeout=2)
+    assert child.returncode != 0
+    assert '"watchdog_result": "interrupted"' in output
+    print("PASS repeated stop cannot interrupt claimed-child cleanup")
+finally:
+    if guard_proc and guard_proc.poll() is None:
+        guard_proc.kill(); guard_proc.wait(timeout=2)
+    if child.poll() is None:
+        child.kill(); child.wait(timeout=2)

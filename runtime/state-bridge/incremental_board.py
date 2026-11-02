@@ -55,6 +55,7 @@ class IncrementalBoard:
         self.visual_turn = None
         self.visual_game_entity = False
         self.options_line = None
+        self.confirming_choice = None
 
     def invalidate(self, why):
         self.game = None
@@ -138,6 +139,7 @@ class IncrementalBoard:
                 self.options_line = None
             self.choices = {}
             self.choice = None
+            self.confirming_choice = None
             self.visual_step = None
             self.visual_turn = None
             self.visual_game_entity = False
@@ -177,8 +179,16 @@ class IncrementalBoard:
             head = re.match(r"^id=(\d+)\s+Player=.*?\bChoiceType=(\S+)", message)
             if head:
                 cid = int(head.group(1))
+                actor_match = board.EC_HEAD_RE.match(line)
+                actor_id = game["names"].get(actor_match.group(2)) if actor_match else None
+                actor = game["entities"].get(actor_id, {})
+                owner = actor.get("controller") if actor and board._ctype(actor) == "PLAYER" else None
+                counts = re.search(r"\bCountMin=(\d+) CountMax=(\d+)", message)
                 self.choice = {"id": cid, "type": head.group(2), "source": None, "source_card_id": "",
-                               "items": [], "shown": False, "sent": False}
+                               "items": [], "shown": False, "sent": False, "owner": owner,
+                               "count_min": int(counts.group(1)) if counts else None,
+                               "count_max": int(counts.group(2)) if counts else None,
+                               "confirmed": False, "chosen_ids": []}
                 self.choices[cid] = self.choice
             elif self.choice is not None and message.startswith("Source="):
                 ref = message[7:]
@@ -217,7 +227,34 @@ class IncrementalBoard:
             game["meta"][mm.group(1)] = mm.group(2)
             return
         if "GameState.DebugPrintEntitiesChosen() -" in line:
+            chosen_head = board.EC_CHOSEN_HEAD_RE.match(line)
+            if chosen_head:
+                cid, count = int(chosen_head.group(1)), int(chosen_head.group(3))
+                self.confirming_choice = (cid, count) if cid in self.choices and 0 <= count <= 5 else None
+                if self.confirming_choice and count == 0 and self.choices[cid]["type"] == "MULLIGAN":
+                    self.choices[cid].update(confirmed=True, sent=True, chosen_ids=[])
+                    self.confirming_choice = None
+            elif self.confirming_choice:
+                chosen_item = board.CHOSEN_ENT_RE.match(line)
+                if chosen_item:
+                    cid, count = self.confirming_choice
+                    eid = board._ref_id("[" + chosen_item.group(1) + "]")
+                    chosen = self.choices[cid]
+                    if eid in {x["id"] for x in chosen["items"]} and eid not in chosen["chosen_ids"]:
+                        chosen["chosen_ids"].append(eid)
+                    if len(chosen["chosen_ids"]) == count:
+                        chosen["confirmed"] = True
+                        chosen["sent"] = True
+                        self.confirming_choice = None
             board._handle_entities_chosen(game, line)
+            # The upstream event renderer can remain in its opening gate after
+            # a mid-game reconnect. Our independently parsed server reply still
+            # resolves this exact choice; do not leave its stale renderer flag
+            # blocking every subsequent action. Other choices stay untouched.
+            legacy_choice = game.get("ec_choice")
+            if legacy_choice and self.choices.get(legacy_choice["id"], {}).get("confirmed") is True:
+                game["ec_choice"] = None
+                game["ec_confirm"] = None
             return
         if payload is None:
             return
@@ -240,7 +277,9 @@ class IncrementalBoard:
         if self.game is None or self.blocked or self.partial:
             raise UnsafeState("game state not ready for a choice")
         pending = [c for c in self.choices.values() if not c["sent"] and c["items"] and
-                   {item["owner"] for item in c["items"] if item["owner"] is not None} == {own_player_id}]
+                   (c.get("owner") == own_player_id or
+                    (c.get("owner") is None and c["type"] != "TARGET" and
+                     {item["owner"] for item in c["items"] if item["owner"] is not None} == {own_player_id}))]
         if len(pending) > 1:
             raise UnsafeState("multiple pending own choices")
         if not pending:
@@ -267,8 +306,10 @@ class IncrementalBoard:
         if self.partial:
             raise UnsafeState("incomplete trailing log line")
         choice = self.pending_choice(own_player_id) if choice_id is not None else None
-        choosing = bool(choice and choice["id"] == choice_id and choice["type"] == "GENERAL"
-                        and choice["shown"] and len(choice["items"]) in (3, 4))
+        choosing_cards = bool(choice and choice["type"] == "GENERAL" and choice["shown"] and len(choice["items"]) in (3, 4))
+        choosing_target = bool(choice and choice["type"] == "TARGET" and choice.get("owner") == own_player_id
+                               and choice.get("count_min") == choice.get("count_max") == 1 and 1 <= len(choice["items"]) <= 14)
+        choosing = bool(choice and choice["id"] == choice_id and (choosing_cards or choosing_target))
         if choice_id is not None and not choosing:
             raise UnsafeState("requested choice is not currently visible")
         if not choosing and (game["blocks"] or game.get("ec_choice") or game.get("ec_confirm")):
@@ -430,7 +471,7 @@ class IncrementalBoard:
             and board._ctype(e) in ("MINION", "SPELL")
             and not board._tag_int(e, "CREATOR") and not board._tag_int(e, "COPIED_FROM_ENTITY_ID")]
         return {
-            "phase": "choose_one" if choosing else "main",
+            "phase": "target" if choosing_target else "choose_one" if choosing else "main",
             "format": game["meta"].get("FormatType"), "game_type": game["meta"].get("GameType"),
             # EXHAUSTED alone does not prove attack readiness, and ritual timing is
             # not yet reconstructed. Consumers must not promote this to live play.

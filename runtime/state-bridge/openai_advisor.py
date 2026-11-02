@@ -352,6 +352,35 @@ class OpenAIAdvisor:
                     confirmed_choices=[c for c in self.choice_history[-6:] if c["source_id"] == choice.get("source")])
         return self.select(view, menu)["index"]
 
+    def target(self, choice, state):
+        # Ritual of C'Thun has exactly one targeted ability: Glare. The
+        # source and TARGET list are explicitly observed in the real log.
+        # Other effects need their own verified target semantics.
+        if (state.get("phase") != "target" or choice.get("type") != "TARGET"
+                or choice.get("source_card_id") != "BE_726"
+                or choice.get("count_min") != 1 or choice.get("count_max") != 1):
+            raise AdvisorError("Unsupported or unconfirmed target effect")
+        available = {c["id"]:c for c in state["enemy_board"] if c["health"] > 0}
+        targets = [item["id"] for item in choice["items"]
+                   if item["id"] in available and item["card_id"] == available[item["id"]]["card_id"]]
+        if len(targets) != len(choice["items"]) or len(set(targets)) != len(targets) or not targets:
+            raise AdvisorError("Target list is not an exact public enemy-minion list")
+        menu = {"t%d" % i: {"kind":"choose_target", "target_id":eid} for i,eid in enumerate(targets)}
+        view = self.view(state)
+        view["target_effect"] = {"card_id":"BE_013t3", "card":card_definition("BE_013t3"),
+                                 "basis":"only targeted ability of the observed Ritual of C'Thun"}
+        if len(menu) == 1:
+            self.decision_seq += 1
+            action = next(iter(menu.values()))
+            self.record({"event":"proposed", "observation":view, "actions":menu, "action":action,
+                         "reason":"only eligible target in the observed TARGET choice"})
+            print(json.dumps({"automatic_action":"choose_target", "target_id":action["target_id"]}),flush=True)
+            return action
+        return self.select(view,menu)
+
+    def confirm_target(self, action):
+        self.record({"event":"confirmed_target", "action":action})
+
     def confirm(self, action, state):
         self.record({"event": "confirmed", "action": action})
         source = next((x for x in state.get("my_hand", []) + state.get("my_board", [])

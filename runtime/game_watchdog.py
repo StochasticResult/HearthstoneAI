@@ -94,6 +94,9 @@ def main():
         parser.error("only the game executable may be discovered automatically")
 
     def interrupted(signum, _frame):
+        # Native termination and the session's cleanup can both signal us.
+        # A second signal must not interrupt closing the exact claimed game.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise RuntimeError("watchdog interrupted by signal %d" % signum)
 
     signal.signal(signal.SIGTERM, interrupted)
@@ -180,6 +183,8 @@ def main():
                     break
             time.sleep(1)
     finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             # A parent can exit in the short interval after launch but before
             # the first sampling tick. Preflight proved no game was running;

@@ -30,7 +30,7 @@ def consume_request(data):
 def run_evaluation(config, root, data, parent_pid, emit, stop_child):
     from session import lock_session, drain_guards
     lock = lock_session()
-    guard = None
+    guard = caffeine = None
     def stop(_signum, _frame):
         raise RuntimeError("棋力测试已停止")
     signal.signal(signal.SIGTERM, stop)
@@ -39,6 +39,8 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child):
         dest = data / "evaluation"
         dest.mkdir(mode=0o700, parents=True, exist_ok=True)
         emit("正在运行固定局面棋力评测：最多 16 次 API 请求，不启动炉石、不发送游戏输入")
+        caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-t", "320", "-w", str(os.getpid())],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         guard = subprocess.Popen([sys.executable, str(root / "resource_guard.py"),
             "--log", str(dest / "evaluation.log"), "--timeout", "300", "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", sys.executable,
@@ -68,5 +70,6 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         stop_child(guard)
+        stop_child(caffeine)
         lock.close()
         emit("棋力评测进程已回收", stopped=True)

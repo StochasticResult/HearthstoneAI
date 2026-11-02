@@ -51,5 +51,8 @@ def result_dismissal(status, outcome):
             or status.get('popup') or status.get('shop_open') or status.get('game_menu')):
         return None
     if scene.get('mode') == 4 and not status.get('mulligan_waiting'):
-        return (735,710)  # End-game screen's click-to-continue area.
+        # Calibrated from the actual 1470x846 window at screen y=33:
+        # the bottom "点击继续" label is around window y=812, screen y=845.
+        # The old y=710 missed the ranked promotion overlay.
+        return (735,845)
     return None

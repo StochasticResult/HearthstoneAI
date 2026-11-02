@@ -38,7 +38,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_no_result_click_for_an_unfinished_covered_or_new_game(self):
         status={'scene':{'mode':4,'sceneLoaded':True,'transitioning':False}}
-        self.assertEqual(result_dismissal(status,'WON'),(735,710))
+        self.assertEqual(result_dismissal(status,'WON'),(735,845))
         with self.assertRaises(Stop):result_dismissal(status,'INCOMPLETE')
         for change in ({'popup':True},{'shop_open':True},{'game_menu':True},{'mulligan_waiting':True}):
             self.assertIsNone(result_dismissal({**status,**change},'WON'))

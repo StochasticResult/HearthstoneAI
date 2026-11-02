@@ -404,12 +404,13 @@ class OpenAIAdvisor:
             model = event.get('model')
             if isinstance(model, str) and model[:160] not in self.summary['models']:
                 self.summary['models'] = (self.summary['models'] + [model[:160]])[-4:]
-        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target', 'expired_without_submission'):
+        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target', 'expired_without_submission', 'superseded_by_client_choice'):
             pending = self.summary['unconfirmed_decisions']
             if self.decision_seq in pending:
                 pending.remove(self.decision_seq)
-                count = 'expired_decisions' if kind == 'expired_without_submission' else 'confirmed_decisions'
-                self.summary[count] += 1
+                count = {'expired_without_submission':'expired_decisions',
+                         'superseded_by_client_choice':'external_choices'}.get(kind,'confirmed_decisions')
+                self.summary[count] = self.summary.get(count,0) + 1
         elif kind == 'mulligan_confirmed':
             self.summary['mulligan_confirmed'] = True
             self.summary['game_type'] = event.get('game_type', self.summary['game_type'])
@@ -616,8 +617,10 @@ class OpenAIAdvisor:
 
     def confirm_choice(self, choice, index):
         self.record({"event": "confirmed_choice", "card_id": choice["items"][index]["card_id"]})
-        self.choice_history.append({"source_id": choice.get("source"),
-                                   "card_id": choice["items"][index]["card_id"]})
+        self.remember_choice(choice, choice["items"][index]["card_id"])
+
+    def remember_choice(self, choice, card_id):
+        self.choice_history.append({"source_id": choice.get("source"), "card_id": card_id})
         self.choice_history = self.choice_history[-6:]
 
     def close(self):

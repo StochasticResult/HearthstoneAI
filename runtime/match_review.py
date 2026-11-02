@@ -25,6 +25,25 @@ def rows(path, limit):
     return result
 
 
+def held_result(dest, outcomes):
+    paths = [dest/'held-result.json',dest/'log-cursor.json']
+    if any(not p.is_file() or p.is_symlink() or p.stat().st_size > 2048 for p in paths):
+        return None
+    try:
+        held,cursor = (json.loads(p.read_bytes()) for p in paths)
+        if (not isinstance(held,dict) or not isinstance(cursor,dict)
+                or held.get('method') != 'verified_player_terminal' or held.get('run') != dest.name
+                or held.get('outcome') not in ('WON','LOST','TIED') or any(r != held['outcome'] for r in outcomes)
+                or any(type(held.get(k)) is not int or held[k] != cursor.get(k) for k in ('device','inode','start_offset'))
+                or type(held.get('end_offset')) is not int or not held['start_offset'] <= cursor['offset'] <= held['end_offset']
+                or type(held.get('owner')) is not int or held['owner'] not in (1,2)
+                or cursor.get('verified_owner',held['owner']) != held['owner']):
+            return None
+        return held
+    except (OSError,ValueError,TypeError,KeyError):
+        return None
+
+
 def summarize(dest):
     decisions = rows(dest / 'decisions.jsonl', 2 * 1024 * 1024)
     actions = rows(dest / 'actions.log', 4 * 1024 * 1024) + rows(dest / 'actions-tail.log', 64 * 1024)
@@ -33,7 +52,8 @@ def summarize(dest):
     confirmed = {r.get('decision_id') for r in decisions
                  if r.get('event') in ('confirmed', 'confirmed_choice', 'confirmed_target')}
     expired = {r.get('decision_id') for r in decisions if r.get('event') == 'expired_without_submission'}
-    resolved = confirmed | expired
+    external = {r.get('decision_id') for r in decisions if r.get('event') == 'superseded_by_client_choice'}
+    resolved = confirmed | expired | external
     pending = [r for r in proposed if r.get('decision_id') not in resolved]
     outcomes = [r['game_result'] for r in actions if r.get('game_result') in ('WON', 'LOST', 'TIED')]
     outcome = outcomes[-1] if len(set(outcomes)) == 1 else 'INCOMPLETE'
@@ -71,7 +91,7 @@ def summarize(dest):
                'api_responses': len(timings), 'api_tokens': sum(r.get('tokens', 0) for r in proposed),
                'median_decision_ms': statistics.median(timings) if timings else None,
                'confirmed_decisions': len(confirmed),
-               'expired_decisions': len(expired),
+               'expired_decisions': len(expired), 'external_choices': len(external),
                'unconfirmed_decisions': [r.get('decision_id') for r in pending],
                'local_calculations': sum(bool(r.get('local_rule')) for r in proposed),
                'resources': metrics, 'guard_stop_reasons': stops,
@@ -99,6 +119,7 @@ def summarize(dest):
             raise ValueError('Decision summary exceeds its bound')
         compact = json.loads(compact_path.read_text())
         summary['expired_decisions'] = compact.get('expired_decisions', len(expired))
+        summary['external_choices'] = compact.get('external_choices', len(external))
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
                     'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):
@@ -112,8 +133,30 @@ def summarize(dest):
         pending = [r for r in proposed if r.get('decision_id') in compact['unconfirmed_decisions']]
     # Proposed actions may have failed to execute; this is a review queue, not
     # an assertion that every selected decision was bad chess/card play.
+    if summary.get('game_type') == 'GT_RANKED':
+        held = held_result(dest,outcomes)
+        if held and summary['outcome'] in ('INCOMPLETE',held['outcome']):
+            summary.update(outcome=held['outcome'],result_after_ai_fault=True,needs_review=True)
+            # A replay of an older run can resolve a pending recommendation
+            # without altering the original worker's audit or its compact counters.
+            expiry = held.get('replayed_choice') or {}
+            for row in pending:
+                obs = row.get('observation',{})
+                if (expiry.get('event') == 'expired_without_submission'
+                        and row.get('decision_id') == expiry.get('decision_id')
+                        and row.get('action') == {'index':expiry.get('proposed_index')}
+                        and obs.get('source_card') == expiry.get('source_card')
+                        and obs.get('game_turn') == expiry.get('game_turn')
+                        and [c.get('card_id') for c in obs.get('choices',[])] == expiry.get('offered_cards')
+                        and row['decision_id'] in summary['unconfirmed_decisions']):
+                    summary['unconfirmed_decisions'].remove(row['decision_id'])
+                    summary['expired_decisions'] += 1
+                    pending = [r for r in pending if r is not row]
+                    break
     outcome = summary['outcome']
-    samples = pending[-1:] if pending else proposed[-1:] if outcome == 'LOST' and not summary.get('diagnostics_capped') else []
+    samples = pending[-1:]
+    if not samples and outcome == 'LOST' and not summary.get('diagnostics_capped'):
+        samples = [r for r in proposed if r.get('decision_id') in confirmed][-1:]
     review_cases = [{'run': dest.name, 'outcome': outcome, 'status': 'awaiting_review',
                     'reason_for_review': 'unconfirmed_input' if pending else 'lost_game_final_decision',
                     'decision': {k: r[k] for k in ('decision_id', 'observation', 'actions', 'action', 'reason', 'model') if k in r}}

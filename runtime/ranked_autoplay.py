@@ -28,6 +28,8 @@ def stop_reason(review):
         return 'incomplete_game'
     if review.get('game_type') != 'GT_RANKED':
         return 'ranked_result_not_verified'
+    if review.get('result_after_ai_fault'):
+        return 'ai_fault_during_match'
     retained = (review.get('game_preserved') is True and review.get('match_workers_closed') is True
                 and type(review.get('game_pid')) is int and review['game_pid'] > 0)
     if review.get('game_closed') is not True and not retained:

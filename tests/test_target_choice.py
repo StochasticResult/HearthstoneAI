@@ -1,10 +1,10 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from incremental_board import IncrementalBoard, UnsafeState
 from openai_advisor import OpenAIAdvisor, AdvisorError, action_menu
-from practice_driver import Driver, Stop
+from practice_driver import Driver, Stop, SupersededChoice
 from test_incremental_board import fixture, power
 from test_openai_advisor import response
 
@@ -99,6 +99,7 @@ class TargetChoiceTests(unittest.TestCase):
         p=target_fixture(); ch=p.pending_choice(1)
         s=p.snapshot(1,allow_practice=True,extended=True,choice_id=5)
         driver=Driver.__new__(Driver);driver.parser=p;driver.poll=lambda:None
+        driver.owner=1;driver.identity_game=p.game;driver.advisor=Mock()
         driver.revalidate_target=lambda *args:None
         return driver,ch,s
 
@@ -136,6 +137,7 @@ class TargetChoiceTests(unittest.TestCase):
     def test_matching_confirmed_target_requires_no_more_input(self):
         driver,ch,s=self.target_driver()
         driver.parser.choices[5].update(confirmed=True, chosen_ids=[40])
-        with patch('practice_driver.click') as click:
+        with patch('practice_driver.click') as click,self.assertRaises(SupersededChoice):
             driver.execute_target(1,ch,s,{'kind':'choose_target','target_id':40})
-            click.assert_not_called()
+        click.assert_not_called()
+        self.assertEqual(driver.advisor.record.call_args.args[0]['event'],'expired_without_submission')

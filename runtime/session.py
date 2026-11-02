@@ -362,7 +362,13 @@ class PersistentClient:
                     if observer.poll():
                         self.match_at_risk = False
                         emit('已核实本局自然结算，结束故障观察', match_ended_after_fault=True)
-                        return
+                        try:
+                            replay = subprocess.run([sys.executable,str(ROOT/'state-bridge/held_result.py'),
+                                                     str(dest),str(observer.offset)], timeout=8,
+                                                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                            return replay.returncode == 0
+                        except (OSError,subprocess.SubprocessError):
+                            return False
                 except (OSError, ValueError, SupervisorError):
                     observer = None
             if time.monotonic() >= next_scene_read:
@@ -577,6 +583,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
     except SessionCancelled:
         raise
     except Exception:
+        verified_end = False
         if (client and dest and watchdog and watchdog.poll() is None
                 and (not parent_pid or os.getppid() == parent_pid)):
             if not (in_game or queue_attempted):
@@ -585,8 +592,9 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
             if in_game or queue_attempted:
                 client.match_at_risk = True
                 stop_child(driver)
-                client.hold_after_ai_fault(dest, streams, sources, in_game)
-        raise
+                verified_end = client.hold_after_ai_fault(dest, streams, sources, in_game)
+        if not verified_end:
+            raise
     finally:
         # Block repeated stop signals while finally restores settings.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)

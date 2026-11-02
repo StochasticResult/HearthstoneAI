@@ -47,6 +47,10 @@ class ExpiredProposal(Exception):
     """The server advanced past a proposed action with no logged submission."""
 
 
+class SupersededChoice(Exception):
+    """The exact choice was already resolved independently of this decision."""
+
+
 class ClientFatal(Stop):
     pass
 
@@ -292,7 +296,8 @@ class Driver:
         save(self.capture.destination.with_name('log-cursor.json'),
              {'source': str(self.follower.path), 'device': self.follower.identity[0],
               'inode': self.follower.identity[1], 'offset': self.follower.offset,
-              'start_offset': self.start_offset})
+              'start_offset': self.start_offset,
+              'verified_owner': self.owner if self.identity_game is self.parser.game else None})
 
     def close(self):
         try:
@@ -458,8 +463,11 @@ class Driver:
             raise NotReady("practice identity unavailable")
         if self.owner is not None and self.owner != candidate:
             raise Stop("local identity changed")
+        first_identity = self.identity_game is None
         self.owner = candidate
         self.identity_game = self.parser.game
+        if first_identity:
+            self.save_cursor()
         self.advisor.observe_deck(status.get("selected_deck_details", status.get("selected_deck")))
         if self.advisor.starting_deck is None and self.deck_snapshot and self.deck_snapshot.exists():
             if self.deck_snapshot.stat().st_size > 8192:
@@ -555,11 +563,48 @@ class Driver:
         print(json.dumps({"hover_probe": observed}), flush=True)
         raise Stop("could not verify the requested hand card by hover")
 
-    def revalidate_target(self, own, choice, state):
+    def check_choice_receipt(self, own, choice, state, expected_id, clicked):
+        observed = self.parser.choices.get(choice['id'])
+        if (not self.parser.game or self.parser.game is not self.identity_game or self.owner != own
+                or not observed or observed['type'] != choice['type'] or observed['source'] != choice['source']
+                or observed.get('owner') not in (None,own)
+                or [i['id'] for i in observed['items']] != [i['id'] for i in choice['items']]):
+            raise Stop('choice identity changed; no further input was sent')
+        if self.parser.partial or not observed.get('confirmed'):
+            return False
+        selected = observed.get('chosen_ids') or []
+        item = next((i for i in choice['items'] if selected == [i['id']]),None)
+        if item is None:
+            raise Stop('game confirmed a different choice; no further input was sent')
+        if clicked and observed.get('client_submitted'):
+            return self.choice_confirmed(choice['id'], [expected_id])
+        # A server receipt can arrive while the API is thinking, even when its
+        # selection differs from the advice. Never click or credit the stale advice.
+        event = 'superseded_by_client_choice' if observed.get('client_submitted') else 'expired_without_submission'
+        self.advisor.record({'event':event,'choice_id':choice['id'],'game_turn':state.get('game_turn'),
+                             'proposed_entity':expected_id,'observed_entity':item['id'],
+                             'observed_card_id':item.get('card_id'),'reason':'choice already resolved'})
+        if choice['type'] == 'GENERAL':
+            self.advisor.remember_choice(choice,item['card_id'])
+        raise SupersededChoice()
+
+    def refresh_choice(self, own, choice, state, expected_id, clicked=False):
         self.poll()
-        current = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
+        if self.parser.partial:
+            self.wait_until(lambda: not self.parser.partial,4)
+        def receipt():
+            return self.check_choice_receipt(own, choice, state, expected_id, clicked)
+        if receipt():
+            return True
+        if self.parser.choices[choice['id']].get('sent'):
+            self.wait_until(receipt,6)
+            return True
+        current = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice['id'])
         if self.parser.pending_choice(own) != choice or signature(current) != signature(state):
-            raise Stop("target choice or board changed during decision")
+            raise Stop('choice or board changed during decision')
+        return False
+
+    def revalidate_target(self, own, choice, state):
         fresh_status = mirror()
         if fresh_status.get("popup") or fresh_status.get("shop_open") or fresh_status.get("game_menu"):
             raise Stop("target choice is covered by a menu")
@@ -569,21 +614,21 @@ class Driver:
     def execute_target(self, own, choice, state, advice):
         # Reconnect can expose the server choice before the client accepts a
         # click. Retry only the same still-pending target, never a sent choice.
-        cid = choice["id"]
+        target = advice["target_id"]
+        clicked = False
         def confirmed():
-            return self.choice_confirmed(cid, [advice["target_id"]])
+            return self.check_choice_receipt(own,choice,state,target,clicked)
         for attempt in range(3):
-            self.poll()
-            if confirmed():
-                return
-            if self.parser.choices.get(cid, {}).get("sent"):
-                self.wait_until(confirmed, 6)
+            if self.refresh_choice(own,choice,state,target,clicked):
                 return
             self.revalidate_target(own, choice, state)
-            point = target_point(state, advice["target_id"])
+            if self.refresh_choice(own,choice,state,target,clicked):
+                return
+            point = target_point(state, target)
             print(json.dumps({"attempt":"choose_target", "target_id":advice["target_id"],
                               "point":point, "attempt_number":attempt+1}),flush=True)
             click(point)
+            clicked = True
             try:
                 self.wait_until(confirmed, 4)
                 return
@@ -598,6 +643,19 @@ class Driver:
         if observed.get("chosen_ids") != expected:
             raise Stop("game confirmed a different choice; no further input was sent")
         return True
+
+    def execute_discover(self, own, choice, state, index):
+        selected = choice['items'][index]['id']
+        self.refresh_choice(own,choice,state,selected)
+        status = mirror()
+        if status.get('popup') or status.get('shop_open') or status.get('game_menu'):
+            raise Stop('choice is covered by a menu')
+        xs = [370,735,1090] if len(choice['items']) == 3 else [310,595,880,1160]
+        checked_geometry()
+        self.refresh_choice(own,choice,state,selected)
+        click((xs[index],455))
+        self.wait_until(lambda: self.check_choice_receipt(own,choice,state,selected,True),10)
+        self.advisor.confirm_choice(choice,index)
 
     def execute_end_turn(self, own, state):
         sent_before = self.parser.sent_options
@@ -802,21 +860,9 @@ class Driver:
                 actions += 1
                 time.sleep(5)
                 continue
-            if choice and choice["type"] == "TARGET":
-                target_state = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
-                advice = self.advisor.target(choice, target_state)
-                before_options = self.parser.options_id
-                time.sleep(.4)
-                self.execute_target(own, choice, target_state, advice)
-                self.advisor.confirm_target(advice)
-                print("confirmed target choice", flush=True)
-                actions += 1
-                borrowed_options = before_options
-                awaiting_fresh_options = True
-                time.sleep(1.5)
-                continue
-            if choice and choice["type"] == "GENERAL":
-                if not choice["shown"]:
+            if choice and choice["type"] in ("TARGET","GENERAL"):
+                targeted = choice["type"] == "TARGET"
+                if not targeted and not choice["shown"]:
                     choice_deadline = choice_deadline or (time.monotonic() + 12)
                     if time.monotonic() >= choice_deadline:
                         raise Stop("choice did not become visible")
@@ -824,26 +870,24 @@ class Driver:
                     continue
                 choice_deadline = None
                 choice_state = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
-                index = self.advisor.choose(choice, choice_state)
-                self.poll()
-                current_choice = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
-                if self.parser.pending_choice(own) != choice or signature(current_choice) != signature(choice_state):
-                    raise Stop("choice or board changed during decision")
-                fresh_status = mirror()
-                if fresh_status.get("popup") or fresh_status.get("shop_open") or fresh_status.get("game_menu"):
-                    raise Stop("choice is covered by a menu")
-                xs = [370, 735, 1090] if len(choice["items"]) == 3 else [310, 595, 880, 1160]
-                checked_geometry()
-                before_options = self.parser.options_id
-                click((xs[index], 455))
-                before_id = choice["id"]
-                self.wait_until(lambda: self.choice_confirmed(before_id, [choice["items"][index]["id"]]), 10)
-                self.advisor.confirm_choice(choice, index)
-                print("choice resolved", flush=True)
-                actions += 1
-                borrowed_options = before_options
+                borrowed_options = self.parser.options_id
                 awaiting_fresh_options = True
-                time.sleep(2)
+                try:
+                    if targeted:
+                        advice = self.advisor.target(choice,choice_state)
+                        time.sleep(.4)
+                        self.execute_target(own,choice,choice_state,advice)
+                        self.advisor.confirm_target(advice)
+                        print("confirmed target choice",flush=True)
+                    else:
+                        index = self.advisor.choose(choice,choice_state)
+                        self.execute_discover(own,choice,choice_state,index)
+                        print("choice resolved",flush=True)
+                except SupersededChoice:
+                    print("选择已由游戏结算，读取当前局面继续",flush=True)
+                    continue
+                actions += 1
+                time.sleep(1.5 if targeted else 2)
                 continue
             if waiting_for_first_mana(self.parser, own):
                 first_mana_wait = first_mana_wait or time.monotonic()

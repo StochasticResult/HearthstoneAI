@@ -236,9 +236,11 @@ class IncrementalBoard:
         shown = re.search(r"ChoiceCardMgr\.WaitThenShowChoices\(\) - id=(\d+) BEGIN", line)
         if shown and int(shown.group(1)) in self.choices:
             self.choices[int(shown.group(1))]["shown"] = True
-        sent = re.search(r"GameState\.SendChoices\(\) - id=(\d+) ChoiceType=", line)
+        sent = re.search(r"GameState\.SendChoices\(\) - id=(\d+) ChoiceType=(\w+)", line)
         if sent and int(sent.group(1)) in self.choices:
-            self.choices[int(sent.group(1))]["sent"] = True
+            entry = self.choices[int(sent.group(1))]
+            if entry["type"] == sent.group(2):
+                entry.update(sent=True, client_submitted=True)
         if self._observe_options(line):
             return
         nm = board.PLAYER_NAME_RE.match(line)

@@ -31,15 +31,20 @@ class UnsafeState(Exception):
 
 
 def is_public_objective(entity, played_publicly):
-    """Public countdowns can enter the secret zone without a normal play event."""
+    """Public auras and countdowns can enter the secret zone without a play event."""
     cid = entity.get('cardId')
-    secret = board._num(entity['tags'].get('SECRET'))
-    if cid not in CATALOG or secret not in (None, 0) or is_secret_card(cid):
+    secret_tag = entity['tags'].get('SECRET')
+    secret = board._num(secret_tag)
+    if cid not in CATALOG or (secret_tag is not None and secret != 0) or is_secret_card(cid):
         return False
     if cid in PUBLIC_OBJECTIVES or cid in RITUALS or entity['id'] in played_publicly:
         return True
-    return (secret == 0 and CATALOG[cid].get('type') == 'SPELL'
-            and board._tag_int(entity, 'OBJECTIVE_COUNTDOWN') > 0)
+    if CATALOG[cid].get('type') != 'SPELL':
+        return False
+    if (board._ctype(entity) == 'SPELL'
+            and any(board._tag_int(entity, tag) == 1 for tag in ('OBJECTIVE', 'PALADIN_AURA'))):
+        return True
+    return secret == 0 and board._tag_int(entity, 'OBJECTIVE_COUNTDOWN') > 0
 
 
 def custom_effects(entity):
@@ -597,16 +602,18 @@ class IncrementalBoard:
         power = powers[0] if len(powers) == 1 else None
         enemy_powers = board._of_side(game,rival['controller'],'PLAY','HERO_POWER')
         enemy_power = enemy_powers[0] if len(enemy_powers)==1 else None
-        # Only cards with public play/death evidence or visible board presence.
+        # Only publicly witnessed cards, including active face-up objectives.
         # In particular, never enumerate an opponent's hand/deck IDs, even if
         # a malformed log happens to contain a card name there.
         public_eids = {ev.get("eid") for ev in game["events"] if ev.get("type") in ("play", "death", "secret_trigger")}
         public_eids.update(e["id"] for e in enemy_board+enemy_locations)
+        visible_objectives = {effect['id'] for effect in enemy_objectives}
+        public_eids.update(visible_objectives)
         public_cards = []
         for eid in sorted(e for e in public_eids if isinstance(e, int)):
             e = game["entities"].get(eid)
             if (e and e.get("controller") == rival["controller"] and e.get("cardId")
-                    and e.get("zone") not in ("HAND", "DECK", "SECRET", "SETASIDE")
+                    and (eid in visible_objectives or e.get("zone") not in ("HAND", "DECK", "SECRET", "SETASIDE"))
                     and board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION", "HERO")):
                 public_cards.append({"id": eid, "card_id": e["cardId"],
                     "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))})

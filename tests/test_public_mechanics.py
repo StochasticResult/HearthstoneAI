@@ -63,6 +63,47 @@ class PublicMechanicsTests(unittest.TestCase):
                 self.assertEqual(state['enemy_known_secrets'], [])
                 self.assertFalse(state['enemy_active_rituals'])
 
+    def test_revealed_paladin_auras_are_visible_while_a_real_secret_stays_hidden(self):
+        # Two publicly revealed spells from run-20261102-125558 share the secret zone.
+        p = self.parser(entity(49, '', 'SPELL', 2, 'HAND'))
+        p.feed(power('SHOW_ENTITY - Updating Entity=49 CardID=END_011').encode())
+        for tag, value in [('OBJECTIVE', 1), ('PALADIN_AURA', 1), ('QUEST_PROGRESS_TOTAL', 3),
+                           ('QUEST_PROGRESS', 1), ('ZONE', 'SECRET')]:
+            p.feed(power(f'TAG_CHANGE Entity=49 tag={tag} value={value}').encode())
+        p.feed(entity(52, 'JAIL_327', 'SPELL', 2, 'SECRET', PALADIN_AURA=1,
+                      QUEST_PROGRESS_TOTAL=3, CREATOR=77))
+        p.feed(entity(48, 'EX1_287', 'SPELL', 2, 'SECRET', SECRET=1, OBJECTIVE=1))
+        state = p.snapshot(1, extended=True)
+        view = OpenAIAdvisor({'api_key':'offline-test-placeholder'}).view(state)
+        self.assertEqual(view['enemy_secret_ids'], [48])
+        self.assertEqual(view['enemy_known_secrets'], [])
+        self.assertNotIn('EX1_287', json.dumps(view))
+        self.assertEqual([(e['card_id'], e['quest_progress_total']) for e in view['enemy_objectives']],
+                         [('END_011', 3), ('JAIL_327', 3)])
+        self.assertEqual(view['enemy_objectives'][0]['quest_progress'], 1)
+        self.assertEqual(view['enemy_active_rituals'], [])
+        for cid in ('END_011', 'JAIL_327'):
+            self.assertEqual(view['card_definitions'][cid]['text'], CATALOG[cid]['text'])
+        public = {e['id']: e['generated'] for e in view['opponent_public_cards']}
+        self.assertFalse(public[49])
+        self.assertTrue(public[52])
+        self.assertNotIn(48, public)
+
+    def test_public_objective_markers_require_consistent_spell_identity(self):
+        for cid, ctype, tags, public in (
+                ('END_011', 'SPELL', {'OBJECTIVE':1}, True),
+                ('JAIL_327', 'SPELL', {'PALADIN_AURA':1}, True),
+                ('JAIL_327', 'SPELL', {'QUEST_PROGRESS_TOTAL':3, 'SECRET':0}, False),
+                ('JAIL_327', 'SPELL', {'PALADIN_AURA':1, 'SECRET':1}, False),
+                ('JAIL_327', 'SPELL', {'OBJECTIVE':1, 'SECRET':'invalid'}, False),
+                ('END_011', 'MINION', {'OBJECTIVE':1}, False),
+                ('EX1_287', 'SPELL', {'OBJECTIVE':1}, False),
+                ('', 'SPELL', {'PALADIN_AURA':1}, False)):
+            with self.subTest(cid=cid, ctype=ctype, tags=tags):
+                state = self.parser(entity(47, cid, ctype, 2, 'SECRET', **tags)).snapshot(1, extended=True)
+                self.assertEqual([c['id'] for c in state['enemy_objectives']], [47] if public else [])
+                self.assertEqual(state['enemy_secret_ids'], [] if public else [47])
+
     def test_real_zero_attack_weapon_uses_observed_health_and_damage(self):
         p=self.parser(entity(27,'BE_227','WEAPON',2,HEALTH=3,DAMAGE=1))
         w=p.snapshot(1,extended=True)['enemy_weapon']

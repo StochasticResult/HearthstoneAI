@@ -39,7 +39,7 @@
       "Platysaur's drawn card can be discarded on its death. Use the tracked card before sacrificing Platysaur when beneficial. Do not trade an egg just to hatch it if its next growth or resilience is worth more.",
       "Continuity and Timehopper shuffle Shreds that deal 3 self-damage when drawn. Velocidrake needs a Shred and two free board slots for both bodies; Rush cannot hit the hero on the summon turn. Do not assume a Shred remains on incomplete history.",
       "Rituals are delayed. Use observed countdown only; reserve board slots when Summoning is about to resolve. Kith'ix requires a completed Ritual, not merely one cast. Missing progress is unknown.",
-      "Kazakus choices form ONE trial: choose complementary components and timing with survival, mana and board space in mind. Zero-cost four-turn delay is not free immediate tempo. C'Thun choice must compare immediate lethal, recovery, taunts and refill using the full current board."
+      "Kazakus takes three choices to build one trial. After paying for him, check the live costs against the base costs of 7 for immediate effects, 4 for next turn and 0 for four turns. If only delayed effects fit, take attacks you already intend before opening the choices. Match both effects to survival and board space. For C'Thun compare lethal, healing, taunts and refill."
     ]
   },
   "matchups": [

@@ -109,7 +109,7 @@ class RankedAutoplayTests(unittest.TestCase):
     def test_resources_wait_then_resume_without_starting_or_interrupting_a_game(self):
         with tempfile.TemporaryDirectory() as tmp:
             data=Path(tmp);order=[]
-            samples=[{'ready':False,'reasons':['swap growth threshold']},
+            samples=[{'ready':False,'reasons':['observing current paging']},
                      {'ready':True,'reasons':[]}, {'ready':False,'reasons':['disk reserve']},
                      {'ready':True,'reasons':[]}]
             def play(*args, **kwargs):
@@ -123,6 +123,8 @@ class RankedAutoplayTests(unittest.TestCase):
             self.assertEqual(order,['cleanup','wait','game','wait','cleanup','wait','game'])
             self.assertEqual(state['completed_games'],2)
             self.assertTrue(all(c.args == (self.baseline,) for c in ready.call_args_list))
+            self.assertEqual([c.kwargs['previous'] for c in ready.call_args_list],
+                             [None,samples[0],None,samples[2]])
 
     def test_user_can_stop_resource_wait_without_launching_game(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,7 +9,7 @@ import math
 
 from match_review import save
 from resource_guard import swap_used, MIB
-from maintenance import cleanup, readiness
+from maintenance import cleanup, readiness, RESOURCE_CHECK_SECONDS, WAIT_LABELS
 from navigation import stop_child
 
 
@@ -118,12 +118,14 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         state.update(status='maintenance', maintenance=cleanup(data))
         persist()
         previous_reasons = None
+        previous_sample = None
         while True:
             check_parent()
             if deferred_stop():
                 return False
             if client:client.tick()
-            sample = readiness(baseline)
+            sample = readiness(baseline, previous=previous_sample)
+            previous_sample = sample
             state['resources'] = sample
             if sample['ready']:
                 state.update(status='running', stop_reason=None)
@@ -135,13 +137,14 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             persist()
             reasons = tuple(sample['reasons'])
             if reasons != previous_reasons:
-                emit('已完成局间清理，等待资源恢复：' + '；'.join(reasons),
-                     play_status='等待资源恢复 · 将自动继续', resources=sample)
+                explanation = '、'.join(WAIT_LABELS.get(reason, reason) for reason in reasons)
+                emit('局间等待 · ' + explanation,
+                     play_status=explanation + ' · 将自动续排', resources=sample)
                 previous_reasons = reasons
             # No game, screenshot, focus change, API call or launch retry.
             # SIGTERM is immediate; the deferred-stop file is checked at most
             # 15 seconds later. The process remains idle between samples.
-            pause(15)
+            pause(RESOURCE_CHECK_SECONDS)
 
     def deferred_stop():
         request = read_small(pause_path)

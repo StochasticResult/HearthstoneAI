@@ -9,8 +9,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from maintenance import cleanup, readiness
+from maintenance import cleanup, readiness, swapout_bytes
 from resource_guard import DiagnosticOutput, GIB, MIB
+
+
+@contextlib.contextmanager
+def boundary_readings(*, pressure=1, available=55, disk=12*GIB, thermal=0, ac=True):
+    with patch.multiple('maintenance', battery_status=lambda: (ac, 80),
+                        memory_pressure_level=lambda: pressure,
+                        memory_free_percentage=lambda: available,
+                        swap_used=lambda: 2042.4*MIB, thermal_state=lambda: thermal), \
+         patch('maintenance.shutil.disk_usage', return_value=SimpleNamespace(free=disk)):
+        yield
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -27,15 +37,51 @@ class MaintenanceTests(unittest.TestCase):
             self.assertEqual((outside/'keep').read_text(),'keep')
             self.assertTrue((root/'other-files').exists())
 
-    def test_ready_after_recovery_uses_original_session_swap_baseline(self):
-        with patch('maintenance.battery_status',return_value=(True,80)), \
-             patch('maintenance.memory_pressure_level',return_value=1), \
-             patch('maintenance.memory_free_percentage',return_value=45), \
-             patch('maintenance.thermal_state',return_value=0), \
-             patch('maintenance.shutil.disk_usage',return_value=SimpleNamespace(free=12*GIB)), \
-             patch('maintenance.swap_used',side_effect=[1400*MIB,1031*MIB]):
-            self.assertEqual(readiness(1031*MIB)['reasons'],['swap growth threshold'])
-            self.assertTrue(readiness(1031*MIB)['ready'])
+    def test_observed_healthy_mac_queues_with_original_baseline_and_resident_swap(self):
+        with boundary_readings(), patch('maintenance.swapout_bytes') as activity:
+            sample = readiness(1363.7*MIB)
+        self.assertTrue(sample['ready'])
+        self.assertEqual(sample['swap_growth_mib'], 678.7)
+        activity.assert_not_called()
+
+    def test_warning_waits_for_recent_heavy_page_writes_then_recovers_at_same_swap_total(self):
+        with boundary_readings(pressure=2), \
+             patch('maintenance.swapout_bytes', side_effect=[3*GIB, 3*GIB+128*MIB, 3*GIB+129*MIB]), \
+             patch('maintenance.time.monotonic', side_effect=[100,115,130]):
+            first = readiness(1363.7*MIB)
+            busy = readiness(1363.7*MIB, first)
+            recovered = readiness(1363.7*MIB, busy)
+        self.assertEqual(first['reasons'], ['observing current paging'])
+        self.assertEqual(busy['reasons'], ['active paging under memory pressure'])
+        self.assertEqual(busy['swapout_mib_per_minute'], 512)
+        self.assertTrue(recovered['ready'])
+        self.assertEqual(recovered['swapout_mib_per_minute'], 4)
+        self.assertEqual(recovered['swap_growth_mib'], first['swap_growth_mib'])
+
+    def test_missing_reset_or_stale_page_counters_wait_for_fresh_evidence(self):
+        with boundary_readings(pressure=2), \
+             patch('maintenance.swapout_bytes', side_effect=[ValueError(), 3*GIB, 2*GIB, 2*GIB, 2*GIB]), \
+             patch('maintenance.time.monotonic', side_effect=[15,30,180,195]):
+            sample = readiness(1363.7*MIB)
+            self.assertEqual(sample['reasons'], ['swapout reading unavailable'])
+            for _ in range(3):
+                sample = readiness(1363.7*MIB, sample)
+                self.assertEqual(sample['reasons'], ['observing current paging'])
+            self.assertTrue(readiness(1363.7*MIB, sample)['ready'])
+
+    def test_healthy_paging_never_overrides_resource_protections(self):
+        for conditions in ({'pressure':4}, {'pressure':0}, {'available':19}, {'disk':9*GIB},
+                           {'thermal':1}, {'ac':False}):
+            with self.subTest(conditions=conditions), boundary_readings(**conditions):
+                self.assertFalse(readiness(1363.7*MIB)['ready'])
+
+    def test_vm_stat_uses_reported_page_size_and_only_swapouts(self):
+        report = 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPageouts: 100.\nSwapouts: 1234.\n'
+        with patch('maintenance.subprocess.run', return_value=SimpleNamespace(stdout=report)):
+            self.assertEqual(swapout_bytes(), 1234*16384)
+        with patch('maintenance.subprocess.run', return_value=SimpleNamespace(stdout=report.split('Swapouts')[0])):
+            with self.assertRaises(ValueError):
+                swapout_bytes()
 
     def test_output_cap_retains_start_and_terminal_result(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -58,7 +104,7 @@ class MaintenanceTests(unittest.TestCase):
         import resource_guard as guard
         with tempfile.TemporaryDirectory() as tmp:
             args=['guard','--log',str(Path(tmp)/'actions.log'),'--timeout','0',
-                  '--max-output-mib','1','--defer-maintenance','--',
+                  '--max-output-mib','1','--defer-maintenance','--swap-baseline-mib','600','--',
                   '/usr/bin/python3','-c',
                   'import sys; sys.stdout.write("diagnostic\\n"*300000); print("TERMINAL_RESULT")']
             handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
@@ -111,7 +157,8 @@ class MaintenanceTests(unittest.TestCase):
         handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
         clock=itertools.count()
         try:
-            with patch('sys.argv',['watchdog','--expected','/bin/sleep','--claim-pid','42424','--run-seconds','25']), \
+            with patch('sys.argv',['watchdog','--expected','/bin/sleep','--claim-pid','42424','--run-seconds','25',
+                                   '--swap-baseline-mib','600']), \
                  patch.object(guard,'battery_status',return_value=(True,80)), \
                  patch.object(guard,'swap_used',return_value=1031*MIB), \
                  patch.object(guard,'memory_pressure_level',return_value=2), \

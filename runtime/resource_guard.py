@@ -91,7 +91,7 @@ def memory_stop_reason(current, baseline, pressure, free_pct, maximum=None, grow
         return "critical system memory pressure"
     if free_pct < (10 if defer_maintenance else 20):
         return "system memory availability threshold"
-    if current - baseline > growth and not defer_maintenance:
+    if growth is not None and current - baseline > growth and not defer_maintenance:
         return "swap growth threshold"
     if maximum is not None and current > maximum:
         return "explicit swap total threshold"
@@ -190,7 +190,8 @@ def main():
     p.add_argument("--max-rss-mib", type=int, default=800)
     p.add_argument("--min-free-gib", type=float, default=10)
     p.add_argument("--max-swap-mib", type=int, help="optional explicit total cap; normal operation uses pressure and growth")
-    p.add_argument("--max-swap-growth-mib", type=int, default=256)
+    p.add_argument("--max-swap-growth-mib", type=int,
+                   help="explicit session growth limit; development commands default to 256 MiB")
     p.add_argument("--swap-baseline-mib", type=float, help="shared baseline across all matches in one autoplay session")
     p.add_argument("--max-cpu", type=float, default=160)
     p.add_argument("--max-output-mib", type=int, default=4)
@@ -204,13 +205,18 @@ def main():
         p.error("output limit must be positive")
     if a.swap_baseline_mib is not None and (not math.isfinite(a.swap_baseline_mib) or a.swap_baseline_mib < 0):
         p.error("swap baseline must be finite and nonnegative")
-    if a.max_swap_growth_mib < 0 or (a.max_swap_mib is not None and a.max_swap_mib < 0):
+    if ((a.max_swap_growth_mib is not None and a.max_swap_growth_mib < 0)
+            or (a.max_swap_mib is not None and a.max_swap_mib < 0)):
         p.error("swap limits must be nonnegative")
     disk_path = "/System/Volumes/Data"
     ac, initial_battery = battery_status()
     initial_swap = swap_used()
     swap_baseline = initial_swap if a.swap_baseline_mib is None else a.swap_baseline_mib * MIB
     maximum_swap = None if a.max_swap_mib is None else a.max_swap_mib * MIB
+    growth_limit_mib = a.max_swap_growth_mib
+    if growth_limit_mib is None and not a.defer_maintenance:
+        growth_limit_mib = 256
+    growth_limit = None if growth_limit_mib is None else growth_limit_mib * MIB
     initial = {"free_gib": round(shutil.disk_usage(disk_path).free / GIB, 2),
                "thermal_state": thermal_state(), "ac": ac,
                "battery_pct": initial_battery, "swap_mib": round(initial_swap / MIB, 1),
@@ -218,7 +224,7 @@ def main():
                "swap_baseline_mib": round(swap_baseline / MIB, 1)}
     print(json.dumps({"preflight": initial}), flush=True)
     memory_reason = memory_stop_reason(initial_swap, swap_baseline, initial['memory_pressure_level'],
-                                      initial['memory_free_pct'], maximum_swap, a.max_swap_growth_mib*MIB)
+                                      initial['memory_free_pct'], maximum_swap, growth_limit)
     if initial["free_gib"] < a.min_free_gib or initial["thermal_state"] >= 2 or not ac or memory_reason:
         print("Preflight failed: " + (memory_reason or "insufficient disk, elevated thermal state, or no AC"), file=sys.stderr)
         return 2
@@ -272,10 +278,10 @@ def main():
                     pressure = memory_pressure_level()
                     free_pct = memory_free_percentage()
                     memory_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
-                                                       maximum_swap, a.max_swap_growth_mib*MIB,
+                                                       maximum_swap, growth_limit,
                                                        defer_maintenance=a.defer_maintenance)
                     maintenance_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
-                                                            maximum_swap, a.max_swap_growth_mib*MIB)
+                                                            maximum_swap, growth_limit)
                     if pressure != previous_pressure:
                         print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
                                           'swap_mib': round(used_swap/MIB,1)}), flush=True)

@@ -23,6 +23,52 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def identified_driver(self):
+        driver=Driver.__new__(Driver)
+        driver.parser=IncrementalBoard();driver.parser.feed(fixture())
+        driver.owner=1;driver.identity_game=driver.parser.game
+        driver.board_mismatch_since=driver.board_mismatch_signature=None
+        driver.advisor=Mock();driver.deck_snapshot=None
+        return driver
+
+    def test_opponent_animations_require_no_mirror_but_our_choice_or_turn_does(self):
+        d=self.identified_driver()
+        self.assertFalse(d.waiting_on_opponent())
+        d.parser.feed((power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=0')+
+                       power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1')).encode())
+        self.assertTrue(d.waiting_on_opponent())
+        with patch.object(d.parser,'pending_choice',return_value={'type':'TARGET'}):
+            self.assertFalse(d.waiting_on_opponent())
+        d.identity_game={};self.assertFalse(d.waiting_on_opponent())
+
+    def test_stable_board_mismatch_still_stops_and_changing_boards_reset_timer(self):
+        d=self.identified_driver()
+        d.parser.game['meta']['GameType']='GT_VS_AI'
+        d.parser.game['entities'][1]['tags'].update(TURN='3',STEP='MAIN_ACTION')
+        d.parser.visual_turn='3';d.parser.visual_step='MAIN_ACTION'
+        status={'board':{'friendly':{'boardCards':[{'entityId':90,'cardId':'PUBLIC_CARD','zonePosition':1,
+                                                   'private_field':'must-not-be-logged'}]}}}
+        with patch('practice_driver.practice_identity',side_effect=UnsafeState('boards disagree')), \
+             patch('practice_driver.time.monotonic',side_effect=[10,10,19,19,28]),patch('builtins.print') as output:
+            with self.assertRaises(NotReady):d.identify(status)
+            status['board']['friendly']['boardCards'][0]['entityId']=91
+            with self.assertRaises(NotReady):d.identify(status)
+            with self.assertRaisesRegex(Stop,'tracker board'):d.identify(status)
+        self.assertNotIn('must-not-be-logged',str(output.call_args))
+        d.advisor.ask.assert_not_called()
+
+    def test_passive_enemy_turn_checks_client_without_board_or_input(self):
+        d=self.identified_driver()
+        d.parser.feed((power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=0')+
+                       power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1')).encode())
+        d.poll=Mock();d.game_result=Mock(side_effect=[None,'WON'])
+        with patch('practice_driver.mirror',return_value={}) as observe,patch('practice_driver.click') as click, \
+             patch('practice_driver.time.sleep'),patch('builtins.print'):
+            d.run(0,0)
+        observe.assert_called_once_with(include_board=False)
+        click.assert_not_called();d.advisor.ask.assert_not_called()
+        self.assertEqual(d.poll.call_count,2)
+
     def test_only_input_rejected_before_sending_can_retry_a_brief_focus_handoff(self):
         unfocused = SimpleNamespace(returncode=1, stderr='Hearthstone is not the frontmost app\n', stdout='')
         success = SimpleNamespace(returncode=0, stderr='', stdout='ok\n')
@@ -180,6 +226,7 @@ class DriverTests(unittest.TestCase):
         fresh = dict(changed,options_id=8,legal_options=[],end_turn_allowed=True)
         driver.parser = SimpleNamespace(pending_choice=lambda _own: None,
                                         game={'entities':{50:{'tags':{}}}}, options=[], options_id=7, sent_options=0)
+        driver.identity_game=driver.parser.game;driver.owner=1
         driver.game_result = lambda: None
         driver.identify = lambda _status: 1
         driver.revalidate = Mock()

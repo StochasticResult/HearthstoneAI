@@ -75,8 +75,8 @@ def run_checked(args, timeout=4):
     return result.stdout.strip()
 
 
-def mirror():
-    status = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--board"]))
+def mirror(include_board=True):
+    status = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK] + (["--board"] if include_board else [])))
     scene = status.get("scene") or {}
     if scene.get("mode") == 9:
         raise ClientFatal("Hearthstone client entered FATAL_ERROR")
@@ -271,6 +271,7 @@ class Driver:
         self.owner = None
         self.identity_game = None
         self.board_mismatch_since = None
+        self.board_mismatch_signature = None
         self.deck_snapshot = deck_snapshot
         self.reconnect_evidence = tuple(reconnect_evidence)[:4]
         self.recovered_previous = None
@@ -312,6 +313,28 @@ class Driver:
             return None
         players = [p for p in board._players(self.parser.game) if board._tag_int(p, "PLAYER_ID") == self.owner]
         return board._playstate(players[0]) if len(players) == 1 else "COMPLETE"
+
+    def waiting_on_opponent(self):
+        # Identity was already proved for this exact game. Opponent animations
+        # need no mouse geometry, Mirror process, or model call. Reconcile the
+        # complete board again before our next decision or pending choice.
+        if self.owner not in (1,2) or self.identity_game is not self.parser.game:
+            return False
+        players=board._players(self.parser.game)
+        own=[p for p in players if board._tag_int(p,'PLAYER_ID')==self.owner]
+        other=[p for p in players if board._tag_int(p,'PLAYER_ID')!=self.owner]
+        return (len(own)==len(other)==1 and board._num(own[0]['tags'].get('CURRENT_PLAYER'))==0
+                and board._tag_int(other[0],'CURRENT_PLAYER')==1 and self.parser.pending_choice(self.owner) is None)
+
+    def board_difference(self, status):
+        # A bounded, public-only diagnostic, never the complete Mirror object.
+        from mirror_identity import _log_rows
+        sides=status.get('board') or {}
+        observed={name:[{k:row.get(k) for k in ('entityId','cardId','zonePosition')}
+                         for row in ((sides.get(name) or {}).get('boardCards') or [])[:7]]
+                  for name in ('friendly','opposing')}
+        expected={str(pid):sorted(_log_rows(self.parser.game,pid)) for pid in (1,2)}
+        return {'observed':observed,'expected':expected,'own_player':self.owner}
 
     def revalidate(self, own, old, advice):
         deadline = time.monotonic() + 4
@@ -364,10 +387,17 @@ class Driver:
                 if (not turn or self.parser.visual_turn != turn or step != "MAIN_ACTION"
                         or self.parser.visual_step != "MAIN_ACTION"):
                     self.board_mismatch_since = None
+                    self.board_mismatch_signature = None
                     raise NotReady("waiting for board animation") from error
+                difference=self.board_difference(status)
+                current_signature=signature(difference)
+                if current_signature!=getattr(self,'board_mismatch_signature',None):
+                    self.board_mismatch_signature=current_signature
+                    self.board_mismatch_since=time.monotonic()
                 self.board_mismatch_since = self.board_mismatch_since or time.monotonic()
                 if time.monotonic() - self.board_mismatch_since < 8:
                     raise NotReady("waiting for mirror and log to converge") from error
+                print(json.dumps({'board_mismatch':difference},ensure_ascii=False),flush=True)
                 raise Stop("tracker board and game log disagree") from error
             try:
                 crosschecked = mulligan_identity(self.parser, status, mode=RUN_MODE)
@@ -375,6 +405,7 @@ class Driver:
                 crosschecked = None
         if crosschecked is not None:
             self.board_mismatch_since = None
+            self.board_mismatch_signature = None
         candidate = crosschecked or self.owner
         if candidate not in (1, 2):
             raise NotReady("practice identity unavailable")
@@ -540,6 +571,8 @@ class Driver:
         resolving_since = None
         first_mana_wait = None
         visual_wait_since = None
+        passive_check_at = 0
+        passive_unready_since = None
         while time.monotonic() < deadline and (not max_actions or actions < max_actions):
             self.poll()
             outcome = self.game_result()
@@ -547,6 +580,23 @@ class Driver:
                 self.advisor.record({'event': 'game_complete', 'outcome': outcome})
                 print(json.dumps({"game_result": outcome, "actions": actions}), flush=True)
                 return
+            if self.waiting_on_opponent():
+                now=time.monotonic()
+                if now-passive_check_at>=5:
+                    passive_check_at=now
+                    try:
+                        mirror(include_board=False)  # Detect disconnect/fatal scene without board animation reads.
+                        passive_unready_since=None
+                    except NotReady as error:
+                        passive_unready_since=passive_unready_since or now
+                        if now-passive_unready_since>=20:
+                            raise Stop('opponent-turn client observation did not recover') from error
+                self.board_mismatch_since=self.board_mismatch_signature=None
+                ready_deadline=time.monotonic()+35
+                mirror_wait_started=resolving_since=visual_wait_since=None
+                time.sleep(.7)
+                continue
+            passive_unready_since=None
             try:
                 status = mirror()
                 mirror_wait_started = None

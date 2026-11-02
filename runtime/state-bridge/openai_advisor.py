@@ -424,12 +424,14 @@ class OpenAIAdvisor:
             model = event.get('model')
             if isinstance(model, str) and model[:160] not in self.summary['models']:
                 self.summary['models'] = (self.summary['models'] + [model[:160]])[-4:]
-        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target', 'expired_without_submission', 'superseded_by_client_choice'):
+        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target', 'expired_without_submission',
+                      'superseded_by_client_choice', 'withdrawn_before_input'):
             pending = self.summary['unconfirmed_decisions']
             if self.decision_seq in pending:
                 pending.remove(self.decision_seq)
                 count = {'expired_without_submission':'expired_decisions',
-                         'superseded_by_client_choice':'external_choices'}.get(kind,'confirmed_decisions')
+                         'superseded_by_client_choice':'external_choices',
+                         'withdrawn_before_input':'withdrawn_decisions'}.get(kind,'confirmed_decisions')
                 self.summary[count] = self.summary.get(count,0) + 1
         elif kind == 'api_timeout':
             self.summary['api_timeouts'] = self.summary.get('api_timeouts', 0) + 1

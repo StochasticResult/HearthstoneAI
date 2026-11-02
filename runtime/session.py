@@ -18,6 +18,7 @@ from game_watchdog import GAME_EXEC, processes
 from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
 from game_boundary import FaultedMatchEnd, LogBoundary, result_dismissal
+from ranked_focus import FocusLost, rejected_before_input
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path.home() / "Library/Application Support/HearthstoneAI"
@@ -206,9 +207,13 @@ def focus_hearthstone():
                    check=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def navigation_click(point):
+def navigation_click(point, *, managed=False):
     geometry = subprocess.run(input_command("geometry"),
-                              capture_output=True, text=True, timeout=3, check=True)
+                              capture_output=True, text=True, timeout=3, check=not managed)
+    if managed and geometry.returncode:
+        if geometry.stderr.strip() == 'Could not uniquely locate a visible Hearthstone window':
+            raise FocusLost('炉石窗口暂不可见')
+        geometry.check_returncode()
     frame = json.loads(geometry.stdout)
     if any(abs(float(frame[k]) - v) > 2 for k, v in {"x": 0, "y": 33, "width": 1470, "height": 846}.items()):
         raise SessionError("游戏窗口与已校准的 1470×846 布局不同，已停止操作")
@@ -222,6 +227,8 @@ def navigation_click(point):
         if result.returncode == 0:
             return
         detail = result.stderr.strip()
+        if managed and rejected_before_input(detail):
+            raise FocusLost('炉石失去前台，点击未发送')
         if detail != "Hearthstone is not the frontmost app" or time.monotonic() >= deadline:
             raise SessionError("导航输入失败：" + detail.replace("\n", " ")[:180])
         time.sleep(.15)
@@ -239,6 +246,44 @@ class PersistentClient:
         self.boundary = None
         self.on_match_hold = None
         self.match_at_risk = False
+        self.focus = self.on_foreground_change = None
+        self.last_focus_state = None
+
+    def foreground_ready(self):
+        if self.focus is None:
+            return True
+        if self.pid is None:
+            return False
+        self.focus.bind(self.pid)
+        code = self.focus.state()
+        if code == b'S':
+            raise SessionCancelled('已收到停止指令')
+        if code == b'X':
+            raise SessionError('原炉石进程身份改变')
+        if code != self.last_focus_state:
+            if code in (b'W', b'L', b'F'):
+                attempts = int.from_bytes(os.pread(self.focus.file.fileno(), 4, 5), sys.byteorder)
+                if self.on_foreground_change:
+                    self.on_foreground_change(code, attempts)
+                message = {b'W':'正在自动取回炉石前台', b'L':'等待 Mac 解锁 · 炉石保持运行',
+                           b'F':'炉石已在前台 · 继续自动天梯'}[code]
+                emit(message, play_status=message, game_pid=self.pid, foreground_requests=attempts)
+            self.last_focus_state = code
+        return code == b'F'
+
+    def click_if_ready(self, point):
+        if self.focus is None:
+            navigation_click(point)
+            return True
+        if not self.foreground_ready():
+            return False
+        try:
+            navigation_click(point, managed=True)
+            return True
+        except FocusLost:
+            # No mouse event was posted. The caller must fetch the scene and
+            # validate a new point before trying again.
+            return False
 
     def observe(self, event, source):
         if source == '游戏守护' and type(event.get('claimed_pid')) is int:
@@ -295,6 +340,9 @@ class PersistentClient:
                 raise
             if read_small(DATA/'learning/pause-after-game.json'):
                 raise AfterGameStop()
+            if not self.foreground_ready():
+                time.sleep(.4)
+                continue
             status=read_status()
             if status and (status.get('scene') or {}).get('mode')==9:
                 raise SessionError('炉石客户端在结算时进入错误场景')
@@ -307,9 +355,9 @@ class PersistentClient:
                         return
                 point = next_ranked_navigation(0,status) if mode==3 else result_dismissal(status,self.previous['outcome'])
                 if point and (last_click is None or time.monotonic()-last_click>=5):
-                    navigation_click(point)
-                    last_click=time.monotonic()
-                    emit('正在退出已结束的对局结算',game_pid=self.pid)
+                    if self.click_if_ready(point):
+                        last_click=time.monotonic()
+                        emit('正在退出已结束的对局结算',game_pid=self.pid)
             time.sleep(1)
 
     def driver_log_args(self):
@@ -336,6 +384,8 @@ class PersistentClient:
 
     def hold_after_ai_fault(self, dest, streams, sources, entered_game):
         """Keep the game and its resource guard alive; the failed AI sends no input."""
+        if self.focus is not None:
+            self.focus.bind(0)
         emit('AI 后台暂停，保留当前对局和资源保护，可手动接手',
              play_status='AI 暂停 · 炉石保持运行', game_pid=self.pid, holding_match=True)
         if self.on_match_hold:
@@ -422,6 +472,8 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
     review_summary = None
     streams, sources = {}, {}
     finished = False
+    stopped_before_queue = False
+    from ranked_autoplay import AfterGameStop, read_small
     in_game = queue_attempted = False
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     def interrupted(_signal, _frame):
@@ -469,6 +521,9 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
             if len(reconnect_args) == 8:
                 break
         log_args = client.driver_log_args() if client else ['--new-session']
+        managed_focus = client.focus if client is not None else None
+        if managed_focus is not None:
+            log_args += ['--foreground-lease', managed_focus.file.name]
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
             "--log", str(dest / "actions.log"), "--timeout", "0", "--max-rss-mib", "200", "--max-cpu", "130",
             "--defer-maintenance", "--parent-pid", str(os.getpid())] + baseline_args + ["--", "/usr/bin/nice", "-n", "10", sys.executable,
@@ -532,6 +587,12 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                 break
             if watchdog.poll() is not None:
                 raise SessionError("游戏资源保护已结束运行，原因见上方守护记录")
+            if (client and client.previous and not in_game and not queue_attempted
+                    and read_small(DATA/'learning/pause-after-game.json')):
+                raise AfterGameStop()
+            if managed_focus is not None and managed_focus.target and not client.foreground_ready():
+                time.sleep(.4)
+                continue
             if not in_game:
                 status = read_status()
                 if status:
@@ -549,16 +610,27 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                             next_intro_check = time.monotonic() + 2
                             page = login_intro_page(status, launch_time)
                             if page is not None and page != last_intro_page:
-                                focus_hearthstone()
+                                if managed_focus is None:
+                                    focus_hearthstone()
+                                elif not client.foreground_ready():
+                                    time.sleep(.4)
+                                    continue
                                 if login_intro_page(read_status() or {}, launch_time) == page:
                                     # Empty backdrop, outside the cards and central controls.
-                                    navigation_click((180,155))
+                                    if managed_focus is None:
+                                        navigation_click((180,155))
+                                    elif not client.click_if_ready((180,155)):
+                                        continue
                                     last_intro_page = page
                                     emit('已点按登录展示的空白背景，等待新页面或主菜单')
                         time.sleep(.5)
                         continue
                     launch_time = None
-                    if not focused:
+                    if managed_focus is not None:
+                        if not client.foreground_ready():
+                            time.sleep(.4)
+                            continue
+                    elif not focused:
                         focus_hearthstone()
                         focused = True
                     if scene.get("mode") == 4:
@@ -575,11 +647,22 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                                 queue_attempted = True
                                 if client:
                                     client.match_at_risk = True
-                            navigation_click(point)
+                            if managed_focus is None:
+                                navigation_click(point)
+                            elif not client.click_if_ready(point):
+                                # This particular click definitely never started. Do not
+                                # advance the navigation stage or claim an online match.
+                                if stage == 1:
+                                    queue_attempted = client.match_at_risk = False
+                                time.sleep(.4)
+                                continue
                             stage += 1
                             last_click = time.monotonic()
                             emit("正在进入%s（%d/%d）" % (label, stage, 2 if mode == "ranked" else 6))
             time.sleep(.5)
+    except AfterGameStop:
+        stopped_before_queue = not (in_game or queue_attempted)
+        raise
     except SessionCancelled:
         raise
     except Exception:
@@ -636,7 +719,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
             emit("已停止：子进程已回收，设置恢复结果见上方记录", stopped=True,
                  game_closed=True if watchdog is not None else None)
         try:
-            if dest:
+            if dest and not stopped_before_queue:
                 from match_review import write_review
                 review_summary = write_review(dest, DATA / "learning", game_closed=game_closed,
                     game_preserved=preserved, match_workers_closed=workers_closed,

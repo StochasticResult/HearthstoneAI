@@ -53,7 +53,8 @@ def summarize(dest):
                  if r.get('event') in ('confirmed', 'confirmed_choice', 'confirmed_target')}
     expired = {r.get('decision_id') for r in decisions if r.get('event') == 'expired_without_submission'}
     external = {r.get('decision_id') for r in decisions if r.get('event') == 'superseded_by_client_choice'}
-    resolved = confirmed | expired | external
+    withdrawn = {r.get('decision_id') for r in decisions if r.get('event') == 'withdrawn_before_input'}
+    resolved = confirmed | expired | external | withdrawn
     pending = [r for r in proposed if r.get('decision_id') not in resolved]
     outcomes = [r['game_result'] for r in actions if r.get('game_result') in ('WON', 'LOST', 'TIED')]
     outcome = outcomes[-1] if len(set(outcomes)) == 1 else 'INCOMPLETE'
@@ -92,7 +93,7 @@ def summarize(dest):
                'api_responses': len(timings), 'api_tokens': sum(r.get('tokens', 0) for r in proposed),
                'median_decision_ms': statistics.median(timings) if timings else None,
                'confirmed_decisions': len(confirmed),
-               'expired_decisions': len(expired), 'external_choices': len(external),
+               'expired_decisions': len(expired), 'external_choices': len(external), 'withdrawn_decisions': len(withdrawn),
                'unconfirmed_decisions': [r.get('decision_id') for r in pending],
                'local_calculations': sum(bool(r.get('local_rule')) for r in proposed),
                'resources': metrics, 'guard_stop_reasons': stops,
@@ -122,6 +123,7 @@ def summarize(dest):
         compact = json.loads(compact_path.read_text())
         summary['expired_decisions'] = compact.get('expired_decisions', len(expired))
         summary['external_choices'] = compact.get('external_choices', len(external))
+        summary['withdrawn_decisions'] = compact.get('withdrawn_decisions', len(withdrawn))
         summary['api_timeouts'] = compact.get('api_timeouts', summary['api_timeouts'])
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',

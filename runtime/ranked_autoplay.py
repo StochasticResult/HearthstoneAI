@@ -143,6 +143,7 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
     awake = None
     app_wake = None
     client = None
+    focus = None
 
     def cancel(_signal, _frame):
         raise AutoplayCancelled('已收到停止指令')
@@ -157,6 +158,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
     def check_parent():
         if parent_pid and os.getppid() != parent_pid:
             raise AutoplayCancelled('应用已退出，停止连续对局')
+        if focus is not None and focus.stopped:
+            raise AutoplayCancelled('已收到停止指令')
 
     def maintain(baseline):
         # Called only outside run_one. The single-game supervisor has already
@@ -179,6 +182,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
                 if previous_reasons is not None:
                     emit('局间资源已恢复，程序自动继续排队', play_status='资源已恢复 · 继续自动天梯')
                 return True
+            if focus is not None:
+                focus.bind(0)
             state.update(status='waiting_for_resources', stop_reason=None)
             persist()
             reasons = tuple(sample['reasons'])
@@ -223,6 +228,17 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         emit('标准天梯 · '+display(state['version_stats']))
         if client_factory:
             client = client_factory(parent_pid, swap_baseline)
+            if parent_pid:
+                from ranked_focus import RankedFocus
+                focus = RankedFocus(data)
+                client.focus = focus
+                state['stop_shortcut'] = 'Control+Option+Command+K twice within 3 seconds'
+                emit('自动取回炉石前台已开启 · 按住 Control＋Option＋Command，3 秒内按两次 K 立即停止')
+                def foreground_changed(code, attempts):
+                    state['foreground_requests'] = attempts
+                    state['status'] = 'running' if code == b'F' else 'waiting_for_foreground'
+                    persist()
+                client.on_foreground_change = foreground_changed
             state['persistent_client'] = True
             def mark_match_held():
                 state.update(status='holding_match_for_review', stop_reason='ai_fault_during_match',
@@ -291,7 +307,14 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             signal.signal(sig, signal.SIG_IGN)
         try:
             try:
-                if client:client.close()
+                try:
+                    if focus is not None:
+                        if focus.stopped and state['status'] != 'cancelled':
+                            state.update(status='cancelled', stop_reason='user_or_app_stop', detail='已收到停止指令')
+                            persist()
+                        focus.close()
+                finally:
+                    if client:client.close()
             finally:
                 try:
                     if app_wake is not None:

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from input_command import input_command
 from deck_observation import public_selected_deck
 from game_mode import expected_type
+from ranked_focus import FocusLost, rejected_before_input
 
 from capture_practice import Capture, CaptureError, LOG_ROOT
 from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board, choice_for_player
@@ -30,6 +31,12 @@ from openai_advisor import AdvisorError, AdvisorTimeout, OpenAIAdvisor, action_m
 ROOT = Path(__file__).resolve().parent.parent
 FRAMEWORK = "/Applications/HSTracker.app/Contents/Frameworks/HearthMirror.framework/Versions/A/HearthMirror"
 RUN_MODE = "practice"
+FOCUS_LEASE = None
+posted_inputs = 0
+
+
+def focus_ready():
+    return FOCUS_LEASE is None or os.pread(FOCUS_LEASE.fileno(), 1, 4) == b'F'
 
 
 class Stop(Exception):
@@ -56,6 +63,10 @@ class ClientFatal(Stop):
     pass
 
 
+class StaleInput(Stop):
+    """A fresh observation is required before sending this pointer action."""
+
+
 def client_error(power_path):
     path = power_path.with_name("Hearthstone.log")
     try:
@@ -70,7 +81,15 @@ def client_error(power_path):
 
 
 def run_checked(args, timeout=4):
+    global posted_inputs
+    native = len(args) > 2 and args[1] == '--input'
+    if native and not focus_ready():
+        raise FocusLost('炉石暂不在前台')
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    if native and FOCUS_LEASE is not None and result.returncode:
+        detail = result.stderr.strip()
+        if rejected_before_input(detail):
+            raise FocusLost('本次输入未发送，等待炉石前台')
     # Clicking the app's "stop after this game" briefly activates its
     # control window before it returns focus to Hearthstone. A rejected
     # native command has sent no input, so allow this short handoff to finish.
@@ -85,6 +104,8 @@ def run_checked(args, timeout=4):
     if result.returncode:
         detail = result.stderr.strip().replace("\n", " ")[:180]
         raise Stop(Path(args[0]).name + " failed" + (": " + detail if detail else ""))
+    if FOCUS_LEASE is not None and native and args[2] in ('click', 'drag', 'key', 'paste'):
+        posted_inputs += 1
     return result.stdout.strip()
 
 
@@ -404,7 +425,7 @@ class Driver:
             self.poll()
             current = self.snapshot(own)
             if not visual_ready(current) or not current["own_turn"] or signature(current) != signature(old):
-                raise Stop("state changed during decision; no input was sent")
+                raise StaleInput("state changed during decision; no input was sent")
             if advice not in action_menu(current).values():
                 raise Stop("chosen action is no longer supported or legal")
             try:
@@ -550,6 +571,20 @@ class Driver:
                     return False
             time.sleep(.2)
 
+    def recover_pointer(self, own, window, state, advice, clicks_before, error):
+        if posted_inputs != clicks_before:
+            # A prior stage, such as a battlecry drag, already posted.
+            # Observe its outcome; never issue the same drag or click again.
+            unsent = self.wait_for_action_boundary(own, window, state['options_id'])
+            self.advisor.record({'event':'expired_without_submission' if unsent else 'resumed_after_uncertain_input',
+                                 'action':advice, 'game_turn':state.get('game_turn'), 'options_id':state['options_id']})
+            return None
+        self.advisor.record({'event':'withdrawn_before_input', 'action':advice,
+                             'game_turn':state.get('game_turn'), 'reason':str(error)})
+        self.advisor.pending_attack = None
+        return {'game':window[0], 'owner':own, 'submissions':window[2], 'action':advice,
+                'state':signature(state), 'decision_id':self.advisor.decision_seq}
+
     def verify_hand_point(self, own, state, source, initial):
         """Find the intended hand card by asking Mirror, never by a blind click."""
         options_id = state["options_id"]
@@ -564,7 +599,7 @@ class Driver:
                 if (not current["own_turn"] or current.get("game_step") != "MAIN_ACTION"
                         or current["options_id"] != options_id or hand != expected_hand
                         or not any(o["id"] == source for o in current["legal_options"])):
-                    raise Stop("hand or legal options changed while checking hover")
+                    raise StaleInput("hand or legal options changed while checking hover")
                 if visual_ready(current):
                     return
                 time.sleep(.3)
@@ -584,7 +619,7 @@ class Driver:
                     break
                 time.sleep(.12)
             else:
-                raise Stop("hand hover did not clear within three seconds")
+                raise StaleInput("hand hover did not clear within three seconds")
             candidate = (initial[0] + dx, initial[1])
             if not watchdog_alive(self.watchdog):
                 raise Stop("game watchdog is not running")
@@ -600,7 +635,7 @@ class Driver:
             observed.append({"point": candidate, "card": seen.get("cardId"), "position": seen.get("zonePosition"),
                              "hand_size": seen.get("zoneSize"), "side": seen.get("side"), "is_hand": seen.get("isHand")})
         print(json.dumps({"hover_probe": observed}), flush=True)
-        raise Stop("could not verify the requested hand card by hover")
+        raise StaleInput("could not verify the requested hand card by hover")
 
     def check_choice_receipt(self, own, choice, state, expected_id, clicked):
         observed = self.parser.choices.get(choice['id'])
@@ -899,6 +934,9 @@ class Driver:
         passive_unready_since = None
         opening = None
         opening_game = None
+        retry_opening = False
+        check_returned_window = False
+        deferred_action = None
         while time.monotonic() < deadline and (not max_actions or actions < max_actions):
             self.poll()
             if opening and self.parser.game is opening_game and self.record_mulligan_receipt(opening):
@@ -909,6 +947,22 @@ class Driver:
                 self.advisor.record({'event': 'game_complete', 'outcome': outcome})
                 print(json.dumps({"game_result": outcome, "actions": actions}), flush=True)
                 return
+            if not focus_ready():
+                check_returned_window = True
+            if check_returned_window:
+                if focus_ready():
+                    try:
+                        checked_geometry()
+                        check_returned_window = False
+                    except FocusLost:
+                        pass
+                if check_returned_window:
+                    ready_deadline = time.monotonic() + initial_wait
+                    mirror_wait_started = resolving_since = visual_wait_since = choice_deadline = None
+                    first_options_deadline = fresh_options_deadline = first_mana_wait = passive_unready_since = None
+                    self.board_mismatch_since = self.board_mismatch_signature = None
+                    time.sleep(.4)
+                    continue
             if self.waiting_on_opponent():
                 now=time.monotonic()
                 if now-passive_check_at>=5:
@@ -947,7 +1001,9 @@ class Driver:
                 continue
             ready_deadline = time.monotonic() + 35
             if status.get("mulligan_waiting"):
-                if choice and choice['type'] == 'MULLIGAN' and opening_game is None:
+                retry_same = (retry_opening and opening and opening_game is self.parser.game and choice
+                              and choice['id'] == opening['choice_id'] and not choice.get('sent') and not choice.get('confirmed'))
+                if choice and choice['type'] == 'MULLIGAN' and (opening_game is None or retry_same):
                     try:
                         if mulligan_identity(self.parser, status, RUN_MODE) != own:
                             raise UnsafeState('opening hand owner changed')
@@ -958,7 +1014,14 @@ class Driver:
                     opening = {'choice_id': choice['id'], 'offered': [
                         {'id': c['id'], 'card_id': c['card_id']} for c in choice['items'] if c['card_id'] != 'GAME_005'],
                         'planned_ids': [], 'marked_ids': [], 'submitted': False}
-                    self.execute_mulligan(own, choice, opening)
+                    retry_opening = False
+                    try:
+                        self.execute_mulligan(own, choice, opening)
+                    except FocusLost:
+                        # Re-read all actual marks before resuming. A submitted
+                        # or automatically settled choice is never clicked again.
+                        retry_opening = check_returned_window = True
+                        continue
                     self.advisor.record({'event': 'mulligan_attempt', **opening})
                 # The renderer can still show the opening hand after local submission.
                 # Only EntitiesChosen confirms it. Never click an expired choice again.
@@ -976,6 +1039,7 @@ class Driver:
                 choice_state = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
                 borrowed_options = self.parser.options_id
                 awaiting_fresh_options = True
+                clicks_before = posted_inputs
                 try:
                     if targeted:
                         advice = self.consult(own,self.advisor.target,choice,choice_state)
@@ -995,6 +1059,24 @@ class Driver:
                         print("choice resolved",flush=True)
                 except SupersededChoice:
                     print("选择已由游戏结算，读取当前局面继续",flush=True)
+                    continue
+                except FocusLost:
+                    check_returned_window = True
+                    if posted_inputs == clicks_before:
+                        self.advisor.record({'event':'withdrawn_before_input','choice_id':choice['id'],
+                                             'reason':'foreground changed'})
+                    else:
+                        selected = advice['target_id'] if targeted else choice['items'][index]['id']
+                        while not self.game_result():
+                            self.poll()
+                            try:
+                                if self.check_choice_receipt(own,choice,choice_state,selected,True):
+                                    if targeted:self.advisor.confirm_target(advice)
+                                    else:self.advisor.confirm_choice(choice,index)
+                                    break
+                            except SupersededChoice:
+                                break
+                            time.sleep(.3)
                     continue
                 actions += 1
                 time.sleep(1.5 if targeted else 2)
@@ -1101,10 +1183,20 @@ class Driver:
                     continue
             decision_started = time.monotonic()
             window = (self.parser.game, board._num(state.get('game_turn')), self.parser.sent_options)
-            advice = self.consult(own,self.advisor.ask,state)
+            saved, deferred_action = deferred_action, None
+            if (saved and saved['game'] is window[0] and saved['owner'] == own
+                    and saved['submissions'] == window[2] and saved['decision_id'] == self.advisor.decision_seq
+                    and saved['state'] == signature(state) and saved['action'] in action_menu(state).values()):
+                advice = self.advisor.local_action(self.advisor.view(state), action_menu(state), {
+                    'rule':'revalidated_foreground_action_v1', 'action':saved['action'],
+                    'reason':'前台已恢复，原建议没有发送，当前局面、选项组和目标完全相同。',
+                    'evidence':{'from_decision':saved['decision_id'], 'options_id':state['options_id']}})
+            else:
+                advice = self.consult(own,self.advisor.ask,state)
             if advice is None:
                 continue
             self.proposal_window = window
+            clicks_before = posted_inputs
             try:
                 self.execute_main_action(own, state, advice, diagnose_hover, decision_started)
             except ActionUnconfirmed:
@@ -1126,6 +1218,15 @@ class Driver:
                 borrowed_options = state['options_id']
                 awaiting_fresh_options = True
                 continue
+            except (FocusLost, StaleInput) as error:
+                if FOCUS_LEASE is None:
+                    raise
+                check_returned_window = True
+                deferred_action = self.recover_pointer(own,window,state,advice,clicks_before,error)
+                if deferred_action is None:
+                    borrowed_options, awaiting_fresh_options = state['options_id'], True
+                time.sleep(.4)
+                continue
             finally:
                 self.proposal_window = None
             # Entity changes can arrive before the next legal-option packet.
@@ -1142,7 +1243,7 @@ class Driver:
 
 
 def main():
-    global RUN_MODE
+    global RUN_MODE, FOCUS_LEASE
     ap = argparse.ArgumentParser()
     logs = ap.add_mutually_exclusive_group(required=True)
     logs.add_argument("--log", type=Path)
@@ -1157,8 +1258,11 @@ def main():
     ap.add_argument("--reconnect-evidence", type=Path, action="append", default=[])
     ap.add_argument('--start-offset', type=int, default=0, help='start a fresh parser at a verified pre-queue log boundary')
     ap.add_argument("--openai-config-stdin", action="store_true", help="read API settings privately from stdin")
+    ap.add_argument('--foreground-lease', type=Path)
     ap.add_argument("--mode", choices=("practice","ranked"), default="practice")
     args = ap.parse_args()
+    if args.foreground_lease:
+        FOCUS_LEASE = args.foreground_lease.open('rb')
     RUN_MODE = args.mode
     if args.seconds < 0 or args.max_actions < 0:
         ap.error("game limits must be nonnegative; 0 means no quota")
@@ -1177,6 +1281,8 @@ def main():
         end = time.monotonic() + 180
         print(f"waiting for a new {args.mode} game", flush=True)
         while time.monotonic() < end:
+            if FOCUS_LEASE is not None and os.pread(FOCUS_LEASE.fileno(),1,4) in (b'W', b'L'):
+                end = time.monotonic() + 180
             if not watchdog_alive(args.watchdog_pid):
                 raise Stop("game watchdog is not running")
             candidates = sorted(p / "Power.log" for p in LOG_ROOT.glob("Hearthstone_*")
@@ -1193,6 +1299,8 @@ def main():
         end = time.monotonic() + 120
         print(f"waiting for the current {args.mode} log", flush=True)
         while not path.is_file() and time.monotonic() < end:
+            if FOCUS_LEASE is not None and os.pread(FOCUS_LEASE.fileno(),1,4) in (b'W', b'L'):
+                end = time.monotonic() + 120
             if not watchdog_alive(args.watchdog_pid):
                 raise Stop("game watchdog is not running")
             time.sleep(.5)

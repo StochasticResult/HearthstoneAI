@@ -15,6 +15,12 @@ def build_awake(destination):
                     "-framework", "IOKit", "-o", str(destination)], check=True)
 
 
+def build_focus(destination):
+    subprocess.run(["/usr/bin/xcrun", "clang", "-Os", "-Wall", "-Wextra", "-Werror",
+                    "-Wno-deprecated-declarations", str(ROOT / "native/RankedFocus.c"),
+                    "-framework", "Carbon", "-framework", "ApplicationServices", "-o", str(destination)], check=True)
+
+
 def main():
     if APP.exists():
         shutil.rmtree(APP)
@@ -31,6 +37,7 @@ def main():
                     "-o", str(macos / "HearthstoneAI")], check=True)
     shutil.copytree(ROOT / "runtime", resources / "runtime", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     build_awake(resources / "runtime/app-awake")
+    build_focus(resources / "runtime/ranked-focus")
     with (APP / "Contents/Info.plist").open("wb") as f:
         plistlib.dump({"CFBundleName": "Hearthstone AI", "CFBundleDisplayName": "Hearthstone AI",
             "CFBundleIdentifier": "local.hearthstoneai.app", "CFBundleExecutable": "HearthstoneAI",

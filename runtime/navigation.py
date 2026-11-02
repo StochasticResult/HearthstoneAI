@@ -74,7 +74,8 @@ def next_ranked_navigation(stage, status):
     Standard, and an unexpected format/deck is a stop rather than a queue.
     """
     scene = status.get("scene") or {}
-    if not scene.get("sceneLoaded") or scene.get("transitioning") or status.get("popup") or status.get("shop_open"):
+    if (not scene.get("sceneLoaded") or scene.get("transitioning") or status.get("popup")
+            or status.get("shop_open") or status.get("game_menu")):
         return None
     if stage == 0 and scene.get("mode") == 3:
         return (735, 310)

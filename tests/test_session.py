@@ -6,10 +6,18 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 from session import (validate_config, SessionError, lock_session, session_directory,
-                     EventLog, emit, guard_event, drain_guards, launch_hearthstone, BATTLENET_EXEC, scene_ready, navigation_click)
+                     EventLog, emit, guard_event, drain_guards, launch_hearthstone, BATTLENET_EXEC, scene_ready, navigation_click,
+                     focus_hearthstone, GAME_EXEC)
 
 
 class SessionTests(unittest.TestCase):
+    def test_foreground_request_is_only_for_the_fixed_game_bundle(self):
+        with patch('session.subprocess.run') as run:
+            focus_hearthstone()
+            self.assertEqual(run.call_args.args[0], ['/usr/bin/open','-a',str(Path(GAME_EXEC).parents[2])])
+            self.assertTrue(run.call_args.kwargs['check'])
+            self.assertEqual(run.call_args.kwargs['timeout'],3)
+
     def test_navigation_retries_only_a_pre_input_foreground_rejection(self):
         geometry = SimpleNamespace(stdout='{"x":0,"y":33,"width":1470,"height":846}')
         rejected = SimpleNamespace(returncode=1, stderr='Hearthstone is not the frontmost app\n')

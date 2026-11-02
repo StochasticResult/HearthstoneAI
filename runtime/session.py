@@ -176,6 +176,15 @@ def scene_ready(status):
             and not scene.get("transitioning"))
 
 
+def focus_hearthstone():
+    # LaunchServices brings the already-observed game app forward. A short-
+    # lived input helper's NSRunningApplication.activate request can succeed
+    # without activation on current macOS; it is not a foreground guarantee.
+    # This is called once, only after the watchdog and a known loaded scene.
+    subprocess.run(["/usr/bin/open", "-a", str(Path(GAME_EXEC).parents[2])],
+                   check=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def navigation_click(point):
     geometry = subprocess.run(input_command("geometry"),
                               capture_output=True, text=True, timeout=3, check=True)
@@ -298,8 +307,7 @@ def run(config, parent_pid, mode="practice"):
                         time.sleep(.5)
                         continue
                     if not focused:
-                        subprocess.run(input_command("focus"), check=True, timeout=3,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        focus_hearthstone()
                         focused = True
                     if scene.get("mode") == 4:
                         if status.get("game_type") != expected or (mode == "ranked" and status.get("format") != 2):

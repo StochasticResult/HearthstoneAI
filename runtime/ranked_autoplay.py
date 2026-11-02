@@ -61,7 +61,7 @@ def continued_swap_baseline(path, current):
     prior=json.loads(path.read_text())
     if not isinstance(prior,dict):
         raise RuntimeError('Invalid previous autoplay state')
-    if prior.get('status') not in ('paused_for_review','needs_review','running','maintenance','waiting_for_resources'):
+    if prior.get('status') not in ('paused_for_review','needs_review','running','maintenance','waiting_for_resources','holding_match_for_review'):
         return current
     previous=prior.get('swap_baseline_mib')
     if type(previous) not in (int,float) or not math.isfinite(previous) or previous<0:
@@ -180,6 +180,11 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         if client_factory:
             client = client_factory(parent_pid, swap_baseline)
             state['persistent_client'] = True
+            def mark_match_held():
+                state.update(status='holding_match_for_review', stop_reason='ai_fault_during_match',
+                             game_pid=client.pid)
+                persist()
+            client.on_match_hold = mark_match_held
         state['swap_baseline_mib'] = round(swap_baseline / MIB, 1)
         persist()
         emit('开始自动天梯：持续运行；正常复盘不打断对局，无局数或时间配额')

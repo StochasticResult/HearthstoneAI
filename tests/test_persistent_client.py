@@ -1,13 +1,14 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import session
-from game_boundary import LogBoundary, result_dismissal
+from game_boundary import FaultedMatchEnd, LogBoundary, result_dismissal
 from incremental_board import IncrementalBoard, LogFollower
 from capture_practice import Capture
 from navigation import Stop, DECK_ID
@@ -17,6 +18,70 @@ from test_incremental_board import fixture, power
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_fault_watch_uses_only_complete_authoritative_lines_in_this_game(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); path=root/'Power.log'
+            create=power('CREATE_GAME').encode()
+            terminal=power('TAG_CHANGE Entity=GameEntity tag=STATE value=COMPLETE').encode()
+            old=create+terminal
+            path.write_bytes(old+create+terminal.replace(b'GameState.',b'PowerTaskList.')+terminal[:-1])
+            stat=path.stat()
+            cursor={'source':str(path),'device':stat.st_dev,'inode':stat.st_ino,'start_offset':len(old)}
+            watch=FaultedMatchEnd(cursor,root)
+            self.assertFalse(watch.poll())
+            with path.open('ab') as f:f.write(b'\n')
+            self.assertTrue(watch.poll())
+            with path.open('ab') as f:f.write(create)
+            self.assertFalse(watch.poll())
+            path.rename(root/'old');path.write_bytes(old)
+            with self.assertRaisesRegex(Stop,'changed'):watch.poll()
+
+    def test_ai_fault_keeps_guard_until_verified_lobby_and_never_clicks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            c=session.PersistentClient(None,0);c.pid=777;c.match_at_risk=True
+            c.watchdog=Mock();c.watchdog.poll.return_value=None;c.on_match_hold=Mock()
+            clock=[0]
+            def sleep(seconds):clock[0]+=seconds
+            matched={'scene':{'mode':4,'sceneLoaded':True,'transitioning':False}}
+            lobby={'scene':{'mode':7,'sceneLoaded':True,'transitioning':False}}
+            readings = [None,matched,lobby,matched,lobby,lobby]
+            def status():
+                self.assertTrue(c.match_at_risk)
+                return readings.pop(0)
+            with patch('session.time.monotonic',side_effect=lambda:clock[0]),patch('session.time.sleep',side_effect=sleep), \
+                 patch('session.read_status',side_effect=status),patch('session.emit'),patch('session.drain_guards') as drain, \
+                 patch('session.navigation_click') as click,patch('session.stop_child') as stop:
+                c.hold_after_ai_fault(Path(tmp),{}, {},False)
+            self.assertFalse(readings)
+            self.assertFalse(c.match_at_risk)
+            self.assertGreater(drain.call_count,5)
+            c.on_match_hold.assert_called_once()
+            click.assert_not_called()
+            stop.assert_not_called()
+
+    def test_last_resort_cleanup_hands_live_match_to_guard_without_sigterm(self):
+        c=session.PersistentClient(222,0);c.watchdog=Mock();c.watchdog.poll.return_value=None
+        c.match_at_risk=True;c.streams={}
+        with patch('session.stop_child') as stop:
+            c.close()
+        c.watchdog.send_signal.assert_called_once_with(session.signal.SIGUSR1)
+        stop.assert_not_called()
+        c.match_at_risk=False
+        with patch('session.stop_child') as stop:
+            c.close()
+        stop.assert_called_once_with(c.watchdog)
+
+    def test_new_game_at_old_result_boundary_protects_client_even_during_planned_pause(self):
+        c=session.PersistentClient(222,0);c.previous={'outcome':'WON'};c.launched=True
+        c.boundary=Mock();c.tick=Mock()
+        c.boundary.check.side_effect=Stop('A new game already started outside the queue controller')
+        with patch('ranked_autoplay.read_small',return_value={'reason':'review_update'}), \
+             patch('session.navigation_click') as click,patch('session.emit'):
+            with self.assertRaisesRegex(Stop,'new game'):
+                c.return_to_menu()
+        self.assertTrue(c.match_at_risk)
+        click.assert_not_called()
+
     def test_result_animations_can_exceed_one_minute_and_four_clicks(self):
         client=session.PersistentClient(None,0);client.pid=444
         client.previous={'outcome':'WON'};client.boundary=Mock();client.tick=Mock()
@@ -107,6 +172,40 @@ class FakeChild:
 
 
 class PersistentIntegrationTests(unittest.TestCase):
+    def test_worker_crash_and_a_second_review_error_cannot_terminate_a_live_client(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data=Path(tmp); dest=data/'runs/run-fault';dest.mkdir(parents=True)
+            (dest/'actions.log').write_text('practice driver stopped: test observation failure\n')
+            client=session.PersistentClient(os.getppid(),0)
+            watch=FakeChild(901);watch.send_signal=Mock()
+            worker=FakeChild(902); statuses=iter((None,None,2))
+            def worker_status():
+                worker.returncode=next(statuses,2)
+                return worker.returncode
+            worker.poll=worker_status
+            client.watchdog=watch;client.pid=777;client.prepare=Mock()
+            live={'scene':{'mode':4,'sceneLoaded':True,'transitioning':False},'game_type':7,'format':2}
+            def cannot_save_review(_dest,_streams,_sources,entered):
+                self.assertTrue(entered)
+                self.assertTrue(client.match_at_risk)
+                self.assertEqual(watch.terminated,0)
+                raise OSError('test failure while recording handoff')
+            client.hold_after_ai_fault=Mock(side_effect=cannot_save_review)
+            with patch('session.DATA',data),patch('session.session_directory',return_value=dest), \
+                 patch('session.subprocess.Popen',return_value=worker),patch('session.drain_guards'), \
+                 patch('session.read_json_line',side_effect=[{'preflight':{}},{'started_pid':902}]), \
+                 patch('session.launch_hearthstone'),patch('session.focus_hearthstone'), \
+                 patch('session.read_status',return_value=live),patch('session.time.sleep'), \
+                 patch('session.processes',return_value=[(777,0,0)]),patch('session.emit'), \
+                 patch('session.navigation_click') as click:
+                with self.assertRaisesRegex(OSError,'recording handoff'):
+                    session.run({'api_key':'fixture','model':'test'},os.getppid(),'ranked',0,client)
+                client.close()
+            self.assertEqual(watch.terminated,0)
+            watch.send_signal.assert_called_once_with(session.signal.SIGUSR1)
+            client.hold_after_ai_fault.assert_called_once()
+            click.assert_not_called()
+
     def test_two_game_lifecycle_launches_client_once_and_recycles_only_workers(self):
         with tempfile.TemporaryDirectory() as tmp:
             data=Path(tmp);source=data/'Power.log';source.write_bytes(b'completed previous log line\n')

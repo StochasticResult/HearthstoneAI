@@ -1,19 +1,61 @@
 """Verified log boundaries between games in one retained Hearthstone client."""
+import os
+import re
 from pathlib import Path
 from navigation import Stop
 
 LOG_ROOT = Path('/Applications/Hearthstone/Logs')
 
 
+def cursor_source(cursor, root, offset_key):
+    path = Path(cursor['source'])
+    identity = (cursor['device'], cursor['inode'])
+    offset = cursor[offset_key]
+    if (path.is_symlink() or root.resolve() not in path.resolve().parents or path.name != 'Power.log'
+            or type(offset) is not int or offset < 0 or any(type(x) is not int for x in identity)):
+        raise Stop('Invalid retained game log boundary')
+    return path, identity, offset
+
+
+class FaultedMatchEnd:
+    """Read the failed worker's match from its original queue boundary, without input."""
+    prefix = rb'^D \d\d:\d\d:\d\d(?:\.\d+)? GameState\.DebugPrintPower\(\) -\s*'
+    create = re.compile(prefix + rb'CREATE_GAME\s*$')
+    terminal = re.compile(prefix + rb'TAG_CHANGE Entity=GameEntity tag=STATE value=COMPLETE\s*$')
+
+    def __init__(self, cursor, root=LOG_ROOT):
+        self.path, self.identity, self.offset = cursor_source(cursor, root, 'start_offset')
+        self.games = 0
+        self.ended = False
+        self.partial = b''
+
+    def poll(self):
+        # Never authorize closing a live game from an old result, a partial
+        # line, a truncated/replaced source, or a second CREATE_GAME.
+        with self.path.open('rb') as source:
+            stat = os.fstat(source.fileno())
+            if (stat.st_dev,stat.st_ino) != self.identity or stat.st_size < self.offset:
+                raise Stop('Game log changed during fault observation')
+            source.seek(self.offset)
+            chunk = source.read(128 * 1024)
+            self.offset += len(chunk)
+        lines = (self.partial + chunk).split(b'\n')
+        self.partial = lines.pop()
+        if len(self.partial) > 65536:
+            raise Stop('Oversized partial line during fault observation')
+        for line in lines:
+            if self.create.search(line):
+                self.games += 1
+            elif self.games == 1 and self.terminal.search(line):
+                self.ended = True
+        latest = self.path.stat()
+        return (self.ended and self.games == 1 and not self.partial and self.offset == latest.st_size
+                and (latest.st_dev,latest.st_ino) == self.identity)
+
+
 class LogBoundary:
     def __init__(self, cursor, root=LOG_ROOT):
-        self.path = Path(cursor['source'])
-        self.identity = (cursor['device'], cursor['inode'])
-        self.offset = cursor['offset']
-        if (self.path.is_symlink() or root.resolve() not in self.path.resolve().parents
-                or self.path.name != 'Power.log' or type(self.offset) is not int or self.offset < 0
-                or any(type(x) is not int for x in self.identity)):
-            raise Stop('Invalid retained game log boundary')
+        self.path, self.identity, self.offset = cursor_source(cursor, root, 'offset')
         self.check()
 
     def check(self):

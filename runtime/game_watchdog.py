@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -82,6 +83,7 @@ def main():
     parser.add_argument("--temporary-fps", type=int, choices=(30,), help="temporarily set 30 fps and restore afterwards")
     parser.add_argument("--background-policy", action="store_true", help="lower the claimed process scheduling/I/O priority; not a CPU cap")
     parser.add_argument("--parent-pid", type=int, help="stop and restore settings if the session supervisor exits")
+    parser.add_argument("--native-owner-pid", type=int, help="in ranked play, retain resource protection if the AI supervisor disappears")
     parser.add_argument("--swap-baseline-mib", type=float)
     args = parser.parse_args()
     if args.run_seconds < 0:
@@ -113,8 +115,33 @@ def main():
     original_launchers = {p[0] for p in processes(LAUNCHER_EXEC)} if args.expected == GAME_EXEC else set()
     if args.temporary_fps and args.expected != GAME_EXEC:
         parser.error("temporary frame rate applies only to the game")
+    owner_exit = None
+    detached = False
+    def detach(_signum=None, _frame=None):
+        nonlocal detached
+        detached = True
+
+    def report(record):
+        if detached:
+            return
+        try:
+            print(json.dumps(record), flush=True)
+        except BrokenPipeError:
+            if owner_exit is None:
+                raise
+            detach()
+            with open(os.devnull, 'w') as sink:
+                os.dup2(sink.fileno(), sys.stdout.fileno())
+
+    if args.native_owner_pid is not None:
+        if not args.parent_pid or args.native_owner_pid <= 1:
+            parser.error("ranked game guard requires both native and supervisor identities")
+        owner_exit = select.kqueue()
+        owner_exit.control([select.kevent(args.native_owner_pid, filter=select.KQ_FILTER_PROC,
+                           flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)],0,0)
+        signal.signal(signal.SIGUSR1, detach)
     previous_fps = change_fps(OPTIONS, None, args.temporary_fps) if args.temporary_fps else None
-    print(json.dumps({"watchdog": "armed", "pid": os.getpid(), "max_game_seconds": args.run_seconds}), flush=True)
+    report({"watchdog": "armed", "pid": os.getpid(), "max_game_seconds": args.run_seconds})
     claimed = None
     start = time.monotonic()
     game_start = None
@@ -127,12 +154,20 @@ def main():
     try:
         while True:
             now = time.monotonic()
-            if args.parent_pid is not None and os.getppid() != args.parent_pid:
-                reason = "session supervisor exited"
+            if owner_exit is not None and owner_exit.control(None,1,0):
+                reason = "native application exited"
                 break
+            if args.parent_pid is not None and os.getppid() != args.parent_pid:
+                if owner_exit is None:
+                    reason = "session supervisor exited"
+                    break
+                detach()
             active = processes(args.expected)
             if claimed is None:
                 matches = [p for p in active if args.claim_pid is None or p[0] == args.claim_pid]
+                if detached and not matches:
+                    reason = "supervisor exited before game launch"
+                    break
                 if len(matches) > 1:
                     reason = "ambiguous game processes"
                     break
@@ -141,8 +176,8 @@ def main():
                     game_start = now
                     if args.background_policy:
                         subprocess.run(["/usr/sbin/taskpolicy", "-b", "-p", str(claimed)], timeout=3, check=True, capture_output=True)
-                        print(json.dumps({"background_policy": "applied"}), flush=True)
-                    print(json.dumps({"claimed_pid": claimed}), flush=True)
+                        report({"background_policy": "applied"})
+                    report({"claimed_pid": claimed})
                 elif now - start >= args.startup_seconds:
                     reason = "game did not start"
                     break
@@ -176,8 +211,8 @@ def main():
                 if not maintenance_reason and free_disk < 10*GIB:
                     maintenance_reason = 'disk reserve'
                 if pressure != previous_pressure:
-                    print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
-                                      'swap_mib': round(current_swap/MIB,1)}), flush=True)
+                    report({'memory_pressure_level': pressure, 'pressure_transition': True,
+                            'swap_mib': round(current_swap/MIB,1)})
                     previous_pressure = pressure
                 if tstate >= 2:
                     reason = "serious or critical thermal state"
@@ -192,10 +227,10 @@ def main():
                 elif args.run_seconds and now - game_start >= args.run_seconds:
                     reason = "short test deadline"
                 if now - previous_status >= 10:
-                    print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": tstate, "memory_free_pct": free_memory_pct,
+                    report({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": tstate, "memory_free_pct": free_memory_pct,
                                       "swap_mib": round(current_swap/MIB,1), "initial_swap_mib": round(initial_swap/MIB,1),
                                       "swap_baseline_mib": round(swap_baseline/MIB,1), "memory_pressure_level": pressure,
-                                      "maintenance_pending": maintenance_reason, 'free_gib': round(free_disk/GIB,2)}), flush=True)
+                                      "maintenance_pending": maintenance_reason, 'free_gib': round(free_disk/GIB,2)})
                     previous_status = now
                 if reason:
                     break
@@ -207,7 +242,7 @@ def main():
             # A parent can exit in the short interval after launch but before
             # the first sampling tick. Preflight proved no game was running;
             # reclaim exactly one new game here so it cannot be orphaned.
-            if claimed is None and args.expected == GAME_EXEC:
+            if claimed is None and args.expected == GAME_EXEC and not detached:
                 final_matches = processes(args.expected)
                 if len(final_matches) == 1:
                     claimed = final_matches[0][0]
@@ -221,10 +256,12 @@ def main():
             if previous_fps is not None:
                 try:
                     change_fps(OPTIONS, args.temporary_fps, previous_fps)
-                    print(json.dumps({"restored_target_fps": previous_fps}), flush=True)
+                    report({"restored_target_fps": previous_fps})
                 except Exception:
                     print("frame rate restore failed; manual check required", file=sys.stderr, flush=True)
-        print(json.dumps({"watchdog_result": reason or "interrupted", "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1)}), flush=True)
+        report({"watchdog_result": reason or "interrupted", "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1)})
+        if owner_exit is not None:
+            owner_exit.close()
     return 0 if reason in ("game exited", "short test deadline") else 2
 
 

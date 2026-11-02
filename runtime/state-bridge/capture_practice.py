@@ -41,24 +41,22 @@ class Capture:
         stat = self.source.stat()
         if (stat.st_dev, stat.st_ino) != self.identity or stat.st_size < self.offset:
             raise CaptureError("source rotated or truncated")
-        if self.written >= self.max_bytes:
-            skipped = stat.st_size - self.offset
-            self.capped = self.capped or skipped > 0
+        start = self.offset
+        save_until = min(stat.st_size, start + self.max_bytes - self.written)
+        # Only copy the bytes present at entry. A live writer may keep
+        # appending while the independent gameplay reader catches up.
+        while self.offset < save_until:
+            data = self.reader.read(min(64 * 1024, save_until - self.offset))
+            if not data:
+                raise CaptureError("source shortened during evidence read")
+            self.writer.write(data)
+            self.written += len(data)
+            self.offset += len(data)
+        if self.offset < stat.st_size:
+            self.capped = True
             self.offset = stat.st_size
             self.reader.seek(self.offset)
-            return skipped
-        total = 0
-        while True:
-            data = self.reader.read(64 * 1024)
-            if not data:
-                break
-            saved = data[:max(0, self.max_bytes-self.written)]
-            self.writer.write(saved)
-            self.written += len(saved)
-            self.capped = self.capped or len(saved) < len(data)
-            self.offset += len(data)
-            total += len(data)
-        return total
+        return self.offset - start
 
     def close(self):
         self.reader.close()

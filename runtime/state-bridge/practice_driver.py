@@ -35,6 +35,10 @@ class Stop(Exception):
     pass
 
 
+class ActionUnconfirmed(Stop):
+    """Posted input has not yet produced a conclusive server receipt."""
+
+
 class NotReady(Exception):
     pass
 
@@ -280,14 +284,20 @@ class Driver:
         self.deck_snapshot = deck_snapshot
         self.reconnect_evidence = tuple(reconnect_evidence)[:4]
         self.recovered_previous = None
+        self.start_offset = start_offset
+        self.save_cursor()
+
+    def save_cursor(self):
+        from match_review import save
+        save(self.capture.destination.with_name('log-cursor.json'),
+             {'source': str(self.follower.path), 'device': self.follower.identity[0],
+              'inode': self.follower.identity[1], 'offset': self.follower.offset,
+              'start_offset': self.start_offset})
 
     def close(self):
         try:
             self.advisor.close()
-            from match_review import save
-            save(self.capture.destination.with_name('log-cursor.json'),
-                 {'source': str(self.follower.path), 'device': self.follower.identity[0],
-                  'inode': self.follower.identity[1], 'offset': self.follower.offset})
+            self.save_cursor()
         finally:
             self.follower.close()
             self.capture.close()
@@ -365,14 +375,28 @@ class Driver:
                 time.sleep(.3)
 
     def poll(self):
-        if not watchdog_alive(self.watchdog):
-            raise Stop("game watchdog is not running")
-        self.capture.poll()
-        for _ in range(8):
-            if not self.follower.poll():
+        progress_at = next_guard_check = time.monotonic()
+        while True:
+            now = time.monotonic()
+            if now >= next_guard_check:
+                if not watchdog_alive(self.watchdog):
+                    raise Stop("game watchdog is not running")
+                next_guard_check = now + .5
+            self.capture.poll()
+            before = self.follower.offset
+            for _ in range(8):
+                if not self.follower.poll():
+                    break
+            unread = self.follower.checked_size() - self.follower.offset
+            if unread == 0:
                 break
-        if self.follower.offset < self.follower.path.stat().st_size:
-            raise Stop("log reader fell behind")
+            if self.follower.offset > before:
+                progress_at = now
+            elif now - progress_at >= 8:
+                raise Stop(f"game log catch-up stalled ({unread} unread bytes)")
+            # The client can append a choice between read(EOF) and stat().
+            # Drain it in bounded slices before validating or sending any input.
+            time.sleep(.025)
         self.check_proposal_window()
 
     def check_proposal_window(self):
@@ -456,7 +480,28 @@ class Driver:
             except UnsafeState:
                 pass
             time.sleep(.15)
-        raise Stop("action was not confirmed in game log")
+        raise ActionUnconfirmed("action was not confirmed in game log")
+
+    def wait_for_action_boundary(self, own, window, options_id):
+        """Observe only. Never repeat uncertain input, even if a receipt is late."""
+        game, turn, submissions = window
+        self.proposal_window = None
+        if turn is None or self.owner != own or self.identity_game is not game:
+            raise Stop("cannot recover an action without a verified match and turn")
+        while True:
+            self.poll()
+            if self.parser.game is not game or self.identity_game is not game:
+                raise Stop("game changed while waiting for action recovery")
+            if not self.parser.partial:
+                entity = board._game_entity(game)
+                current = board._num(entity['tags'].get('TURN')) if entity else None
+                if self.game_result() or (current is not None and current > turn):
+                    return self.parser.sent_options == submissions
+                submitted = self.parser.sent_options == submissions + 1
+                fresh_options = self.parser.options_id is not None and self.parser.options_id != options_id
+                if submitted and (fresh_options or self.parser.pending_choice(own)):
+                    return False
+            time.sleep(.2)
 
     def verify_hand_point(self, own, state, source, initial):
         """Find the intended hand card by asking Mirror, never by a blind click."""
@@ -656,7 +701,8 @@ class Driver:
         if advice["kind"] == "play":
             # A played card may immediately open Discover, in which case
             # snapshot() intentionally blocks until that choice resolves.
-            self.wait_until(lambda: self.parser.game is not None and not self.parser.partial and
+            self.wait_until(lambda: self.parser.sent_options == before_submissions + 1 and
+                            self.parser.game is not None and not self.parser.partial and
                             all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")), 10)
         elif advice["kind"] == "attack":
             def attacked():
@@ -905,6 +951,17 @@ class Driver:
             self.proposal_window = window
             try:
                 self.execute_main_action(own, state, advice, diagnose_hover, decision_started)
+            except ActionUnconfirmed:
+                if RUN_MODE != 'ranked':
+                    raise
+                print("等待服务器确认，暂停输入并保留当前对局", flush=True)
+                unsent = self.wait_for_action_boundary(own, window, state['options_id'])
+                event = 'expired_without_submission' if unsent else 'resumed_after_uncertain_input'
+                self.advisor.record({'event':event, 'action':advice, 'game_turn':state.get('game_turn')})
+                print("已读到新的行动窗口，从当前局面重新判断", flush=True)
+                borrowed_options = state['options_id']
+                awaiting_fresh_options = True
+                continue
             except ExpiredProposal as error:
                 self.advisor.record({'event':'expired_without_submission', 'action':advice,
                                      'game_turn':state.get('game_turn'), 'reason':str(error)})

@@ -676,11 +676,15 @@ class LogFollower:
         self.offset = start_offset
         self.file.seek(start_offset)
 
-    def poll(self, max_bytes=64 * 1024):
+    def checked_size(self):
         st = self.path.stat()
         if (st.st_dev, st.st_ino) != self.identity or st.st_size < self.offset:
             self.parser.invalidate("log rotated or truncated")
             raise UnsafeState(self.parser.blocked)
+        return st.st_size
+
+    def poll(self, max_bytes=64 * 1024):
+        self.checked_size()
         data = self.file.read(min(max_bytes, 64 * 1024))
         self.offset += len(data)
         if data:

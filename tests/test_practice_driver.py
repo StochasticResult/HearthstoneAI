@@ -9,7 +9,7 @@ from practice_driver import Driver, Stop, NotReady, ClientFatal, ExpiredProposal
 from practice_state import prepare
 from incremental_board import UnsafeState
 from practice_driver import waiting_for_first_mana, run_checked
-from incremental_board import IncrementalBoard
+from incremental_board import IncrementalBoard, LogFollower
 from test_incremental_board import fixture, power
 
 
@@ -23,6 +23,92 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def test_append_after_eof_is_drained_before_any_decision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'Power.log'
+            send = b'D 01:16:40.5659690 GameState.SendOption() - selectedOption=2 selectedSubOption=-1 selectedTarget=0 selectedPosition=0\n'
+            path.write_bytes(fixture() + send)
+            d = self.identified_driver()
+            d.parser = IncrementalBoard()
+            d.follower = LogFollower(path, d.parser)
+            self.addCleanup(d.follower.close)
+            while d.follower.poll():
+                pass
+            d.capture = Mock()
+            d.watchdog = 123
+            d.proposal_window = None
+            read = d.follower.poll
+            prefix = 'D 01:16:41.0806210 GameState.DebugPrintEntityChoices() - '
+            lines = ['id=3 Player=local TaskList=109 ChoiceType=GENERAL CountMin=1 CountMax=1',
+                     'Source=[id=64 cardId=TLC_451 player=2]',
+                     'Entities[0]=[id=96 cardId=BE_086 player=2]',
+                     'Entities[1]=[id=94 cardId=BE_094 player=2]',
+                     'Entities[2]=[id=95 cardId=TIME_029 player=2]']
+            late_choices = ''.join(prefix + line + '\n' for line in lines)
+            appends = [(late_choices + 'D 01:16:41.1 ChoiceCardMgr.WaitThenShowChoices() - id=3 BEGIN\n').encode()]
+            self.assertIsNone(d.parser.pending_choice(2))
+            def read_while_writing():
+                count = read()
+                if not count and appends:
+                    with path.open('ab') as writer:
+                        writer.write(appends.pop())
+                return count
+            with patch.object(d.follower,'poll',side_effect=read_while_writing), \
+                 patch('practice_driver.watchdog_alive',return_value=True), \
+                 patch('practice_driver.time.sleep') as pause, patch('practice_driver.click') as click:
+                d.poll()
+            self.assertEqual(d.follower.offset, path.stat().st_size)
+            choice = d.parser.pending_choice(2)
+            self.assertEqual((choice['id'],choice['source_card_id'],choice['shown']),(3,'TLC_451',True))
+            self.assertEqual([c['card_id'] for c in choice['items']],['BE_086','BE_094','TIME_029'])
+            self.assertEqual(d.parser.sent_options,1)
+            pause.assert_called_once()
+            click.assert_not_called()
+
+    def test_continuous_unread_data_cannot_authorize_input(self):
+        d = self.identified_driver()
+        d.watchdog = 123
+        d.capture = Mock()
+        d.follower = Mock(offset=100)
+        d.follower.checked_size.return_value = 128
+        d.follower.poll.return_value = 0
+        d.check_proposal_window = Mock()
+        with patch('practice_driver.watchdog_alive',return_value=True), \
+             patch('practice_driver.time.monotonic',side_effect=[0,9]), \
+             patch('practice_driver.click') as click:
+            with self.assertRaisesRegex(Stop,'28 unread bytes'):
+                d.poll()
+        d.check_proposal_window.assert_not_called()
+        click.assert_not_called()
+
+    def test_late_receipt_allows_new_choice_without_replaying_the_input(self):
+        d = self.identified_driver()
+        p = d.parser
+        p.feed(power('TAG_CHANGE Entity=1 tag=TURN value=4').encode())
+        p.options_id = 12
+        window = (p.game, 4, p.sent_options)
+        received = b'D 01:16:40 GameState.SendOption() - selectedOption=2 selectedSubOption=-1 selectedTarget=0 selectedPosition=0\n'
+        choices = [None, {'id':3,'type':'GENERAL'}]
+        def poll():
+            if p.sent_options == 0:
+                p.feed(received)
+        d.poll = poll
+        with patch.object(p,'pending_choice',side_effect=choices),patch('practice_driver.time.sleep'), \
+             patch('practice_driver.click') as click:
+            self.assertFalse(d.wait_for_action_boundary(1, window, 12))
+        self.assertEqual(p.sent_options,1)
+        click.assert_not_called()
+
+    def test_unsubmitted_input_expires_on_later_turn_and_match_changes_refuse_recovery(self):
+        d = self.identified_driver()
+        p = d.parser
+        window = (p.game, 4, p.sent_options)
+        d.poll = lambda:p.feed(power('TAG_CHANGE Entity=1 tag=TURN value=5').encode())
+        self.assertTrue(d.wait_for_action_boundary(1,window,12))
+        d.poll = lambda:p.feed(fixture())
+        with self.assertRaisesRegex(Stop,'game changed'):
+            d.wait_for_action_boundary(1,window,12)
+
     def test_submitted_or_same_turn_actions_are_never_treated_as_expired(self):
         d=self.identified_driver()
         p=d.parser

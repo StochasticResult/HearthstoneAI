@@ -57,6 +57,7 @@ class IncrementalBoard:
         self.options_line = None
         self.confirming_choice = None
         self.sent_options = 0
+        self.last_end_turn_options_id = None
         self.public_card_memory = {}
         self.identity_changes = set()
         self.saw_mulligan = False
@@ -71,6 +72,7 @@ class IncrementalBoard:
         self.options_line = None
         self.visual_step = self.visual_turn = None
         self.visual_game_entity = False
+        self.last_end_turn_options_id = None
 
     def _observe_options(self, line):
         option_prefix = "GameState.DebugPrintOptions() -"
@@ -84,10 +86,10 @@ class IncrementalBoard:
             self.options = []
             self.option = None
             return True
-        match = re.match(r"^option \d+ type=(\S+) mainEntity=(.*?) error=(\S+)", message)
+        match = re.match(r"^option (\d+) type=(\S+) mainEntity=(.*?) error=(\S+)", message)
         if match:
-            self.option = {"type": match.group(1), "id": board._ref_id(match.group(2)),
-                           "error": match.group(3), "targets": []}
+            self.option = {"index": int(match.group(1)), "type": match.group(2),
+                           "id": board._ref_id(match.group(3)), "error": match.group(4), "targets": []}
             self.options.append(self.option)
             return True
         if re.match(r"^sub[Oo]ption\b", message) and self.option is not None:
@@ -150,6 +152,7 @@ class IncrementalBoard:
             self.choice = None
             self.confirming_choice = None
             self.sent_options = 0
+            self.last_end_turn_options_id = None
             self.public_card_memory = {}
             self.identity_changes = set()
             self.saw_mulligan = False
@@ -168,8 +171,17 @@ class IncrementalBoard:
             self.invalidate("game log truncated")
             return
         game = self.game
-        if re.search(r"GameState\.SendOption\(\) - selectedOption=\d+\b", line):
+        sent = re.search(r"GameState\.SendOption\(\) - selectedOption=(\d+)\b"
+                         r"(?: selectedSubOption=(-?\d+) selectedTarget=(\d+)\b)?", line)
+        if sent:
             self.sent_options += 1
+            self.last_end_turn_options_id = None
+            index = int(sent[1])
+            if (sent.group(2, 3) == ('-1', '0') and
+                    any(o.get('index') == index and o['type'] == 'END_TURN' and not o.get('has_sub_options')
+                        and o['id'] is None and not o['targets'] and o['error'] in ('NONE','INVALID')
+                        for o in self.options)):
+                self.last_end_turn_options_id = self.options_id
             return
         visual_prefix = "PowerTaskList.DebugPrintPower() -"
         if visual_prefix in line:

@@ -37,6 +37,23 @@ def fixture():
 
 
 class IncrementalTests(unittest.TestCase):
+    def test_end_turn_receipt_is_bound_to_the_observed_option_group(self):
+        parser = inc.IncrementalBoard()
+        parser.feed(fixture())
+        options = b'D 10:00:00.0 GameState.DebugPrintOptions() - '
+        parser.feed(options + b'id=31\n' + options + b'option 5 type=END_TURN mainEntity= error=INVALID errorParam=\n')
+        send = b'D 10:00:01.0 GameState.SendOption() - '
+        for arguments, expected in (
+                (b'selectedOption=5 selectedSubOption=-1 selectedTarget=0', 31),
+                (b'selectedOption=0 selectedSubOption=-1 selectedTarget=0', None),
+                (b'selectedOption=5 selectedSubOption=-1 selectedTarget=79', None),
+                (b'selectedOption=5 selectedSubOption=1 selectedTarget=0', None),
+                (b'selectedOption=5', None)):
+            parser.feed(send + arguments + b'\n')
+            self.assertEqual(parser.last_end_turn_options_id, expected)
+        parser.feed(options + b'id=32\n' + send + b'selectedOption=5 selectedSubOption=-1 selectedTarget=0\n')
+        self.assertIsNone(parser.last_end_turn_options_id)
+
     def test_client_option_submission_is_counted_without_exposing_payload(self):
         parser = inc.IncrementalBoard()
         parser.feed(fixture())

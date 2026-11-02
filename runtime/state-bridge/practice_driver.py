@@ -556,13 +556,19 @@ class Driver:
 
     def execute_end_turn(self, own, state):
         sent_before = self.parser.sent_options
+        turn = board._num(state.get('game_turn'))
         def done():
-            if self.game_result():
-                return True
-            try:
-                return not self.snapshot(own)['own_turn']
-            except UnsafeState:
+            if (self.parser.sent_options != sent_before + 1 or state.get('options_id') is None
+                    or self.parser.last_end_turn_options_id != state['options_id']
+                    or self.parser.partial or self.identity_game is not self.parser.game or self.owner != own):
                 return False
+            if self.game_result() in ('WON','LOST','TIED'):
+                return True
+            # A triggered choice can keep the full board unavailable throughout
+            # the opponent's turn. The server receipt and turn flags are sufficient here.
+            entity = board._game_entity(self.parser.game)
+            return bool(turn is not None and entity and board._tag_int(entity,'TURN') == turn + 1
+                        and self.opponent_turn())
         for attempt in range(3):
             self.poll()
             if done():

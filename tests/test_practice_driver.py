@@ -296,10 +296,36 @@ class DriverTests(unittest.TestCase):
             driver.run(10,2)
         self.assertEqual([c.args[0]['options_id'] for c in driver.advisor.ask.call_args_list],[7,8])
 
+    def test_end_turn_uses_exact_submission_and_turn_flags_while_effect_resolves(self):
+        driver = self.identified_driver()
+        parser = driver.parser
+        parser.feed(power('TAG_CHANGE Entity=1 tag=TURN value=9').encode())
+        options = b'D 00:52:12.4044260 GameState.DebugPrintOptions() - '
+        parser.feed(options + b'id=31\n' + options + b'  option 0 type=END_TURN mainEntity= error=INVALID errorParam=\n')
+        state = {'game_turn': '9', 'options_id': 31}
+        driver.revalidate = Mock()
+        driver.poll = Mock()
+        driver.snapshot = Mock(side_effect=UnsafeState('game is resolving an action or choice'))
+        def after_click(done, _seconds):
+            self.assertFalse(done())
+            parser.feed(b'D 00:52:14.6055000 GameState.SendOption() - selectedOption=0 selectedSubOption=-1 selectedTarget=0 selectedPosition=0\n')
+            self.assertFalse(done())
+            parser.feed((power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=0') +
+                         power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1') +
+                         power('TAG_CHANGE Entity=1 tag=TURN value=10')).encode())
+            self.assertTrue(done())
+            parser.feed(b'D 00:52:16 GameState.SendOption() - selectedOption=1 selectedSubOption=-1 selectedTarget=0 selectedPosition=0\n')
+            self.assertFalse(done())
+        driver.wait_until = after_click
+        with patch('practice_driver.click') as send:
+            driver.execute_end_turn(1, state)
+        send.assert_called_once_with((1180,435))
+        driver.snapshot.assert_not_called()
+
     def test_end_turn_retries_ignored_click_but_never_a_sent_option(self):
         for submitted, expected_clicks in ((False,2),(True,1)):
             driver,state,_ = self.hand_driver()
-            driver.parser = SimpleNamespace(sent_options=0)
+            driver.parser = SimpleNamespace(sent_options=0, last_end_turn_options_id=None)
             driver.game_result = lambda: None
             driver.revalidate = Mock()
             def click(_point):

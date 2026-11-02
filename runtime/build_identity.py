@@ -17,8 +17,8 @@ def read_build(path):
     if path.is_symlink() or path.stat().st_size>4096:
         raise ValueError('Invalid runtime build identity')
     value=json.loads(path.read_text())
-    if value=={'version_id':UNVERSIONED,'identity_verified':False}:
-        return value
+    if isinstance(value,dict) and value.get('version_id')==UNVERSIONED and value.get('identity_verified') is False:
+        return {'version_id':UNVERSIONED,'identity_verified':False}
     if (not isinstance(value,dict) or not re.fullmatch(r'[A-Za-z0-9._-]{1,80}',str(value.get('version_id','')))
             or not re.fullmatch(r'[0-9a-f]{64}',str(value.get('content_sha256','')))):
         raise ValueError('Invalid runtime build identity')

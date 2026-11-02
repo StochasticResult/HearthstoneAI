@@ -118,9 +118,22 @@ def validate_config(config):
         raise SessionError("API Key 含有空白字符")
     model = config.get("model", "gpt-6.1-sol")
     import re
+    profile = {}
+    if isinstance(model, str) and ' ' in model.strip():
+        parts = model.split()
+        if len(parts) not in (2,3) or parts[0] != 'gpt-6.1-sol':
+            raise SessionError("模型配置无效，可用示例：gpt-6.1-sol fast low")
+        for setting in parts[1:]:
+            if setting in ('standard','fast') and 'service_tier' not in profile:
+                profile['service_tier'] = 'priority' if setting == 'fast' else 'default'
+            elif setting in ('low','medium','high','xhigh','max') and 'reasoning_effort' not in profile:
+                profile['reasoning_effort'] = setting
+            else:
+                raise SessionError("模型的速度或推理档位无效")
+        model = parts[0]
     if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise SessionError("模型名称无效")
-    result = {"api_key": config["api_key"], "model": model}
+    result = {"api_key": config["api_key"], "model": model, **profile}
     if 'mode' in config:
         if config['mode'] not in ('practice', 'ranked', 'ranked_auto'):
             raise SessionError("游戏模式无效")
@@ -344,8 +357,12 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
         from build_identity import current_build
         from match_review import save
         build=current_build(ROOT)
+        build['inference'] = {'model':config.get('model','gpt-6.1-sol'),
+                              'tier':config.get('service_tier','auto'),
+                              'effort':config.get('reasoning_effort','low')}
         save(dest/'run-version.json',build)
         emit('本局程序版本：'+build['version_id'],runtime_version=build['version_id'])
+        emit('推理设置 · %s · %s · %s' % (build['inference']['model'],build['inference']['tier'],build['inference']['effort']))
         emit("本局模式：%s" % label, game_mode=mode)
         emit("正在建立资源保护：不设对局时长、动作次数或累计 API 配额；保留内存、温度与电源检查",
              log_directory=str(dest), limits={"game_seconds": None, "api_requests": None, "api_tokens": None})

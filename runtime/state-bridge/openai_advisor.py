@@ -229,9 +229,14 @@ Never claim a guaranteed win from an uncertain line.
 """
 
 
-def request_payload(model, view, menu, instructions=INSTRUCTIONS):
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+
+
+def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tier=None, effort='low'):
     if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise AdvisorError("Invalid model ID")
+    if service_tier not in (None, 'default', 'priority') or effort not in EFFORTS:
+        raise AdvisorError("Invalid inference settings")
     # Put the same deck knowledge before the changing board. This preserves a
     # stable prompt prefix for provider caching, without relying on remote
     # conversation storage. The input remains bounded and self-contained.
@@ -284,8 +289,10 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS):
         "tool_choice": {"type": "function", "name": "choose_action"},
         "parallel_tool_calls": False, "max_output_tokens": MAX_OUTPUT,
     }
+    if service_tier:
+        payload['service_tier'] = service_tier
     if model.startswith(("gpt-5", "gpt-6", "o3", "o4")):
-        payload["reasoning"] = {"effort": "low"}
+        payload["reasoning"] = {"effort": effort}
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode()
     if len(encoded) > MAX_INPUT_BYTES:
         # A wide board repeats the same action field names many times. Use a
@@ -340,6 +347,8 @@ class OpenAIAdvisor:
     def __init__(self, config, transport=None, audit_path=None):
         self.key = config.get("api_key", "")
         self.model = config.get("model", DEFAULT_MODEL)
+        self.service_tier = config.get('service_tier')
+        self.effort = config.get('reasoning_effort', 'low')
         if not isinstance(self.key, str) or not 20 <= len(self.key) <= 512 or any(c.isspace() for c in self.key):
             raise AdvisorError("Enter an OpenAI API key in the application")
         self.calls = 0
@@ -494,7 +503,8 @@ class OpenAIAdvisor:
             self.record({"event": "proposed", "observation": view, "actions": menu,
                          "action": {"kind": "end_turn"}, "reason": "only legal supported action"})
             return {"kind": "end_turn"}
-        payload, size = request_payload(self.model, view, menu, self.instructions)
+        payload, size = request_payload(self.model, view, menu, self.instructions,
+                                       service_tier=self.service_tier, effort=self.effort)
         # The user removed cumulative API quotas. Keep actual accounting,
         # per-request bounds/timeouts, and the independent resource watchdog.
         self.calls += 1
@@ -507,10 +517,13 @@ class OpenAIAdvisor:
         action, reason, tokens = parse_response(response, menu)
         self.tokens += tokens
         self.record({"event": "proposed", "observation": view, "actions": menu, "action": action,
-                     "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms})
+                     "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
+                     "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
+                     "reasoning_effort": self.effort})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,
                           "api_elapsed_ms": elapsed_ms, "request_bytes": size,
-                          "response_model": actual_model, "decision": action,
+                          "response_model": actual_model, "served_tier": response.get('service_tier'),
+                          "reasoning_effort": self.effort, "decision": action,
                           "reason": reason}, ensure_ascii=False), flush=True)
         return action
 

@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-CATALOG = {} if sys.argv[1:] == ["--worker"] else json.loads(Path(__file__).with_name("card-catalog.json").read_text())
+from card_metadata import CATALOG
 DEFAULT_MODEL = "gpt-6.1-sol"
 MAX_OUTPUT = 1536
 MAX_INPUT_BYTES = 64000
@@ -30,29 +30,39 @@ def signature(state):
     return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def action_menu(state):
+def action_menu(state, *, with_gaps=False):
     supported = state.get("game_type") == "GT_VS_AI" or (state.get("game_type") == "GT_RANKED" and state.get("format") == "FT_STANDARD")
     if (not supported or not state.get("own_turn")
             or state.get("options_id") is None or state.get("phase", "main") != "main"):
         raise AdvisorError("Only a current supported turn with observed legal options is accepted")
     actions = []
+    gaps = []
     hand = {c["id"]: c for c in state["my_hand"]}
     attackers = {c["id"] for c in state["my_board"]} | {state["my_hero"]["id"]}
     power = (state.get("my_hero_power") or {}).get("id")
+    locations={c['id'] for c in state.get('my_locations',[])}
     for option in state["legal_options"]:
+        if option.get('type') not in ('POWER','ATTACK') or option.get('has_sub_options'):
+            gaps.append({'source_id':option['id'],'option_type':option.get('type'),
+                         'nested_choice':bool(option.get('has_sub_options'))})
+            continue  # Never confuse Trade/Forge or another option type with playing the card.
         source = option["id"]
         targets = option["targets"]
         if option.get("requires_target") and not targets:
             continue
         if source in hand:
-            if hand[source]["card_id"] not in CATALOG or hand[source]["card_type"] not in ("SPELL", "MINION"):
+            if hand[source]["card_id"] not in CATALOG or hand[source]["card_type"] not in ("SPELL", "MINION",'WEAPON','LOCATION','HERO'):
+                gaps.append({'source_id':source,'option_type':option.get('type')})
                 continue
             kind = "play"
+        elif source in locations:
+            kind = 'activate_location'
         elif source in attackers and targets:
             kind = "attack"
-        elif source == power and not targets and not option.get("requires_target"):
+        elif source == power:
             kind = "hero_power"
         else:
+            gaps.append({'source_id':source,'option_type':option.get('type')})
             continue
         for target in targets or [None]:
             action = {"kind": kind, "source_id": source}
@@ -63,7 +73,10 @@ def action_menu(state):
         actions.append({"kind": "end_turn"})
     if not actions or len(actions) > 256:
         raise AdvisorError("No supported legal actions, or action list exceeds its bound")
-    return {"a%d" % i: a for i, a in enumerate(actions)}
+    if gaps and all(a['kind']=='end_turn' for a in actions):
+        raise AdvisorError('Legal actions require an unsupported interaction; refusing a false forced end turn')
+    menu = {"a%d" % i: a for i, a in enumerate(actions)}
+    return (menu,gaps) if with_gaps else menu
 
 
 def public_view(state):
@@ -71,15 +84,20 @@ def public_view(state):
     entity_keys = ("id", "card_id", "position", "card_type", "cost", "attack", "health", "max_health", "armor", "durability",
                    "taunt", "frozen", "exhausted", "divine_shield", "windfury", "stealth",
                    "lifesteal", "poisonous", "reborn", "immune", "dormant", "silenced",
-                   "attacks_this_turn", "countdown_tag", "quest_progress", "quest_progress_total", "script_data_1", "script_data_2")
+                   'mega_windfury','rush','charge','deathrattle','titan','spell_damage','cooldown',
+                   'cant_be_targeted_by_spells','cant_be_targeted_by_hero_powers',
+                   "attacks_this_turn", "countdown_tag", "quest_progress", "quest_progress_total", "script_data_1", "script_data_2", "count")
     result = {k: state[k] for k in ("game_type", "format", "game_turn", "mana", "phase",
               "mana_cap", "mana_crystals", "mana_spent", "temporary_mana", "overload_locked", "overload_owed",
               "healing_as_damage", "healing_double",
               "deck_tracking_from_mulligan", "own_card_identity_changed",
               "my_deck_count", "enemy_deck_count", "enemy_hand_count", "my_fatigue", "enemy_fatigue",
-              "enemy_mana_crystals", "enemy_corpses", "enemy_secret_count", "client_build") if k in state}
+              "enemy_mana_crystals", "my_corpses", "enemy_corpses", "enemy_secret_count", "client_build") if k in state}
+    for k in ('my_board_slots_used','enemy_board_slots_used'):
+        if k in state:result[k]=state[k]
     ids = set()
-    for key in ("my_hero", "enemy_hero", "my_hero_power", "my_weapon", "enemy_weapon", "my_hand", "my_board", "enemy_board", "active_rituals", "enemy_active_rituals"):
+    for key in ("my_hero", "enemy_hero", "my_hero_power", 'enemy_hero_power', "my_weapon", "enemy_weapon", "my_hand", "my_board", "enemy_board", "active_rituals", "enemy_active_rituals",
+                'my_locations','enemy_locations','my_objectives','enemy_objectives','my_secrets','my_player_effects','enemy_player_effects'):
         value = state.get(key)
         if value is None:
             continue
@@ -89,10 +107,10 @@ def public_view(state):
                 ids.add(item["card_id"])
             mods = row.get("modifiers")
             if isinstance(mods, list):
-                item["modifiers"] = [{k: mod[k] for k in ("card_id", "script_data_1", "script_data_2") if k in mod}
-                                     for mod in mods[:12] if mod.get("card_id") in CATALOG]
+                item["modifiers"] = [{k: mod[k] for k in ("card_id", "script_data_1", "script_data_2", "count") if k in mod}
+                                     for mod in mods[:64] if mod.get("card_id") in CATALOG]
                 ids.update(mod["card_id"] for mod in item["modifiers"])
-                unknown = sum(mod.get("card_id") not in CATALOG for mod in mods[:12])
+                unknown = sum(mod.get('count',1) for mod in mods[:64] if mod.get("card_id") not in CATALOG)
                 if unknown:
                     item["unknown_modifier_count"] = unknown
             parts = row.get("effect_card_ids")
@@ -159,6 +177,13 @@ Compare complete feasible turn sequences before choosing the first action: check
 lethal, survival, mana after cost-changing cards, attack readiness, taunts, deathrattles,
 board slots, delayed rituals, and hand/deck resources. A live legal menu describes NOW, not
 the legality after a simulated play. Do not invent targets, mana, damage or future draws.
+Locations occupy board slots but are not minions or attackers; use only enumerated activations.
+Consider observed location durability/cooldown, weapon durability/effects, public quests and
+objectives/progress, enemy hero power, and lasting player effects. None means not observed,
+not zero. unavailable_interactions identifies real options the input adapter cannot execute;
+do not mistake those omissions for proof that no other legal move exists.
+Dormant, immune, stealth, spell damage, silence and multi-attack statuses matter;
+the live action menu remains the authority on current availability and target eligibility.
 Use the supplied deck synergies and candidate matchup plans conditionally. Reconsider your
 role (contest board, pressure, recover, refill) as the public evidence changes. Do not
 overtrade when damage is a faster win or overextend into a likely answer without a payoff.
@@ -491,9 +516,11 @@ class OpenAIAdvisor:
     def ask(self, state):
         view = self.view(state)
         view["recent_confirmed_actions"] = self.confirmed[-4:]
-        menu = action_menu(state)
+        menu, gaps = action_menu(state, with_gaps=True)
+        if gaps:
+            view['unavailable_interactions'] = gaps
         from tactical_checks import forced_face_attack
-        proof = forced_face_attack(state, menu)
+        proof = None if gaps else forced_face_attack(state, menu)
         return self.local_action(view, menu, proof) if proof else self.select(view, menu)
 
     def local_action(self, view, menu, proof):
@@ -524,22 +551,27 @@ class OpenAIAdvisor:
         return self.select(view, menu)["index"]
 
     def target(self, choice, state):
-        # Ritual of C'Thun has exactly one targeted ability: Glare. The
-        # source and TARGET list are explicitly observed in the real log.
-        # Other effects need their own verified target semantics.
+        # Exact engine-listed, publicly identifiable targets only. Glare has
+        # an additional known-effect arithmetic rule; other current visible
+        # effects are described by their public source text.
         if (state.get("phase") != "target" or choice.get("type") != "TARGET"
-                or choice.get("source_card_id") != "BE_726"
+                or choice.get("source_card_id") not in CATALOG
                 or choice.get("count_min") != 1 or choice.get("count_max") != 1):
             raise AdvisorError("Unsupported or unconfirmed target effect")
-        available = {c["id"]:c for c in state["enemy_board"] if c["health"] > 0}
+        glare = choice['source_card_id']=='BE_726'
+        visible = state['enemy_board'] if glare else (state.get('my_board',[])+state.get('enemy_board',[])
+            +state.get('my_locations',[])+state.get('enemy_locations',[])
+            +[state['my_hero'],state['enemy_hero']])
+        available = {c['id']:c for c in visible if c.get('health',c.get('durability',0))>0}
         targets = [item["id"] for item in choice["items"]
                    if item["id"] in available and item["card_id"] == available[item["id"]]["card_id"]]
         if len(targets) != len(choice["items"]) or len(set(targets)) != len(targets) or not targets:
-            raise AdvisorError("Target list is not an exact public enemy-minion list")
+            raise AdvisorError("Target list is not an exact public eligible entity list")
         menu = {"t%d" % i: {"kind":"choose_target", "target_id":eid} for i,eid in enumerate(targets)}
         view = self.view(state)
-        view["target_effect"] = {"card_id":"BE_013t3", "card":card_definition("BE_013t3"),
-                                 "basis":"only targeted ability of the observed Ritual of C'Thun"}
+        effect='BE_013t3' if glare else choice['source_card_id']
+        view['target_effect']={'card_id':effect,'card':card_definition(effect),
+                              'basis':'observed single-target choice and public source card'}
         if len(menu) == 1:
             self.decision_seq += 1
             action = next(iter(menu.values()))
@@ -548,7 +580,7 @@ class OpenAIAdvisor:
             print(json.dumps({"automatic_action":"choose_target", "target_id":action["target_id"]}),flush=True)
             return action
         from tactical_checks import glare_survival
-        proof = glare_survival(state, targets, CATALOG)
+        proof = glare_survival(state, targets, CATALOG) if glare else None
         if proof is not None:
             return self.local_action(view, menu, proof)
         return self.select(view,menu)
@@ -558,7 +590,7 @@ class OpenAIAdvisor:
 
     def confirm(self, action, state):
         self.record({"event": "confirmed", "action": action})
-        source = next((x for x in state.get("my_hand", []) + state.get("my_board", [])
+        source = next((x for x in state.get("my_hand", []) + state.get("my_board", []) + state.get('my_locations',[])
                        if x["id"] == action.get("source_id")), {})
         self.confirmed.append({"turn": state.get("game_turn"), "kind": action["kind"],
                                "card_id": source.get("card_id"), "target_id": action.get("target_id"),

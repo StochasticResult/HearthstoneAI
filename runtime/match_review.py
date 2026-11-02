@@ -126,10 +126,11 @@ def save(path, obj):
     temporary.replace(path)
 
 
-def write_review(dest, learning, *, game_closed=None):
+def write_review(dest, learning, *, game_closed=None, game_preserved=False, match_workers_closed=None, game_pid=None):
     summary, cases = summarize(dest)
     if game_closed is not None:
         summary['game_closed'] = game_closed
+    summary.update(game_preserved=game_preserved,match_workers_closed=match_workers_closed,game_pid=game_pid)
     learning.mkdir(parents=True, exist_ok=True, mode=0o700)
     history_path, queue_path = learning / 'match-history.json', learning / 'review-queue.json'
     def previous(path, limit):

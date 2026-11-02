@@ -175,11 +175,11 @@ class DriverTests(unittest.TestCase):
 
     def test_next_decision_waits_for_new_options_even_when_card_state_already_changed(self):
         driver, initial, _ = self.hand_driver()
-        initial.update(my_hero_power={'id':50},legal_options=[{'id':50,'targets':[]}])
+        initial.update(my_hero_power={'id':50},legal_options=[{'id':50,'type':'POWER','targets':[]}])
         changed = dict(initial,mana=0)
         fresh = dict(changed,options_id=8,legal_options=[],end_turn_allowed=True)
         driver.parser = SimpleNamespace(pending_choice=lambda _own: None,
-                                        game={'entities':{50:{'tags':{}}}}, options=[], options_id=7)
+                                        game={'entities':{50:{'tags':{}}}}, options=[], options_id=7, sent_options=0)
         driver.game_result = lambda: None
         driver.identify = lambda _status: 1
         driver.revalidate = Mock()

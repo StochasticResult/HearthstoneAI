@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from card_metadata import CATALOG, PUBLIC_OBJECTIVES, RITUALS
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "state-upstream" / "src"))
@@ -89,8 +90,13 @@ class IncrementalBoard:
                            "error": match.group(3), "targets": []}
             self.options.append(self.option)
             return True
+        if re.match(r"^sub[Oo]ption\b", message) and self.option is not None:
+            # A nested option is not a parent-card target. Keep this visible
+            # to the executor until that distinct interaction is supported.
+            self.option['has_sub_options'] = True
+            return True
         target = re.match(r"^target \d+ entity=(.*?) error=(\S+)", message)
-        if target and self.option is not None:
+        if target and self.option is not None and not self.option.get('has_sub_options'):
             target_id = board._ref_id(target.group(1))
             if target_id is not None:
                 self.option["targets"].append((target_id, target.group(2)))
@@ -351,7 +357,7 @@ class IncrementalBoard:
         choice = self.pending_choice(own_player_id) if choice_id is not None else None
         choosing_cards = bool(choice and choice["type"] == "GENERAL" and choice["shown"] and len(choice["items"]) in (3, 4))
         choosing_target = bool(choice and choice["type"] == "TARGET" and choice.get("owner") == own_player_id
-                               and choice.get("count_min") == choice.get("count_max") == 1 and 1 <= len(choice["items"]) <= 14)
+                               and choice.get("count_min") == choice.get("count_max") == 1 and 1 <= len(choice["items"]) <= 16)
         choosing = bool(choice and choice["id"] == choice_id and (choosing_cards or choosing_target))
         if choice_id is not None and not choosing:
             raise UnsafeState("requested choice is not currently visible")
@@ -377,19 +383,30 @@ class IncrementalBoard:
         if not extended and (board._tag_int(own_hero, "ARMOR") or board._tag_int(enemy_hero, "ARMOR")):
             raise UnsafeState("armor is not modeled")
         active_rituals, enemy_rituals = [], []
+        my_objectives, enemy_objectives, my_secrets = [], [], []
+        played_publicly = {ev.get('eid') for ev in game['events'] if ev.get('type')=='play'}
         enemy_secret_count = 0
         enemy_secret_ids = []
         for entity in game["entities"].values():
             ctype = board._ctype(entity)
             if entity.get("zone") == "SECRET":
-                if entity.get("cardId") in {"BE_085", "BE_726", "CAP_405tb2", "CAP_405tb3"} and (entity.get("controller") == own_player_id or extended):
-                    collection = active_rituals if entity.get("controller") == own_player_id else enemy_rituals
-                    collection.append({"id": entity["id"], "card_id": entity["cardId"],
+                cid=entity.get('cardId')
+                public_objective=(cid in PUBLIC_OBJECTIVES or cid in RITUALS or
+                    (cid in CATALOG and 'SECRET' not in CATALOG[cid].get('mechanics',[])
+                     and entity['id'] in played_publicly))
+                if public_objective and (entity.get('controller')==own_player_id or extended):
+                    row={"id": entity["id"], "card_id": cid,
                         "countdown_tag": board._num(entity["tags"].get("OBJECTIVE_COUNTDOWN")),
                         "quest_progress": board._num(entity["tags"].get("QUEST_PROGRESS")),
                         "quest_progress_total": board._num(entity["tags"].get("QUEST_PROGRESS_TOTAL")),
                         "script_data_1": board._num(entity["tags"].get("TAG_SCRIPT_DATA_NUM_1")),
-                        **custom_effects(entity)})
+                        "script_data_2": board._num(entity["tags"].get("TAG_SCRIPT_DATA_NUM_2")),
+                        **custom_effects(entity)}
+                    (my_objectives if entity.get('controller')==own_player_id else enemy_objectives).append(row)
+                    if cid in RITUALS:
+                        (active_rituals if entity.get('controller')==own_player_id else enemy_rituals).append(row)
+                elif extended and entity.get('controller')==own_player_id:
+                    my_secrets.append({'id':entity['id'],'card_id':cid})
                 elif extended and entity.get("controller") == rival["controller"]:
                     # Export existence only, even if a malformed/cached log
                     # happens to contain a hidden secret's identity.
@@ -397,7 +414,7 @@ class IncrementalBoard:
                     enemy_secret_ids.append(entity['id'])
                 else:
                     raise UnsafeState("secret state is not modeled")
-            if entity.get("zone") == "PLAY" and (ctype == "LOCATION" or (ctype == "WEAPON" and not extended)):
+            if entity.get("zone") == "PLAY" and ctype in ('LOCATION','WEAPON') and not extended:
                 raise UnsafeState("location or weapon is not modeled")
             if entity.get("zone") == "PLAY" and ctype in ("MINION", "HERO"):
                 unsupported = ("DIVINE_SHIELD", "WINDFURY", "MEGA_WINDFURY", "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED")
@@ -434,9 +451,27 @@ class IncrementalBoard:
             if not weapons:
                 return None
             entity = weapons[0]
+            durability = board._num(entity['tags'].get('DURABILITY'))
+            if durability is None:
+                # Live weapons (including BE_227) expose durability as
+                # HEALTH minus DAMAGE. Use observed tags, never base stats.
+                durability = required_number(entity, 'HEALTH') - board._tag_int(entity, 'DAMAGE')
             return {"id": entity["id"], "card_id": entity["cardId"],
                     "attack": required_number(entity, "ATK"),
-                    "durability": required_number(entity, "DURABILITY") - board._tag_int(entity, "DAMAGE")}
+                    "durability": max(0, durability),
+                    "modifiers": modifiers(entity),
+                    **{tag.lower(): bool(board._tag_int(entity,tag))
+                       for tag in ('LIFESTEAL','POISONOUS','WINDFURY','DEATHRATTLE','IMMUNE')}}
+
+        def location_state(entity):
+            durability = board._num(entity['tags'].get('DURABILITY'))
+            if durability is None:
+                durability = required_number(entity,'HEALTH')-board._tag_int(entity,'DAMAGE')
+            return {'id':entity['id'],'card_id':entity['cardId'],'position':entity['zone_pos'],
+                    'durability':max(0,durability),'exhausted':bool(board._tag_int(entity,'EXHAUSTED')),
+                    'cooldown':board._num(entity['tags'].get('COOLDOWN')),
+                    'script_data_1':board._num(entity['tags'].get('TAG_SCRIPT_DATA_NUM_1')),
+                    'modifiers':modifiers(entity)}
 
         def minion_state(entity):
             result = {"id": entity["id"], "card_id": entity["cardId"], "position": entity["zone_pos"],
@@ -444,10 +479,13 @@ class IncrementalBoard:
                     "taunt": board._tag_int(entity, "TAUNT") == 1, "frozen": board._tag_int(entity, "FROZEN") == 1,
                     "exhausted": board._tag_int(entity, "EXHAUSTED") == 1}
             if extended:
-                for tag in ("DIVINE_SHIELD", "WINDFURY", "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED"):
+                for tag in ("DIVINE_SHIELD", "WINDFURY", 'MEGA_WINDFURY', 'RUSH', 'CHARGE',
+                            "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED",
+                            'DEATHRATTLE','TITAN','CANT_BE_TARGETED_BY_SPELLS','CANT_BE_TARGETED_BY_HERO_POWERS'):
                     result[tag.lower()] = board._tag_int(entity, tag) != 0
                 result["attacks_this_turn"] = board._tag_int(entity, "NUM_ATTACKS_THIS_TURN")
                 result["modifiers"] = modifiers(entity)
+                result['spell_damage'] = board._tag_int(entity,'SPELLPOWER')
             for n in (1, 2):
                 value = board._num(entity["tags"].get("TAG_SCRIPT_DATA_NUM_%d" % n))
                 if value is not None:
@@ -457,7 +495,7 @@ class IncrementalBoard:
         def modifiers(entity):
             # Only called for our hand and public board entities; never walk
             # or export an attachment on an opponent's hidden hand card.
-            rows = []
+            grouped = {}
             for effect in game["entities"].values():
                 if (board._ctype(effect) == "ENCHANTMENT" and effect.get("zone") == "PLAY"
                         and board._tag_int(effect, "ATTACHED") == entity["id"] and effect.get("cardId")):
@@ -466,8 +504,13 @@ class IncrementalBoard:
                         value = board._num(effect["tags"].get("TAG_SCRIPT_DATA_NUM_%d" % n))
                         if value is not None:
                             row["script_data_%d" % n] = value
-                    rows.append(row)
-            if len(rows) > 12:
+                    key = tuple(sorted(row.items()))
+                    if key in grouped:
+                        grouped[key]['count'] = grouped[key].get('count',1)+1
+                    else:
+                        grouped[key] = row
+            rows = list(grouped.values())
+            if len(rows) > 64:
                 raise UnsafeState("too many visible modifiers for bounded context")
             return rows
 
@@ -485,11 +528,15 @@ class IncrementalBoard:
                              "attack": attack, "health": health, "modifiers": modifiers(card), **custom_effects(card)})
         own_board = board._of_side(game, own_player_id, "PLAY", "MINION")
         enemy_board = board._of_side(game, rival["controller"], "PLAY", "MINION")
-        own_entities = {e["id"] for e in hand + own_board}
+        own_locations = board._of_side(game,own_player_id,'PLAY','LOCATION')
+        enemy_locations = board._of_side(game,rival['controller'],'PLAY','LOCATION')
+        if len(own_board)+len(own_locations)>7 or len(enemy_board)+len(enemy_locations)>7:
+            raise UnsafeState('ambiguous occupied board slots')
+        own_entities = {e["id"] for e in hand + own_board + own_locations}
         for e in game["entities"].values():
             if e.get("controller") == own_player_id and e.get("zone") == "PLAY" and board._ctype(e) in ("HERO", "HERO_POWER"):
                 own_entities.add(e["id"])
-        public_targets = {e["id"] for e in own_board + enemy_board} | {own_hero["id"], enemy_hero["id"]}
+        public_targets = {e["id"] for e in own_board + enemy_board + own_locations + enemy_locations} | {own_hero["id"], enemy_hero["id"]}
         game_entity = board._game_entity(game)
         # END_TURN has no main entity. Real successful end-turn sends use
         # error=INVALID for that absent entity (observed before MAIN_END),
@@ -501,27 +548,31 @@ class IncrementalBoard:
             and any(o["type"] == "END_TURN" and o["id"] is None and not o["targets"]
                     and o["error"] in ("NONE", "INVALID") for o in self.options))
         legal = [{"id": opt["id"], "type": opt["type"], "requires_target": bool(opt["targets"]),
+                  **({'has_sub_options':True} if opt.get('has_sub_options') else {}),
                   "targets": [eid for eid, error in opt["targets"] if error == "NONE" and eid in public_targets]}
                  for opt in self.options if opt["id"] in own_entities and opt["error"] == "NONE"]
         powers = board._of_side(game, own_player_id, "PLAY", "HERO_POWER")
         power = powers[0] if len(powers) == 1 else None
+        enemy_powers = board._of_side(game,rival['controller'],'PLAY','HERO_POWER')
+        enemy_power = enemy_powers[0] if len(enemy_powers)==1 else None
         # Only cards with public play/death evidence or visible board presence.
         # In particular, never enumerate an opponent's hand/deck IDs, even if
         # a malformed log happens to contain a card name there.
         public_eids = {ev.get("eid") for ev in game["events"] if ev.get("type") in ("play", "death", "secret_trigger")}
-        public_eids.update(e["id"] for e in enemy_board)
+        public_eids.update(e["id"] for e in enemy_board+enemy_locations)
         public_cards = []
         for eid in sorted(e for e in public_eids if isinstance(e, int)):
             e = game["entities"].get(eid)
             if (e and e.get("controller") == rival["controller"] and e.get("cardId")
                     and e.get("zone") not in ("HAND", "DECK", "SECRET", "SETASIDE")
-                    and board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION")):
+                    and board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION", "HERO")):
                 public_cards.append({"id": eid, "card_id": e["cardId"],
                     "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))})
         seen_own = [{"id": e["id"], "card_id": e["cardId"]} for e in game["entities"].values()
             if e.get("controller") == own_player_id and e.get("cardId")
             and e.get("zone") in ("HAND", "PLAY", "GRAVEYARD", "SECRET", "REMOVEDFROMGAME", "SETASIDE")
-            and board._ctype(e) in ("MINION", "SPELL")
+            and (board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION")
+                 or (board._ctype(e)=='HERO' and 'cost' in CATALOG.get(e['cardId'],{})))
             and not board._tag_int(e, "CREATOR") and not board._tag_int(e, "COPIED_FROM_ENTITY_ID")]
         known_hand = []
         known_secrets = []
@@ -559,8 +610,17 @@ class IncrementalBoard:
             "my_hero_power": {"id": power["id"], "card_id": power["cardId"],
                               "cost": board._num(power["tags"].get("COST")),
                               "exhausted": board._tag_int(power, "EXHAUSTED") == 1} if power else None,
+            'enemy_hero_power': {'id':enemy_power['id'],'card_id':enemy_power['cardId'],
+                                'cost':board._num(enemy_power['tags'].get('COST')),
+                                'exhausted':bool(board._tag_int(enemy_power,'EXHAUSTED'))} if enemy_power else None,
             "my_hand": own_hand, "my_board": [minion_state(e) for e in own_board],
             "enemy_board": [minion_state(e) for e in enemy_board],
+            'my_locations':[location_state(e) for e in own_locations],
+            'enemy_locations':[location_state(e) for e in enemy_locations],
+            'my_board_slots_used':len(own_board)+len(own_locations),
+            'enemy_board_slots_used':len(enemy_board)+len(enemy_locations),
+            'my_player_effects':modifiers(own),'enemy_player_effects':modifiers(rival),
+            'my_objectives':my_objectives,'enemy_objectives':enemy_objectives,'my_secrets':my_secrets,
             "my_deck_count": len(board._in_zone(game, own_player_id, "DECK")),
             "enemy_deck_count": len(board._in_zone(game, rival["controller"], "DECK")),
             "enemy_hand_count": len(board._in_zone(game, rival["controller"], "HAND")),
@@ -568,6 +628,7 @@ class IncrementalBoard:
             "enemy_fatigue": board._tag_int(rival, "FATIGUE"),
             "enemy_mana_crystals": board._tag_int(rival, "RESOURCES"),
             "enemy_corpses": board._num(rival["tags"].get("CORPSES")),
+            "my_corpses": board._num(own["tags"].get("CORPSES")),
             "opponent_public_cards": public_cards[-40:],
             "own_seen_original": sorted(seen_own, key=lambda e: e["id"])[-60:],
             "own_known_deck": known_deck[:60],
@@ -591,13 +652,17 @@ class IncrementalBoard:
 
 class LogFollower:
     """Finite poll; refuse file replacement/truncation rather than rebuilding a partial game."""
-    def __init__(self, path, parser):
+    def __init__(self, path, parser, start_offset=0):
         self.path = Path(path)
         self.parser = parser
         self.file = self.path.open("rb")
         st = os.fstat(self.file.fileno())
         self.identity = (st.st_dev, st.st_ino)
-        self.offset = 0
+        if type(start_offset) is not int or not 0 <= start_offset <= st.st_size:
+            self.file.close()
+            raise UnsafeState('invalid game log start offset')
+        self.offset = start_offset
+        self.file.seek(start_offset)
 
     def poll(self, max_bytes=64 * 1024):
         st = self.path.stat()

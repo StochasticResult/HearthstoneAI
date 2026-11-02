@@ -17,6 +17,7 @@ from deck_observation import save_selected_deck
 from game_watchdog import GAME_EXEC, processes
 from navigation import FRAMEWORK, Stop as SupervisorError, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
+from game_boundary import LogBoundary, result_dismissal
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path.home() / "Library/Application Support/HearthstoneAI"
@@ -79,9 +80,10 @@ def guard_event(line, source):
     else:
         message = "%s状态" % source
     emit(message, source=source, metrics=event)
+    return event
 
 
-def drain_guards(streams, sources):
+def drain_guards(streams, sources, observer=None):
     for stream in select.select(list(streams), [], [], 0)[0]:
         chunk = os.read(stream.fileno(), 8192)
         data = streams[stream] + chunk
@@ -94,7 +96,9 @@ def drain_guards(streams, sources):
         elif len(streams[stream]) > 16384:
             raise SessionError("资源监控输出异常")
         for line in lines:
-            guard_event(line, sources[stream])
+            event = guard_event(line, sources[stream])
+            if observer and isinstance(event,dict):
+                observer(event, sources[stream])
 
 
 def launch_hearthstone():
@@ -206,46 +210,152 @@ def navigation_click(point):
         time.sleep(.15)
 
 
-def run(config, parent_pid, mode="practice", swap_baseline=None):
+class PersistentClient:
+    """Own the client/watchdog once; per-game workers never close them."""
+    def __init__(self, parent_pid, swap_baseline):
+        self.parent_pid, self.swap_baseline = parent_pid, swap_baseline
+        self.watchdog = self.lock = None
+        self.streams, self.sources = {}, {}
+        self.pid = None
+        self.launched = False
+        self.previous = None
+        self.boundary = None
+
+    def observe(self, event, source):
+        if source == '游戏守护' and type(event.get('claimed_pid')) is int:
+            if self.pid is not None and self.pid != event['claimed_pid']:
+                raise SessionError('游戏进程身份改变')
+            self.pid = event['claimed_pid']
+
+    def prepare(self):
+        if self.watchdog is None:
+            self.lock = lock_session()
+            preflight()
+            self.watchdog = subprocess.Popen([sys.executable, str(ROOT/'game_watchdog.py'),
+                '--startup-seconds','120','--run-seconds','0','--temporary-fps','30',
+                '--parent-pid',str(os.getpid()),'--swap-baseline-mib',str(self.swap_baseline/(1024**2))],
+                stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            armed=read_json_line(self.watchdog,10)
+            guard_event(json.dumps(armed).encode(),'游戏守护')
+            if armed.get('watchdog') != 'armed':
+                raise SessionError('游戏资源保护启动失败')
+            self.streams={self.watchdog.stdout:getattr(self.watchdog,'_pending_line_bytes',b'')}
+            self.sources={self.watchdog.stdout:'游戏守护'}
+        else:
+            self.return_to_menu()
+
+    def tick(self):
+        if self.parent_pid and os.getppid() != self.parent_pid:
+            raise SessionError('应用已退出，停止本次运行')
+        if self.watchdog:
+            drain_guards(self.streams,self.sources,self.observe)
+            if self.watchdog.poll() is not None:
+                raise SessionError('常驻游戏资源保护已停止')
+        if self.pid is not None and not self.alive():
+            raise SessionError('原有炉石进程已退出；不自动启动另一份客户端')
+
+    def alive(self):
+        return (self.watchdog is not None and self.watchdog.poll() is None and self.pid is not None
+                and [p[0] for p in processes(GAME_EXEC)] == [self.pid])
+
+    def return_to_menu(self):
+        if not self.previous or self.previous.get('outcome') not in ('WON','LOST','TIED') or self.boundary is None:
+            raise SessionError('上一局未核实结束，不执行结算或排队操作')
+        deadline=time.monotonic()+60
+        last_click=0; clicks=0
+        while time.monotonic()<deadline:
+            self.tick()
+            self.boundary.check()
+            status=read_status()
+            if status and scene_ready(status):
+                mode=status['scene']['mode']
+                if mode==7:
+                    # Validate exactly the same Standard/deck gate as first launch.
+                    if next_ranked_navigation(1,status):
+                        emit('已返回标准选牌；保留原炉石进程', game_pid=self.pid)
+                        return
+                point = next_ranked_navigation(0,status) if mode==3 else result_dismissal(status,self.previous['outcome'])
+                if point and clicks<4 and time.monotonic()-last_click>5:
+                    navigation_click(point)
+                    last_click=time.monotonic();clicks+=1
+                    emit('正在退出已结束的对局结算',game_pid=self.pid)
+            time.sleep(.5)
+        raise SessionError('未能确认返回标准选牌；停止排队')
+
+    def driver_log_args(self):
+        if not self.launched:
+            return ['--new-session']
+        if self.boundary is None:
+            raise SessionError('缺少下一局日志边界')
+        return ['--log',str(self.boundary.path),'--start-offset',str(self.boundary.queue_offset())]
+
+    def remember(self, dest, review):
+        path=dest/'log-cursor.json'
+        if path.is_symlink() or path.stat().st_size>2048:
+            raise SessionError('单局日志边界无效')
+        self.boundary=LogBoundary(json.loads(path.read_text()))
+        self.previous=review
+
+    def close(self):
+        try:
+            stop_child(self.watchdog)
+            if self.watchdog and self.watchdog.stdout and not self.watchdog.stdout.closed:
+                for _ in range(8):
+                    if not self.streams:break
+                    drain_guards(self.streams,self.sources)
+        finally:
+            if self.watchdog and self.watchdog.stdout:
+                self.watchdog.stdout.close()
+            self.streams.clear()
+            if self.lock:self.lock.close();self.lock=None
+
+
+def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
     global _event_log
     expected = expected_type(mode)[1]
     label = "标准天梯" if mode == "ranked" else "人机练习"
-    lock = lock_session()
+    lock = lock_session() if client is None else None
     watchdog = driver = caffeine = None
     tail = None
     dest = None
     review_summary = None
     streams, sources = {}, {}
+    finished = False
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     def interrupted(_signal, _frame):
         raise SessionError("已收到停止指令")
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
-        preflight()
+        if client is None:preflight()
         dest = session_directory()
         _event_log = EventLog(dest / "session-events.jsonl")
         emit("本局模式：%s" % label, game_mode=mode)
         emit("正在建立资源保护：不设对局时长、动作次数或累计 API 配额；保留内存、温度与电源检查",
              log_directory=str(dest), limits={"game_seconds": None, "api_requests": None, "api_tokens": None})
         baseline_args = [] if swap_baseline is None else ['--swap-baseline-mib', str(swap_baseline / (1024**2))]
-        watchdog = subprocess.Popen([sys.executable, str(ROOT / "game_watchdog.py"),
+        if client:
+            client.prepare()
+            watchdog=client.watchdog
+        else:
+            watchdog = subprocess.Popen([sys.executable, str(ROOT / "game_watchdog.py"),
             "--startup-seconds", "120", "--run-seconds", "0", "--temporary-fps", "30",
             "--parent-pid", str(os.getpid())] + baseline_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        armed = read_json_line(watchdog, 10)
-        guard_event(json.dumps(armed).encode(), "游戏守护")
-        if armed.get("watchdog") != "armed":
-            raise SessionError("游戏资源保护启动失败")
+            armed = read_json_line(watchdog, 10)
+            guard_event(json.dumps(armed).encode(), "游戏守护")
+            if armed.get("watchdog") != "armed":
+                raise SessionError("游戏资源保护启动失败")
         reconnect_args = []
         for previous in sorted(dest.parent.glob("run-*"), reverse=True):
             if previous != dest and previous.is_dir() and not previous.is_symlink() and (previous / "Power.log").is_file():
                 reconnect_args.extend(["--reconnect-evidence", str(previous / "Power.log")])
             if len(reconnect_args) == 8:
                 break
+        log_args = client.driver_log_args() if client else ['--new-session']
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
             "--log", str(dest / "actions.log"), "--timeout", "0", "--max-rss-mib", "200", "--max-cpu", "130",
             "--defer-maintenance", "--parent-pid", str(os.getpid())] + baseline_args + ["--", "/usr/bin/nice", "-n", "10", sys.executable,
-            str(ROOT / "state-bridge/practice_driver.py"), "--new-session", "--evidence", str(dest / "Power.log"),
+            str(ROOT / "state-bridge/practice_driver.py")] + log_args + ["--evidence", str(dest / "Power.log"),
             "--deck-snapshot", str(dest / "selected-deck.json"),
             "--watchdog-pid", str(watchdog.pid), "--seconds", "0", "--max-actions", "0", "--mode", mode, "--openai-config-stdin"] + reconnect_args,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -258,6 +368,8 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
         if "preflight" not in checked or "started_pid" not in started:
             raise SessionError("AI 进程资源保护启动失败")
         streams = {p.stdout: getattr(p, "_pending_line_bytes", b"") for p in (watchdog, driver)}
+        if client:
+            streams[watchdog.stdout]=client.streams.get(watchdog.stdout,b'')
         sources = {watchdog.stdout: "游戏守护", driver.stdout: "AI 守护"}
         if swap_baseline is None:  # Autoplay owns one assertion across all games and resource waits.
             caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-w", str(os.getpid())],
@@ -267,9 +379,14 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
         time.sleep(.8)
         if watchdog.poll() is not None or driver.poll() is not None:
             raise SessionError("启动前资源保护已经停止")
-        launch_hearthstone()
-        emit("已向战网请求启动炉石，正在等待实际游戏进程和主界面")
-        stage, last_click, focused, in_game = 0, 0, False, False
+        reuse=bool(client and client.launched)
+        if not reuse:
+            launch_hearthstone()
+            if client:client.launched=True
+            emit("已向战网请求启动炉石，正在等待实际游戏进程和主界面")
+        else:
+            emit('本局复用炉石客户端，仅新建 AI 与解析后台',game_pid=client.pid)
+        stage, last_click, focused, in_game = (1 if reuse else 0), 0, reuse, False
         previous_scene = None
         tail = (dest / "actions.log").open("rb")
         log_buffer = b""
@@ -277,7 +394,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
             if parent_pid and os.getppid() != parent_pid:
                 raise SessionError("应用已退出，停止本次运行")
             # Drain child pipes so resource telemetry can never block a guard.
-            drain_guards(streams, sources)
+            drain_guards(streams, sources, client.observe if client else None)
             log_buffer += tail.read(8192)
             lines = log_buffer.split(b"\n")
             log_buffer = lines.pop()
@@ -290,6 +407,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
                 if driver.returncode != 0:
                     raise SessionError("AI 已停止，原因见上方运行记录")
                 emit("本次%s结束" % label)
+                finished=True
                 break
             if watchdog.poll() is not None:
                 raise SessionError("游戏资源保护已结束运行，原因见上方守护记录")
@@ -328,7 +446,8 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
         # Block repeated stop signals while finally restores settings.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        for child in (driver, watchdog, caffeine):
+        retained=bool(client and finished)
+        for child in (driver, None if retained else watchdog, caffeine):
             stop_child(child)
         for child, label in ((watchdog, "游戏守护"), (driver, "AI 守护")):
             if child and child.stdout and child.stdout not in sources:
@@ -338,17 +457,24 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
         for _ in range(8):
             if not streams:
                 break
-            drain_guards(streams, sources)
+            drain_guards(streams, sources, client.observe if client else None)
+        if client:
+            client.streams={s:b for s,b in streams.items() if s is watchdog.stdout} if watchdog else {}
         if tail:
             tail.close()
-        for child in (driver, watchdog, caffeine):
+        for child in (driver, None if retained else watchdog, caffeine):
             if child:
                 for stream_name in ('stdin', 'stdout', 'stderr'):
                     stream = getattr(child, stream_name, None)
                     if stream and not stream.closed:
                         stream.close()
         game_closed = not bool(processes(GAME_EXEC)) if watchdog is not None else None
-        if game_closed is False:
+        preserved=bool(retained and client.alive())
+        workers_closed=driver is not None and driver.poll() is not None
+        if preserved:
+            emit('本局 AI 后台已回收，炉石继续保持运行',game_preserved=True,
+                 game_pid=client.pid,match_workers_closed=workers_closed)
+        elif game_closed is False:
             emit("AI 已停止，但炉石进程仍在运行，关闭尚未确认", stopped=True, game_closed=False, error=True)
         else:
             emit("已停止：子进程已回收，设置恢复结果见上方记录", stopped=True,
@@ -356,14 +482,17 @@ def run(config, parent_pid, mode="practice", swap_baseline=None):
         try:
             if dest:
                 from match_review import write_review
-                review_summary = write_review(dest, DATA / "learning", game_closed=game_closed)
+                review_summary = write_review(dest, DATA / "learning", game_closed=game_closed,
+                    game_preserved=preserved, match_workers_closed=workers_closed,
+                    game_pid=client.pid if client else None)
+                if preserved:client.remember(dest,review_summary)
                 emit("对局复盘已保存：%s；%s" % (review_summary["outcome"],
                      "下次开局前需复盘" if review_summary["review_before_next_game"] else "已记录决策和资源指标"),
                      review_outcome=review_summary["outcome"])
         except (OSError, ValueError):
             emit("复盘报告未能保存；原始有界记录仍在本次运行目录中", error=True)
         finally:
-            lock.close()
+            if lock:lock.close()
             if _event_log:
                 _event_log.close()
                 _event_log = None
@@ -382,7 +511,7 @@ def main():
     config = validate_config(json.loads(sys.stdin.readline(4097)))
     if config.get('mode') == 'ranked_auto':
         from ranked_autoplay import run_autoplay
-        run_autoplay(config, args.parent_pid, DATA, run, emit)
+        run_autoplay(config, args.parent_pid, DATA, run, emit, client_factory=PersistentClient)
         return
     from evaluation_session import consume_request, run_evaluation
     suite = consume_request(DATA)
@@ -393,7 +522,7 @@ def main():
         mode = consume_game_request(DATA)
         if mode in ("ranked_batch", "ranked_auto"):
             from ranked_autoplay import run_autoplay
-            run_autoplay(config, args.parent_pid, DATA, run, emit)
+            run_autoplay(config, args.parent_pid, DATA, run, emit, client_factory=PersistentClient)
         else:
             run(config, args.parent_pid, mode if mode != 'practice' else config.get('mode', mode))
 

@@ -49,11 +49,8 @@ def _mirror_rows(side):
 
 
 def _log_rows(game, player):
-    if any(e.get("zone") == "PLAY" and e.get("controller") == player and board._ctype(e) == "LOCATION"
-           for e in game["entities"].values()):
-        raise UnsafeState("locations not supported for identity")
     return {(int(e["id"]), e["cardId"], int(e["zone_pos"]))
-            for e in board._of_side(game, player, "PLAY", "MINION")}
+            for e in board._of_side(game, player, "PLAY", "MINION")+board._of_side(game,player,'PLAY','LOCATION')}
 
 
 def practice_identity(game, mirror, mode="practice"):

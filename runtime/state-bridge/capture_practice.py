@@ -20,14 +20,18 @@ class CaptureError(Exception):
 
 
 class Capture:
-    def __init__(self, source, destination, max_bytes=MAX_BYTES):
+    def __init__(self, source, destination, max_bytes=MAX_BYTES, start_offset=0):
         self.source = Path(source)
         self.destination = Path(destination)
         self.max_bytes = max_bytes
         self.reader = self.source.open("rb")
         stat = os.fstat(self.reader.fileno())
         self.identity = (stat.st_dev, stat.st_ino)
-        self.offset = 0
+        if type(start_offset) is not int or not 0 <= start_offset <= stat.st_size:
+            self.reader.close()
+            raise CaptureError('invalid game log start offset')
+        self.offset = start_offset
+        self.reader.seek(start_offset)
         self.written = 0
         self.capped = False
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL

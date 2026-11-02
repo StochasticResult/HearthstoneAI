@@ -6,13 +6,21 @@ returns None. Hidden future cards remain unknown even when the rule applies.
 """
 
 
+def extra_public_effects(state):
+    """Arithmetic shortcuts must opt out of newly observed mechanics."""
+    if any(state.get(k) for k in ('my_locations','enemy_locations','my_player_effects',
+                                  'enemy_player_effects','my_secrets','enemy_objectives')):
+        return True
+    return any(r.get('card_id') not in ('BE_085','BE_726') for r in state.get('my_objectives',[]))
+
+
 def forced_face_attack(state, menu):
     """Skip a paid choice when only harmless, ordinary face attacks remain.
 
     Never handles combat trades, hero attacks, secrets, enemy board triggers,
     unknown buffs, weapons, or an alternative playable card/power.
     """
-    if (state.get('enemy_board') != [] or state.get('enemy_secret_count', 0)
+    if (extra_public_effects(state) or state.get('enemy_board') != [] or state.get('enemy_secret_count', 0)
             or state.get('enemy_weapon') or state.get('enemy_active_rituals')
             or state.get('healing_as_damage', 0) or state.get('phase', 'main') != 'main'):
         return None
@@ -41,7 +49,7 @@ def forced_face_attack(state, menu):
 
 
 def glare_survival(state, targets, catalog):
-    if (state.get('phase') != 'target' or not state.get('own_turn')
+    if (extra_public_effects(state) or state.get('phase') != 'target' or not state.get('own_turn')
             or state.get('mana') != 0 or state.get('my_board') != []
             or state.get('my_hand') != [] or state.get('enemy_weapon')
             or state.get('my_weapon') or state.get('enemy_active_rituals')
@@ -75,7 +83,8 @@ def glare_survival(state, targets, catalog):
         if (definition.get('type') != 'MINION'
                 or text not in ('', 'taunt', 'divine shield', 'windfury')
                 or not set(definition.get('mechanics', [])) <= {'TAUNT', 'DIVINE_SHIELD', 'WINDFURY'}
-                or row.get('modifiers', []) or any(row.get(k) for k in ('reborn', 'dormant', 'frozen'))
+                or row.get('modifiers', []) or any(row.get(k) for k in ('reborn', 'dormant', 'frozen',
+                    'mega_windfury','titan','deathrattle','poisonous','lifesteal'))
                 or type(row.get('attack')) is not int or not 0 <= row['attack'] <= 100
                 or type(row.get('health')) is not int or not 0 < row['health'] <= 100):
             return None

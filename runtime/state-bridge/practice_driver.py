@@ -184,7 +184,10 @@ def target_point(state, eid):
     if state["enemy_hero"]["id"] == eid:
         return (735, 208)
     for key, y in (("my_board", 510), ("enemy_board", 365)):
-        rows = sorted(state[key], key=lambda x: x["position"])
+        locations = state.get('my_locations' if key=='my_board' else 'enemy_locations',[])
+        rows = sorted(state[key]+locations, key=lambda x: x["position"])
+        if len(rows)>7 or len({x['position'] for x in rows})!=len(rows):
+            raise Stop('ambiguous public board layout')
         for i, card in enumerate(rows):
             if card["id"] == eid:
                 return (round(735 + (i - (len(rows) - 1) / 2) * 105), y)
@@ -200,7 +203,9 @@ def plan_inputs(state, advice):
         target = int(advice["target_id"]) if "target_id" in advice else None
     except (KeyError, ValueError, TypeError) as exc:
         raise Stop("invalid advisor output") from exc
-    opt = next((o for o in state["legal_options"] if o["id"] == source), None)
+    opt = next((o for o in state["legal_options"] if o["id"] == source
+                and o.get('type') in ('POWER','ATTACK') and not o.get('has_sub_options')
+                and (target is None or target in o['targets'])), None)
     if opt is None or (target is not None and target not in opt["targets"]):
         raise Stop("advisor action is not in current legal options")
     if kind == "attack":
@@ -208,15 +213,20 @@ def plan_inputs(state, advice):
             raise Stop("unsupported attack source or target")
         return ("drag", target_point(state, source), target_point(state, target))
     if kind == "hero_power":
-        if target is not None or (state.get("my_hero_power") or {}).get("id") != source:
+        if (state.get("my_hero_power") or {}).get("id") != source:
             raise Stop("unsupported hero power")
-        return ("click_power", (870, 690), None)
+        return ("ability_target" if target is not None else "click_power", (870, 690), target_point(state,target) if target is not None else None)
+    if kind == 'activate_location':
+        if not any(c['id']==source for c in state.get('my_locations',[])):
+            raise Stop('location source is not on the friendly board')
+        return ('ability_target' if target is not None else 'click_power', target_point(state,source),
+                target_point(state,target) if target is not None else None)
     if kind == "play":
         card = next((c for c in state["my_hand"] if c["id"] == source), None)
         if card is None:
             raise Stop("play source is not in hand")
         start = hand_point(state["my_hand"], source)
-        if card["card_type"] == "MINION" and target is not None:
+        if card["card_type"] in ('MINION','WEAPON','HERO') and target is not None:
             if target is None:
                 raise Stop("freeze target missing")
             return ("battlecry", start, target_point(state, target))
@@ -250,10 +260,10 @@ def choice_index(choice, board_count, mana):
 
 
 class Driver:
-    def __init__(self, path, evidence, watchdog, advisor=None, deck_snapshot=None, reconnect_evidence=()):
+    def __init__(self, path, evidence, watchdog, advisor=None, deck_snapshot=None, reconnect_evidence=(), start_offset=0):
         self.parser = IncrementalBoard()
-        self.follower = LogFollower(path, self.parser)
-        self.capture = Capture(path, evidence)
+        self.follower = LogFollower(path, self.parser, start_offset=start_offset)
+        self.capture = Capture(path, evidence, start_offset=start_offset)
         self.watchdog = watchdog
         if advisor is None:
             raise Stop("Launch through the application with an API advisor")
@@ -266,9 +276,15 @@ class Driver:
         self.recovered_previous = None
 
     def close(self):
-        self.advisor.close()
-        self.follower.close()
-        self.capture.close()
+        try:
+            self.advisor.close()
+            from match_review import save
+            save(self.capture.destination.with_name('log-cursor.json'),
+                 {'source': str(self.follower.path), 'device': self.follower.identity[0],
+                  'inode': self.follower.identity[1], 'offset': self.follower.offset})
+        finally:
+            self.follower.close()
+            self.capture.close()
 
     def snapshot(self, own, **_kwargs):
         return self.parser.snapshot(own, allow_practice=True, extended=True)
@@ -612,13 +628,22 @@ class Driver:
                 time.sleep(.7)
                 continue
             first_mana_wait = None
+            # Enemy effects can arrive over several packets. Continue parsing
+            # them, but don't demand a complete actionable snapshot mid-effect
+            # while we have no turn to play. Pending choices were handled above.
+            own_player = next((p for p in board._players(self.parser.game)
+                               if board._tag_int(p,'PLAYER_ID')==own),None)
+            if own_player and not board._tag_int(own_player,'CURRENT_PLAYER'):
+                visual_wait_since=None
+                time.sleep(.7)
+                continue
             try:
                 state = self.snapshot(own)
             except UnsafeState as error:
                 if str(error) == "missing COST" and self.recover_observed_zero_cost(own):
                     previous = self.recovered_previous
                     continue
-                if str(error) not in ("incomplete trailing log line", "game is resolving an action or choice", "mulligan is not supported"):
+                if not str(error).startswith('missing ') and str(error) not in ("incomplete trailing log line", "game is resolving an action or choice", "mulligan is not supported"):
                     raise Stop("unsupported game state: " + str(error)) from error
                 resolving_since = resolving_since or time.monotonic()
                 if time.monotonic() - resolving_since >= 20:
@@ -705,7 +730,9 @@ class Driver:
             checked_geometry()
             kind, first, second = plan
             source_id = int(advice.get("source_id", 0))
-            source_card = next((c["card_id"] for c in state["my_hand"] + state["my_board"] if c["id"] == source_id), None)
+            source_card = next((c.get("card_id") for c in state["my_hand"] + state["my_board"] + state.get('my_locations',[])
+                                + [state.get('my_hero_power') or {},state['my_hero']]
+                               if c.get("id") == source_id), None)
             print(json.dumps({"attempt": advice["kind"], "card": source_card, "source_id": source_id,
                               "from": first, "to": second, "hand_size": len(state["my_hand"])}), flush=True)
             if diagnose_hover and advice["kind"] == "play":
@@ -723,9 +750,17 @@ class Driver:
             before_attacks = board._tag_int(self.parser.game["entities"].get(source_id, {"tags": {}}), "NUM_ATTACKS_THIS_TURN")
             if kind == "click":
                 self.execute_end_turn(own,state)
-            elif kind == "click_power":
+            elif kind in ('click_power','ability_target'):
+                sent_before = self.parser.sent_options
                 click(first)
-                self.wait_until(lambda: bool(self.game_result()) or self.snapshot(own)["options_id"] != state["options_id"], 10)
+                if second is not None:
+                    time.sleep(.5)
+                    self.poll()
+                    if self.parser.options_id!=state['options_id'] or target_point(self.snapshot(own),int(advice['target_id']))!=second:
+                        raise Stop('targeted ability changed before target input')
+                    click(second)
+                self.wait_until(lambda: bool(self.game_result()) or
+                    (self.parser.sent_options>sent_before and self.parser.options_id!=state['options_id']),10)
             elif kind == "drag":
                 drag(first, second)
             elif kind == "battlecry":
@@ -799,12 +834,15 @@ def main():
     ap.add_argument("--prior-evidence", type=Path)
     ap.add_argument("--deck-snapshot", type=Path)
     ap.add_argument("--reconnect-evidence", type=Path, action="append", default=[])
+    ap.add_argument('--start-offset', type=int, default=0, help='start a fresh parser at a verified pre-queue log boundary')
     ap.add_argument("--openai-config-stdin", action="store_true", help="read API settings privately from stdin")
     ap.add_argument("--mode", choices=("practice","ranked"), default="practice")
     args = ap.parse_args()
     RUN_MODE = args.mode
     if args.seconds < 0 or args.max_actions < 0:
         ap.error("game limits must be nonnegative; 0 means no quota")
+    if args.start_offset < 0 or (args.new_session and args.start_offset):
+        ap.error('start offset requires an existing log and must be nonnegative')
     if not watchdog_alive(args.watchdog_pid):
         raise Stop("no armed game watchdog")
     if not args.openai_config_stdin:
@@ -849,7 +887,7 @@ def main():
         finally:
             reader.close()
     driver = Driver(path, args.evidence, args.watchdog_pid, advisor=api_advisor, deck_snapshot=args.deck_snapshot,
-                    reconnect_evidence=args.reconnect_evidence)
+                    reconnect_evidence=args.reconnect_evidence, start_offset=args.start_offset)
     try:
         driver.run(args.seconds, args.max_actions, diagnose_hover=args.diagnose_hover, previous=previous)
     except ClientFatal as error:

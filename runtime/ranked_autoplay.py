@@ -21,7 +21,9 @@ def stop_reason(review):
         return 'incomplete_game'
     if review.get('game_type') != 'GT_RANKED':
         return 'ranked_result_not_verified'
-    if review.get('game_closed') is not True:
+    retained = (review.get('game_preserved') is True and review.get('match_workers_closed') is True
+                and type(review.get('game_pid')) is int and review['game_pid'] > 0)
+    if review.get('game_closed') is not True and not retained:
         return 'game_cleanup_not_verified'
     if review.get('unconfirmed_decisions'):
         return 'unconfirmed_action'
@@ -43,7 +45,7 @@ def read_small(path):
     return value
 
 
-def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
+def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, client_factory=None):
     learning = data / 'learning'
     learning.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = learning / 'autoplay-state.json'
@@ -62,6 +64,7 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
              'last_reviewed_game': 0, 'review_due': False, 'stop_reason': None}
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     awake = None
+    client = None
 
     def cancel(_signal, _frame):
         raise AutoplayCancelled('已收到停止指令')
@@ -87,6 +90,7 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
             check_parent()
             if deferred_stop():
                 return False
+            if client:client.tick()
             sample = readiness(baseline)
             state['resources'] = sample
             if sample['ready']:
@@ -126,6 +130,9 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
         awake = subprocess.Popen(['/usr/bin/caffeinate', '-dimsu', '-w', str(os.getpid())],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         swap_baseline = swap_used()
+        if client_factory:
+            client = client_factory(parent_pid, swap_baseline)
+            state['persistent_client'] = True
         state['swap_baseline_mib'] = round(swap_baseline / MIB, 1)
         persist()
         emit('开始自动天梯：持续运行；正常复盘不打断对局，无局数或时间配额')
@@ -142,9 +149,13 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
             # receives a copy and owns fresh resource monitors and log files.
             # Keep one baseline across match cleanup: accumulated growth must
             # not disappear merely because a new game starts.
-            review = run_one(dict(config), parent_pid, 'ranked', swap_baseline=swap_baseline)
+            kwargs={'swap_baseline':swap_baseline}
+            if client:kwargs['client']=client
+            review = run_one(dict(config), parent_pid, 'ranked', **kwargs)
             state['runs'] = (state['runs'] + [review['run']])[-16:]
-            state['completed_games'] += 1
+            if review.get('outcome') in ('WON','LOST','TIED'):
+                state['completed_games'] += 1
+            if client:state['game_pid']=client.pid
             state['stop_reason'] = stop_reason(review)
             if state['stop_reason']:
                 state['status'] = 'needs_review'
@@ -162,7 +173,7 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
                 return state
             # Process/FPS cleanup is complete; a short cooldown is not a
             # session cap, and a user stop remains effective during it.
-            pause(10)
+            pause(2 if client else 10)
     except Exception as error:
         cancelled = isinstance(error, AutoplayCancelled) or str(error) in ('已收到停止指令', '应用已退出，停止本次运行')
         state.update(status='cancelled' if cancelled else 'needs_review',
@@ -175,7 +186,10 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
         for sig in previous_handlers:
             signal.signal(sig, signal.SIG_IGN)
         try:
-            stop_child(awake)
+            try:
+                if client:client.close()
+            finally:
+                stop_child(awake)
         finally:
             lock.close()
             for sig, handler in previous_handlers.items():

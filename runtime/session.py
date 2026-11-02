@@ -15,7 +15,8 @@ from pathlib import Path
 from input_command import input_command
 from deck_observation import save_selected_deck
 from game_watchdog import GAME_EXEC, processes
-from navigation import FRAMEWORK, Stop as SupervisorError, next_navigation, read_json_line, stop_child
+from navigation import FRAMEWORK, Stop as SupervisorError, next_navigation, next_ranked_navigation, read_json_line, stop_child
+from game_mode import expected_type
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path.home() / "Library/Application Support/HearthstoneAI"
@@ -111,7 +112,7 @@ def validate_config(config):
         raise SessionError("请先在应用中填写 OpenAI API Key")
     if any(c.isspace() for c in config["api_key"]):
         raise SessionError("API Key 含有空白字符")
-    model = config.get("model", "gpt-6.1-terra")
+    model = config.get("model", "gpt-6.1-sol")
     import re
     if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise SessionError("模型名称无效")
@@ -166,7 +167,7 @@ def read_status():
 
 def scene_ready(status):
     scene = status.get("scene") or {}
-    return (scene.get("mode") in (3, 4, 13, 16) and scene.get("sceneLoaded") is True
+    return (scene.get("mode") in (3, 4, 7, 13, 16) and scene.get("sceneLoaded") is True
             and not scene.get("transitioning"))
 
 
@@ -180,11 +181,14 @@ def navigation_click(point):
                    check=True, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def run(config, parent_pid):
+def run(config, parent_pid, mode="practice"):
     global _event_log
+    expected = expected_type(mode)[1]
+    label = "标准天梯测试" if mode == "ranked" else "人机测试"
     lock = lock_session()
     watchdog = driver = caffeine = None
     tail = None
+    dest = None
     streams, sources = {}, {}
     def interrupted(_signal, _frame):
         raise SessionError("已收到停止指令")
@@ -194,9 +198,11 @@ def run(config, parent_pid):
         preflight()
         dest = session_directory()
         _event_log = EventLog(dest / "session-events.jsonl")
-        emit("正在建立资源保护", log_directory=str(dest))
+        emit("本次运行：%s · 仅 1 局" % label, game_mode=mode)
+        emit("正在建立资源保护：本次最多 10 分钟、40 次 API 请求、22 万 token；内存和温度限制不变",
+             log_directory=str(dest), limits={"game_seconds": 600, "api_requests": 40, "api_tokens": 220000})
         watchdog = subprocess.Popen([sys.executable, str(ROOT / "game_watchdog.py"),
-            "--startup-seconds", "120", "--run-seconds", "300", "--temporary-fps", "30",
+            "--startup-seconds", "120", "--run-seconds", "600", "--temporary-fps", "30",
             "--parent-pid", str(os.getpid())], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         armed = read_json_line(watchdog, 10)
         guard_event(json.dumps(armed).encode(), "游戏守护")
@@ -209,11 +215,11 @@ def run(config, parent_pid):
             if len(reconnect_args) == 8:
                 break
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
-            "--log", str(dest / "actions.log"), "--timeout", "430", "--max-rss-mib", "200", "--max-cpu", "130",
+            "--log", str(dest / "actions.log"), "--timeout", "730", "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", "/usr/bin/nice", "-n", "10", sys.executable,
             str(ROOT / "state-bridge/practice_driver.py"), "--new-session", "--evidence", str(dest / "Power.log"),
             "--deck-snapshot", str(dest / "selected-deck.json"),
-            "--watchdog-pid", str(watchdog.pid), "--seconds", "300", "--max-actions", "80", "--openai-config-stdin"] + reconnect_args,
+            "--watchdog-pid", str(watchdog.pid), "--seconds", "600", "--max-actions", "80", "--mode", mode, "--openai-config-stdin"] + reconnect_args,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         driver.stdin.write((json.dumps(config) + "\n").encode())
         driver.stdin.close()
@@ -225,7 +231,7 @@ def run(config, parent_pid):
             raise SessionError("AI 进程资源保护启动失败")
         streams = {p.stdout: getattr(p, "_pending_line_bytes", b"") for p in (watchdog, driver)}
         sources = {watchdog.stdout: "游戏守护", driver.stdout: "AI 守护"}
-        caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-t", "450", "-w", str(os.getpid())],
+        caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-t", "750", "-w", str(os.getpid())],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Establish the driver's log baseline before launching. This is the
         # only application launched; no global app-switch shortcut is used.
@@ -236,7 +242,7 @@ def run(config, parent_pid):
         emit("已向战网请求启动炉石，正在等待实际游戏进程和主界面")
         stage, last_click, focused, in_game = 0, 0, False, False
         previous_scene = None
-        deadline = time.monotonic() + 430
+        deadline = time.monotonic() + 730
         tail = (dest / "actions.log").open("rb")
         log_buffer = b""
         while time.monotonic() < deadline:
@@ -255,7 +261,7 @@ def run(config, parent_pid):
             if driver.poll() is not None:
                 if driver.returncode != 0:
                     raise SessionError("AI 已停止，原因见上方运行记录")
-                emit("本次人机测试结束")
+                emit("本次%s结束" % label)
                 return
             if watchdog.poll() is not None:
                 raise SessionError("游戏资源保护已结束运行，原因见上方守护记录")
@@ -279,17 +285,17 @@ def run(config, parent_pid):
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         focused = True
                     if scene.get("mode") == 4:
-                        if status.get("game_type") != 1:
-                            raise SessionError("当前对局不是练习模式，停止")
+                        if status.get("game_type") != expected or (mode == "ranked" and status.get("format") != 2):
+                            raise SessionError("当前对局与请求的模式不符，停止")
                         in_game = True
-                        emit("已进入人机，AI 正在自主运行")
+                        emit("已进入%s，AI 正在自主运行" % label)
                     else:
-                        point = next_navigation(stage, status)
+                        point = (next_ranked_navigation if mode == "ranked" else next_navigation)(stage, status)
                         if point and time.monotonic() - last_click > 6:
                             navigation_click(point)
                             stage += 1
                             last_click = time.monotonic()
-                            emit("正在进入练习模式（%d/6）" % stage)
+                            emit("正在进入%s（%d/%d）" % (label, stage, 2 if mode == "ranked" else 6))
             time.sleep(.5)
         raise SessionError("测试达到时间上限")
     finally:
@@ -309,12 +315,22 @@ def run(config, parent_pid):
             drain_guards(streams, sources)
         if tail:
             tail.close()
-        lock.close()
         if watchdog is not None and processes(GAME_EXEC):
             emit("AI 已停止，但炉石进程仍在运行，关闭尚未确认", stopped=True, game_closed=False, error=True)
         else:
             emit("已停止：子进程已回收，设置恢复结果见上方记录", stopped=True,
                  game_closed=True if watchdog is not None else None)
+        try:
+            if dest:
+                from match_review import write_review
+                summary = write_review(dest, DATA / "learning")
+                emit("对局复盘已保存：%s；%s" % (summary["outcome"],
+                     "下次开局前需复盘" if summary["review_before_next_game"] else "已记录决策和资源指标"),
+                     review_outcome=summary["outcome"])
+        except (OSError, ValueError):
+            emit("复盘报告未能保存；原始有界记录仍在本次运行目录中", error=True)
+        finally:
+            lock.close()
 
 
 def main():
@@ -324,10 +340,12 @@ def main():
     os.umask(0o077)
     config = validate_config(json.loads(sys.stdin.readline(4097)))
     from evaluation_session import consume_request, run_evaluation
-    if consume_request(DATA):
-        run_evaluation(config, ROOT, DATA, args.parent_pid, emit, stop_child)
+    suite = consume_request(DATA)
+    if suite:
+        run_evaluation(config, ROOT, DATA, args.parent_pid, emit, stop_child, suite)
     else:
-        run(config, args.parent_pid)
+        from game_request import consume_game_request
+        run(config, args.parent_pid, consume_game_request(DATA))
 
 
 if __name__ == "__main__":

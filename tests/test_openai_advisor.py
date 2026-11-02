@@ -1,6 +1,7 @@
 import copy
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from openai_advisor import (AdvisorError, OpenAIAdvisor, action_menu, public_view,
@@ -16,22 +17,22 @@ def state():
 
 
 def response(action_id="a0", status="completed"):
-    return {"status": status, "model": "gpt-6.1-terra", "usage": {"total_tokens": 100}, "output": [{"type": "function_call", "name": "choose_action",
+    return {"status": status, "model": DEFAULT_MODEL, "usage": {"total_tokens": 100}, "output": [{"type": "function_call", "name": "choose_action",
             "arguments": json.dumps({"action_id": action_id, "reason": "test"})}]}
 
 
 class APITests(unittest.TestCase):
-    def test_requested_terra_default_preserves_function_contract(self):
-        self.assertEqual(DEFAULT_MODEL, "gpt-6.1-terra")
+    def test_evaluated_sol_default_preserves_function_contract(self):
+        self.assertEqual(DEFAULT_MODEL, "gpt-6.1-sol")
         payload, _ = request_payload(DEFAULT_MODEL, public_view(state()), action_menu(state()))
-        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["model"], "gpt-6.1-sol")
         self.assertEqual(payload["reasoning"], {"effort": "low"})
         self.assertNotIn("temperature", payload)
     def test_only_current_practice_actions_and_targets(self):
         menu = action_menu(state())
         self.assertIn({"kind": "attack", "source_id": 33, "target_id": 47}, menu.values())
         self.assertIn({"kind": "end_turn"}, menu.values())
-        for key, value in (("game_type", "GT_RANKED"), ("own_turn", False), ("options_id", None)):
+        for key, value in (("game_type", "GT_CASUAL"), ("own_turn", False), ("options_id", None)):
             s = state(); s[key] = value
             with self.assertRaises(AdvisorError):
                 action_menu(s)
@@ -92,6 +93,14 @@ class APITests(unittest.TestCase):
         with self.assertRaises(AdvisorError):
             advisor.ask(state())
         self.assertEqual(len(calls), 1)
+
+    def test_network_timeout_has_fixed_diagnostic_without_provider_body(self):
+        advisor = OpenAIAdvisor({"api_key":"fake-key-not-a-secret-123"})
+        fake = SimpleNamespace(returncode=2, stdout='{"transport_error":"timeout","body":"private-provider-data"}')
+        with patch('openai_advisor.subprocess.run',return_value=fake):
+            with self.assertRaisesRegex(AdvisorError,'API network timed out') as error:
+                advisor._transport({})
+        self.assertNotIn('private',str(error.exception))
 
     def test_only_end_turn_needs_no_paid_decision(self):
         calls = []

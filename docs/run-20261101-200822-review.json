@@ -1,0 +1,35 @@
+{
+  "run": "run-20261101-200822",
+  "game_type": "GT_VS_AI",
+  "outcome": "WON",
+  "models": [
+    "gpt-6.1-sol"
+  ],
+  "api_responses": 3,
+  "api_tokens": 16575,
+  "median_decision_ms": 2328,
+  "confirmed_decisions": 3,
+  "unconfirmed_decisions": [],
+  "local_calculations": 0,
+  "resources": {
+    "game": {
+      "peak_sampled_rss_mib": 1286.4,
+      "peak_sampled_cpu_pct": 299.9,
+      "peak_thermal_state": 0
+    },
+    "ai": {
+      "peak_sampled_rss_mib": 78.5,
+      "peak_sampled_cpu_pct": 34.9,
+      "peak_thermal_state": 0
+    }
+  },
+  "guard_stop_reasons": [
+    "interrupted"
+  ],
+  "game_closed": true,
+  "needs_review": false,
+  "reconnect_recovery_used": true,
+  "mulligan_confirmed": false,
+  "consecutive_losses": 0,
+  "review_before_next_game": false
+}

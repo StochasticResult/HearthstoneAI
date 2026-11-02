@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from resource_guard import GIB, MIB, battery_status, swap_used, thermal_state
+from resource_guard import GIB, MIB, battery_status, swap_used, thermal_state, swap_exceeded, memory_free_percentage
 
 GAME_EXEC = "/Applications/Hearthstone/Hearthstone.app/Contents/MacOS/Hearthstone"
 LAUNCHER_EXEC = "/Applications/Hearthstone/Hearthstone Beta Launcher.app/Contents/MacOS/Hearthstone Beta Launcher"
@@ -41,14 +41,6 @@ def change_fps(path, expected, replacement):
         if os.path.exists(temp_path):
             os.unlink(temp_path)
     return int(matches[0])
-
-
-def memory_free_percentage():
-    result = subprocess.run(["/usr/bin/memory_pressure", "-Q"], capture_output=True, text=True, timeout=3, check=True)
-    match = re.search(r"System-wide memory free percentage:\s*(\d+)%", result.stdout)
-    if not match:
-        raise RuntimeError("memory pressure reading unavailable")
-    return int(match.group(1))
 
 
 def processes(expected):
@@ -101,7 +93,8 @@ def main():
 
     signal.signal(signal.SIGTERM, interrupted)
     initial_ac, initial_pct = battery_status()
-    if not initial_ac or thermal_state() >= 1 or memory_free_percentage() < 20 or swap_used() > 512 * MIB or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
+    initial_swap = swap_used()
+    if not initial_ac or thermal_state() >= 1 or memory_free_percentage() < 20 or initial_swap > 1024 * MIB or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
         raise RuntimeError("preflight safety check failed")
     if args.claim_pid is None and processes(args.expected):
         raise RuntimeError("game already running; refusing to claim it")
@@ -168,7 +161,7 @@ def main():
                 elif (now - game_start < 15 and (cpu_over >= 6 or cpu_very_high >= 6)) or \
                      (now - game_start >= 15 and (cpu_over >= 4 or cpu_very_high >= 3)):
                     reason = "sustained game CPU threshold"
-                elif swap_used() > 512 * MIB:
+                elif swap_exceeded(swap_used(), initial_swap):
                     reason = "swap threshold"
                 elif free_memory_pct is not None and free_memory_pct < 20:
                     reason = "system memory pressure threshold"
@@ -177,7 +170,8 @@ def main():
                 elif now - game_start >= args.run_seconds:
                     reason = "short test deadline"
                 if now - previous_status >= 10:
-                    print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": thermal_state(), "memory_free_pct": free_memory_pct}), flush=True)
+                    print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": thermal_state(), "memory_free_pct": free_memory_pct,
+                                      "swap_mib": round(swap_used()/MIB,1), "initial_swap_mib": round(initial_swap/MIB,1)}), flush=True)
                     previous_status = now
                 if reason:
                     break

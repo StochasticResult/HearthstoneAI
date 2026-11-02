@@ -1,0 +1,290 @@
+[
+  {
+    "case": "take_visible_lethal",
+    "candidate": "A",
+    "elapsed_ms": 2097,
+    "tokens": 3176
+  },
+  {
+    "case": "take_visible_lethal",
+    "candidate": "B",
+    "elapsed_ms": 2722,
+    "tokens": 3185
+  },
+  {
+    "case": "take_visible_lethal",
+    "candidate": "C",
+    "elapsed_ms": 1895,
+    "tokens": 3168
+  },
+  {
+    "case": "current_cost_lessons_lethal",
+    "candidate": "B",
+    "elapsed_ms": 2619,
+    "tokens": 3189
+  },
+  {
+    "case": "current_cost_lessons_lethal",
+    "candidate": "C",
+    "elapsed_ms": 2372,
+    "tokens": 3197
+  },
+  {
+    "case": "current_cost_lessons_lethal",
+    "candidate": "A",
+    "elapsed_ms": 2349,
+    "tokens": 3196
+  },
+  {
+    "case": "enable_double_blasphemy",
+    "candidate": "C",
+    "elapsed_ms": 1742,
+    "tokens": 3171
+  },
+  {
+    "case": "enable_double_blasphemy",
+    "candidate": "A",
+    "elapsed_ms": 1772,
+    "tokens": 3171
+  },
+  {
+    "case": "enable_double_blasphemy",
+    "candidate": "B",
+    "elapsed_ms": 3050,
+    "tokens": 3179
+  },
+  {
+    "case": "freeze_visible_threat",
+    "candidate": "A",
+    "elapsed_ms": 2581,
+    "tokens": 3216
+  },
+  {
+    "case": "freeze_visible_threat",
+    "candidate": "B",
+    "elapsed_ms": 2263,
+    "tokens": 3223
+  },
+  {
+    "case": "freeze_visible_threat",
+    "candidate": "C",
+    "elapsed_ms": 2220,
+    "tokens": 3212
+  },
+  {
+    "case": "spells_before_own_tax",
+    "candidate": "B",
+    "elapsed_ms": 2962,
+    "tokens": 3295
+  },
+  {
+    "case": "spells_before_own_tax",
+    "candidate": "C",
+    "elapsed_ms": 2508,
+    "tokens": 3307
+  },
+  {
+    "case": "spells_before_own_tax",
+    "candidate": "A",
+    "elapsed_ms": 2241,
+    "tokens": 3287
+  },
+  {
+    "case": "cthun_discover_lethal",
+    "candidate": "C",
+    "elapsed_ms": 1914,
+    "tokens": 3304
+  },
+  {
+    "case": "cthun_discover_lethal",
+    "candidate": "A",
+    "elapsed_ms": 4710,
+    "tokens": 3306
+  },
+  {
+    "case": "cthun_discover_lethal",
+    "candidate": "B",
+    "elapsed_ms": 1912,
+    "tokens": 3309
+  },
+  {
+    "case": "cthun_recover_full_board",
+    "candidate": "A",
+    "elapsed_ms": 1299,
+    "tokens": 3747
+  },
+  {
+    "case": "cthun_recover_full_board",
+    "candidate": "B",
+    "elapsed_ms": 2424,
+    "tokens": 3757
+  },
+  {
+    "case": "cthun_recover_full_board",
+    "candidate": "C",
+    "elapsed_ms": 2052,
+    "tokens": 3751
+  },
+  {
+    "case": "temporary_discover_playable",
+    "candidate": "B",
+    "elapsed_ms": 2864,
+    "tokens": 3377
+  },
+  {
+    "case": "temporary_discover_playable",
+    "candidate": "C",
+    "elapsed_ms": 1942,
+    "tokens": 3362
+  },
+  {
+    "case": "temporary_discover_playable",
+    "candidate": "A",
+    "elapsed_ms": 2049,
+    "tokens": 3370
+  },
+  {
+    "case": "tied_highest_cost_is_lethal",
+    "candidate": "C",
+    "elapsed_ms": 2162,
+    "tokens": 3183
+  },
+  {
+    "case": "tied_highest_cost_is_lethal",
+    "candidate": "A",
+    "elapsed_ms": 1862,
+    "tokens": 3175
+  },
+  {
+    "case": "tied_highest_cost_is_lethal",
+    "candidate": "B",
+    "elapsed_ms": 2284,
+    "tokens": 3175
+  },
+  {
+    "case": "freeze_buffed_weapon_hero",
+    "candidate": "A",
+    "elapsed_ms": 2084,
+    "tokens": 4083
+  },
+  {
+    "case": "freeze_buffed_weapon_hero",
+    "candidate": "B",
+    "elapsed_ms": 2681,
+    "tokens": 4064
+  },
+  {
+    "case": "freeze_buffed_weapon_hero",
+    "candidate": "C",
+    "elapsed_ms": 1860,
+    "tokens": 4058
+  },
+  {
+    "case": "double_damage_through_divine_shield",
+    "candidate": "B",
+    "elapsed_ms": 2526,
+    "tokens": 3369
+  },
+  {
+    "case": "double_damage_through_divine_shield",
+    "candidate": "C",
+    "elapsed_ms": 2362,
+    "tokens": 3383
+  },
+  {
+    "case": "double_damage_through_divine_shield",
+    "candidate": "A",
+    "elapsed_ms": 1691,
+    "tokens": 3354
+  },
+  {
+    "case": "kazakus_prior_effects_and_deadline",
+    "candidate": "C",
+    "elapsed_ms": 2705,
+    "tokens": 3450
+  },
+  {
+    "case": "kazakus_prior_effects_and_deadline",
+    "candidate": "A",
+    "elapsed_ms": 1857,
+    "tokens": 3439
+  },
+  {
+    "case": "kazakus_prior_effects_and_deadline",
+    "candidate": "B",
+    "elapsed_ms": 2620,
+    "tokens": 3440
+  },
+  {
+    "case": "egg_priest_do_not_advance_egg",
+    "candidate": "A",
+    "elapsed_ms": 2183,
+    "tokens": 4011
+  },
+  {
+    "case": "egg_priest_do_not_advance_egg",
+    "candidate": "B",
+    "elapsed_ms": 2661,
+    "tokens": 4024
+  },
+  {
+    "case": "egg_priest_do_not_advance_egg",
+    "candidate": "C",
+    "elapsed_ms": 2045,
+    "tokens": 4004
+  },
+  {
+    "case": "priest_preserve_ruin_threshold",
+    "candidate": "B",
+    "elapsed_ms": 4406,
+    "tokens": 4113
+  },
+  {
+    "case": "priest_preserve_ruin_threshold",
+    "candidate": "C",
+    "elapsed_ms": 3158,
+    "tokens": 4138
+  },
+  {
+    "case": "priest_preserve_ruin_threshold",
+    "candidate": "A",
+    "elapsed_ms": 1795,
+    "tokens": 4053
+  },
+  {
+    "case": "handbuff_dk_deny_lifesteal_race",
+    "candidate": "C",
+    "elapsed_ms": 2336,
+    "tokens": 3868
+  },
+  {
+    "case": "handbuff_dk_deny_lifesteal_race",
+    "candidate": "A",
+    "elapsed_ms": 1873,
+    "tokens": 3855
+  },
+  {
+    "case": "handbuff_dk_deny_lifesteal_race",
+    "candidate": "B",
+    "elapsed_ms": 2621,
+    "tokens": 3856
+  },
+  {
+    "case": "zakajz_cost_change_lethal_order",
+    "candidate": "A",
+    "elapsed_ms": 1690,
+    "tokens": 3407
+  },
+  {
+    "case": "zakajz_cost_change_lethal_order",
+    "candidate": "B",
+    "elapsed_ms": 2798,
+    "tokens": 3420
+  },
+  {
+    "case": "zakajz_cost_change_lethal_order",
+    "candidate": "C",
+    "elapsed_ms": 2170,
+    "tokens": 3442
+  }
+]

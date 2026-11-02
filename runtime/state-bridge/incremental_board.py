@@ -56,6 +56,10 @@ class IncrementalBoard:
         self.visual_game_entity = False
         self.options_line = None
         self.confirming_choice = None
+        self.sent_options = 0
+        self.public_card_memory = {}
+        self.identity_changes = set()
+        self.saw_mulligan = False
 
     def invalidate(self, why):
         self.game = None
@@ -140,6 +144,10 @@ class IncrementalBoard:
             self.choices = {}
             self.choice = None
             self.confirming_choice = None
+            self.sent_options = 0
+            self.public_card_memory = {}
+            self.identity_changes = set()
+            self.saw_mulligan = False
             self.visual_step = None
             self.visual_turn = None
             self.visual_game_entity = False
@@ -156,6 +164,9 @@ class IncrementalBoard:
             self.invalidate("game log truncated")
             return
         game = self.game
+        if re.search(r"GameState\.SendOption\(\) - selectedOption=\d+\b", line):
+            self.sent_options += 1
+            return
         visual_prefix = "PowerTaskList.DebugPrintPower() -"
         if visual_prefix in line:
             message = line.split(visual_prefix, 1)[1].strip()
@@ -178,6 +189,8 @@ class IncrementalBoard:
             message = line.split(choice_prefix, 1)[1].strip()
             head = re.match(r"^id=(\d+)\s+Player=.*?\bChoiceType=(\S+)", message)
             if head:
+                if head.group(2) == "MULLIGAN":
+                    self.saw_mulligan = True
                 cid = int(head.group(1))
                 actor_match = board.EC_HEAD_RE.match(line)
                 actor_id = game["names"].get(actor_match.group(2)) if actor_match else None
@@ -270,8 +283,40 @@ class IncrementalBoard:
         else:
             game["cur"] = None
             board._handle_packet(game, payload)
+        self._remember_public_card(payload.strip())
         if len(game["entities"]) > MAX_ENTITIES or len(game["events"]) > MAX_EVENTS or len(game["blocks"]) > MAX_BLOCK_DEPTH:
             self.invalidate("state size limit exceeded")
+
+    def _remember_public_card(self, payload):
+        """Keep public provenance, never promote a raw opponent-hand ID.
+
+        Remember visible board cards and explicit post-opening hand reveals.
+        A shuffle/hide in deck or a hand transformation breaks identity.
+        """
+        game = self.game
+        eid = game.get('cur')
+        for pattern in (board.TAG_CHANGE_RE, board.HIDE_ENTITY_RE, board.SHOW_ENTITY_RE):
+            match = pattern.match(payload)
+            if match:
+                eid = board._ref_id(match.group(1)) or game['names'].get(match.group(1))
+                break
+        if eid is None:
+            return
+        ent = game['entities'].get(eid)
+        if not ent:
+            return
+        zone, cid, owner = ent.get('zone'), ent.get('cardId'), ent.get('controller')
+        if payload.startswith('CHANGE_ENTITY'):
+            if owner:
+                self.identity_changes.add(owner)
+            self.public_card_memory.pop(eid, None)
+        if zone in ('DECK', 'SETASIDE', 'REMOVEDFROMGAME'):
+            self.public_card_memory.pop(eid, None)
+        elif zone == 'PLAY' and cid and board._ctype(ent) in ('MINION', 'SPELL', 'WEAPON', 'LOCATION'):
+            self.public_card_memory[eid] = {'card_id': cid, 'controller': owner, 'basis': 'seen_on_public_board'}
+        elif (zone == 'HAND' and cid and payload.startswith('SHOW_ENTITY')
+              and game.get('gate') and not game.get('grace')):
+            self.public_card_memory[eid] = {'card_id': cid, 'controller': owner, 'basis': 'explicit_hand_reveal'}
 
     def pending_choice(self, own_player_id):
         if self.game is None or self.blocked or self.partial:
@@ -333,17 +378,25 @@ class IncrementalBoard:
             raise UnsafeState("hero state incomplete")
         if not extended and (board._tag_int(own_hero, "ARMOR") or board._tag_int(enemy_hero, "ARMOR")):
             raise UnsafeState("armor is not modeled")
-        active_rituals = []
+        active_rituals, enemy_rituals = [], []
+        enemy_secret_count = 0
+        enemy_secret_ids = []
         for entity in game["entities"].values():
             ctype = board._ctype(entity)
             if entity.get("zone") == "SECRET":
-                if entity.get("controller") == own_player_id and entity.get("cardId") in {"BE_085", "BE_726", "CAP_405tb2", "CAP_405tb3"}:
-                    active_rituals.append({"id": entity["id"], "card_id": entity["cardId"],
+                if entity.get("cardId") in {"BE_085", "BE_726", "CAP_405tb2", "CAP_405tb3"} and (entity.get("controller") == own_player_id or extended):
+                    collection = active_rituals if entity.get("controller") == own_player_id else enemy_rituals
+                    collection.append({"id": entity["id"], "card_id": entity["cardId"],
                         "countdown_tag": board._num(entity["tags"].get("OBJECTIVE_COUNTDOWN")),
                         "quest_progress": board._num(entity["tags"].get("QUEST_PROGRESS")),
                         "quest_progress_total": board._num(entity["tags"].get("QUEST_PROGRESS_TOTAL")),
                         "script_data_1": board._num(entity["tags"].get("TAG_SCRIPT_DATA_NUM_1")),
                         **custom_effects(entity)})
+                elif extended and entity.get("controller") == rival["controller"]:
+                    # Export existence only, even if a malformed/cached log
+                    # happens to contain a hidden secret's identity.
+                    enemy_secret_count += 1
+                    enemy_secret_ids.append(entity['id'])
                 else:
                     raise UnsafeState("secret state is not modeled")
             if entity.get("zone") == "PLAY" and (ctype == "LOCATION" or (ctype == "WEAPON" and not extended)):
@@ -368,6 +421,8 @@ class IncrementalBoard:
         def hero_state(entity):
             return {"id": entity["id"], "card_id": entity["cardId"],
                     "health": required_number(entity, "HEALTH") - board._tag_int(entity, "DAMAGE"),
+                    "max_health": required_number(entity, "HEALTH"),
+                    "modifiers": modifiers(entity) if extended else [],
                     "armor": board._tag_int(entity, "ARMOR"), "attack": board._tag_int(entity, "ATK"),
                     "frozen": board._tag_int(entity, "FROZEN") == 1,
                     "immune": board._tag_int(entity, "IMMUNE") != 0,
@@ -455,7 +510,7 @@ class IncrementalBoard:
         # Only cards with public play/death evidence or visible board presence.
         # In particular, never enumerate an opponent's hand/deck IDs, even if
         # a malformed log happens to contain a card name there.
-        public_eids = {ev.get("eid") for ev in game["events"] if ev.get("type") in ("play", "death")}
+        public_eids = {ev.get("eid") for ev in game["events"] if ev.get("type") in ("play", "death", "secret_trigger")}
         public_eids.update(e["id"] for e in enemy_board)
         public_cards = []
         for eid in sorted(e for e in public_eids if isinstance(e, int)):
@@ -467,9 +522,23 @@ class IncrementalBoard:
                     "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))})
         seen_own = [{"id": e["id"], "card_id": e["cardId"]} for e in game["entities"].values()
             if e.get("controller") == own_player_id and e.get("cardId")
-            and e.get("zone") in ("HAND", "PLAY", "GRAVEYARD", "SECRET")
+            and e.get("zone") in ("HAND", "PLAY", "GRAVEYARD", "SECRET", "REMOVEDFROMGAME", "SETASIDE")
             and board._ctype(e) in ("MINION", "SPELL")
             and not board._tag_int(e, "CREATOR") and not board._tag_int(e, "COPIED_FROM_ENTITY_ID")]
+        known_hand = []
+        known_secrets = []
+        for eid, memory in self.public_card_memory.items():
+            e = game['entities'].get(eid, {})
+            if e.get('controller') == rival['controller'] == memory.get('controller'):
+                row = {'id': eid, 'card_id': memory['card_id'], 'basis': memory['basis'],
+                       'generated': bool(board._tag_int(e, 'CREATOR') or board._tag_int(e, 'COPIED_FROM_ENTITY_ID'))}
+                if e.get('zone') == 'HAND':
+                    known_hand.append(row)
+                elif eid in enemy_secret_ids:
+                    known_secrets.append(row)
+        known_deck = [{'id': e['id'], 'card_id': e['cardId'],
+                       'generated': bool(board._tag_int(e, 'CREATOR') or board._tag_int(e, 'COPIED_FROM_ENTITY_ID'))}
+                      for e in board._in_zone(game, own_player_id, 'DECK') if e.get('cardId')]
         return {
             "phase": "target" if choosing_target else "choose_one" if choosing else "main",
             "format": game["meta"].get("FormatType"), "game_type": game["meta"].get("GameType"),
@@ -477,7 +546,16 @@ class IncrementalBoard:
             # not yet reconstructed. Consumers must not promote this to live play.
             "readiness_verified": False, "ritual_state_verified": False,
             "own_player_id": own_player_id, "own_turn": board._tag_int(own, "CURRENT_PLAYER") == 1,
-            "mana": required_number(own, "RESOURCES") - board._tag_int(own, "RESOURCES_USED") + board._tag_int(own, "TEMP_RESOURCES"),
+            "mana": max(0, required_number(own, "RESOURCES") - board._tag_int(own, "RESOURCES_USED")
+                        - board._tag_int(own, "OVERLOAD_LOCKED")) + board._tag_int(own, "TEMP_RESOURCES"),
+            "mana_cap": board._num(own["tags"].get("MAXRESOURCES")),
+            "mana_crystals": required_number(own, "RESOURCES"),
+            "mana_spent": board._tag_int(own, "RESOURCES_USED"),
+            "temporary_mana": board._tag_int(own, "TEMP_RESOURCES"),
+            "overload_locked": board._tag_int(own, "OVERLOAD_LOCKED"),
+            "overload_owed": board._tag_int(own, "OVERLOAD_OWED"),
+            "healing_as_damage": board._tag_int(own, "HEALING_DOES_DAMAGE"),
+            "healing_double": board._tag_int(own, "SPELL_HEALING_DOUBLE"),
             "my_hero": hero_state(own_hero), "enemy_hero": hero_state(enemy_hero),
             "my_weapon": weapon_state(own_player_id), "enemy_weapon": weapon_state(rival["controller"]),
             "my_hero_power": {"id": power["id"], "card_id": power["cardId"],
@@ -494,7 +572,15 @@ class IncrementalBoard:
             "enemy_corpses": board._num(rival["tags"].get("CORPSES")),
             "opponent_public_cards": public_cards[-40:],
             "own_seen_original": sorted(seen_own, key=lambda e: e["id"])[-60:],
+            "own_known_deck": known_deck[:60],
+            "deck_tracking_from_mulligan": self.saw_mulligan,
+            "own_card_identity_changed": own_player_id in self.identity_changes,
+            "enemy_known_hand": known_hand[:10],
+            "enemy_known_secrets": known_secrets[:5],
             "active_rituals": active_rituals,
+            "enemy_active_rituals": enemy_rituals,
+            "enemy_secret_count": enemy_secret_count,
+            "enemy_secret_ids": sorted(enemy_secret_ids),
             # A read-only choice observation must never open ordinary actions.
             "options_id": None if choosing else self.options_id,
             "legal_options": [] if choosing else legal,

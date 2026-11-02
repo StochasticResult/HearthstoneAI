@@ -1,0 +1,573 @@
+[
+  {
+    "name": "probe_unknown_secret_before_key_spell",
+    "state": {
+      "game_type": "GT_RANKED",
+      "format": "FT_STANDARD",
+      "phase": "main",
+      "game_turn": "8",
+      "own_turn": true,
+      "options_id": 1,
+      "end_turn_allowed": true,
+      "mana": 4,
+      "mana_cap": 10,
+      "my_hero": {
+        "id": 1,
+        "card_id": "HERO_07",
+        "health": 20,
+        "armor": 0,
+        "attack": 0
+      },
+      "enemy_hero": {
+        "id": 2,
+        "card_id": "HERO_08",
+        "health": 4,
+        "armor": 0,
+        "attack": 0
+      },
+      "my_hero_power": {
+        "id": 3,
+        "card_id": "CS2_056",
+        "cost": 2,
+        "exhausted": false
+      },
+      "my_hand": [
+        {
+          "id": 100,
+          "card_id": "GAME_005",
+          "position": 1,
+          "card_type": "SPELL",
+          "cost": 0,
+          "attack": 0,
+          "health": 0,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        },
+        {
+          "id": 101,
+          "card_id": "BE_086",
+          "position": 2,
+          "card_type": "SPELL",
+          "cost": 4,
+          "attack": 0,
+          "health": 0,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        }
+      ],
+      "my_board": [],
+      "enemy_board": [],
+      "active_rituals": [],
+      "legal_options": [
+        {
+          "id": 100,
+          "targets": [],
+          "requires_target": false,
+          "type": "POWER"
+        },
+        {
+          "id": 101,
+          "targets": [],
+          "requires_target": false,
+          "type": "POWER"
+        }
+      ],
+      "my_deck_count": 15,
+      "enemy_deck_count": 15,
+      "enemy_hand_count": 4,
+      "my_fatigue": 0,
+      "enemy_fatigue": 0,
+      "enemy_mana_crystals": 4,
+      "enemy_secret_count": 1,
+      "enemy_secret_ids": [
+        90
+      ]
+    },
+    "expected": [
+      {
+        "kind": "play",
+        "source_id": 100
+      }
+    ],
+    "criterion": "Zero-cost Coin tests spell interaction first, retaining sufficient mana for lethal Blasphemy. Do not claim unknown secret identity."
+  },
+  {
+    "name": "publicly_known_freezing_trap",
+    "state": {
+      "game_type": "GT_RANKED",
+      "format": "FT_STANDARD",
+      "phase": "main",
+      "game_turn": "8",
+      "own_turn": true,
+      "options_id": 1,
+      "end_turn_allowed": true,
+      "mana": 0,
+      "mana_cap": 10,
+      "my_hero": {
+        "id": 1,
+        "card_id": "HERO_07",
+        "health": 20,
+        "armor": 0,
+        "attack": 0
+      },
+      "enemy_hero": {
+        "id": 2,
+        "card_id": "HERO_05",
+        "health": 8,
+        "armor": 0,
+        "attack": 0
+      },
+      "my_hero_power": {
+        "id": 3,
+        "card_id": "CS2_056",
+        "cost": 2,
+        "exhausted": false
+      },
+      "my_hand": [],
+      "my_board": [
+        {
+          "id": 10,
+          "card_id": "CORE_UNG_205",
+          "position": 1,
+          "card_type": "MINION",
+          "cost": 1,
+          "attack": 1,
+          "health": 5,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        },
+        {
+          "id": 11,
+          "card_id": "TIME_025",
+          "position": 2,
+          "card_type": "MINION",
+          "cost": 2,
+          "attack": 8,
+          "health": 8,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        }
+      ],
+      "enemy_board": [],
+      "active_rituals": [],
+      "legal_options": [
+        {
+          "id": 10,
+          "targets": [
+            2
+          ],
+          "requires_target": true,
+          "type": "POWER"
+        },
+        {
+          "id": 11,
+          "targets": [
+            2
+          ],
+          "requires_target": true,
+          "type": "POWER"
+        }
+      ],
+      "my_deck_count": 15,
+      "enemy_deck_count": 15,
+      "enemy_hand_count": 4,
+      "my_fatigue": 0,
+      "enemy_fatigue": 0,
+      "enemy_mana_crystals": 4,
+      "enemy_secret_count": 1,
+      "enemy_secret_ids": [
+        90
+      ],
+      "enemy_known_secrets": [
+        {
+          "id": 90,
+          "card_id": "CORE_EX1_611",
+          "basis": "explicit_hand_reveal"
+        }
+      ]
+    },
+    "expected": [
+      {
+        "kind": "attack",
+        "source_id": 10,
+        "target_id": 2
+      }
+    ],
+    "criterion": "The cheap small attacker absorbs the publicly known trap; preserve the eight-attack lethal body."
+  },
+  {
+    "name": "respect_publicly_known_ruin",
+    "state": {
+      "game_type": "GT_RANKED",
+      "format": "FT_STANDARD",
+      "phase": "main",
+      "game_turn": "8",
+      "own_turn": true,
+      "options_id": 1,
+      "end_turn_allowed": true,
+      "mana": 1,
+      "mana_cap": 10,
+      "my_hero": {
+        "id": 1,
+        "card_id": "HERO_07",
+        "health": 20,
+        "armor": 0,
+        "attack": 0
+      },
+      "enemy_hero": {
+        "id": 2,
+        "card_id": "HERO_09",
+        "health": 23,
+        "armor": 0,
+        "attack": 0
+      },
+      "my_hero_power": {
+        "id": 3,
+        "card_id": "CS2_056",
+        "cost": 2,
+        "exhausted": false
+      },
+      "my_hand": [
+        {
+          "id": 100,
+          "card_id": "TIME_026",
+          "position": 1,
+          "card_type": "SPELL",
+          "cost": 1,
+          "attack": 0,
+          "health": 0,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        }
+      ],
+      "my_board": [
+        {
+          "id": 10,
+          "card_id": "TIME_025",
+          "position": 1,
+          "card_type": "MINION",
+          "cost": 2,
+          "attack": 4,
+          "health": 4,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        },
+        {
+          "id": 11,
+          "card_id": "TIME_025",
+          "position": 2,
+          "card_type": "MINION",
+          "cost": 2,
+          "attack": 4,
+          "health": 4,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        }
+      ],
+      "enemy_board": [],
+      "active_rituals": [],
+      "legal_options": [
+        {
+          "id": 100,
+          "targets": [],
+          "requires_target": false,
+          "type": "POWER"
+        },
+        {
+          "id": 10,
+          "targets": [
+            2
+          ],
+          "requires_target": true,
+          "type": "POWER"
+        },
+        {
+          "id": 11,
+          "targets": [
+            2
+          ],
+          "requires_target": true,
+          "type": "POWER"
+        }
+      ],
+      "my_deck_count": 15,
+      "enemy_deck_count": 15,
+      "enemy_hand_count": 4,
+      "my_fatigue": 0,
+      "enemy_fatigue": 0,
+      "enemy_mana_crystals": 5,
+      "enemy_known_hand": [
+        {
+          "id": 91,
+          "card_id": "CORE_EX1_197",
+          "basis": "explicit_hand_reveal"
+        }
+      ]
+    },
+    "expected": [
+      {
+        "kind": "attack",
+        "source_id": 10,
+        "target_id": 2
+      },
+      {
+        "kind": "attack",
+        "source_id": 11,
+        "target_id": 2
+      }
+    ],
+    "criterion": "Keep four-attack bodies below the known Ruin threshold; the buff does not shorten the three-turn damage clock."
+  },
+  {
+    "name": "avoid_known_shred_draw_death",
+    "state": {
+      "game_type": "GT_RANKED",
+      "format": "FT_STANDARD",
+      "phase": "main",
+      "game_turn": "8",
+      "own_turn": true,
+      "options_id": 1,
+      "end_turn_allowed": true,
+      "mana": 2,
+      "mana_cap": 10,
+      "my_hero": {
+        "id": 1,
+        "card_id": "HERO_07",
+        "health": 4,
+        "armor": 0,
+        "attack": 0
+      },
+      "enemy_hero": {
+        "id": 2,
+        "card_id": "HERO_09",
+        "health": 20,
+        "armor": 0,
+        "attack": 0
+      },
+      "my_hero_power": {
+        "id": 3,
+        "card_id": "CS2_056",
+        "cost": 2,
+        "exhausted": false
+      },
+      "my_hand": [
+        {
+          "id": 100,
+          "card_id": "CORE_UNG_205",
+          "position": 1,
+          "card_type": "MINION",
+          "cost": 1,
+          "attack": 2,
+          "health": 1,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        }
+      ],
+      "my_board": [],
+      "enemy_board": [
+        {
+          "id": 20,
+          "card_id": "CS2_172",
+          "position": 1,
+          "card_type": "MINION",
+          "cost": 2,
+          "attack": 8,
+          "health": 8,
+          "exhausted": false,
+          "taunt": false,
+          "frozen": false
+        }
+      ],
+      "active_rituals": [],
+      "legal_options": [
+        {
+          "id": 100,
+          "targets": [
+            2,
+            20
+          ],
+          "requires_target": true,
+          "type": "POWER"
+        },
+        {
+          "id": 3,
+          "targets": [],
+          "requires_target": false,
+          "type": "POWER"
+        }
+      ],
+      "my_deck_count": 1,
+      "enemy_deck_count": 15,
+      "enemy_hand_count": 4,
+      "my_fatigue": 0,
+      "enemy_fatigue": 0,
+      "enemy_mana_crystals": 4,
+      "deck_tracking_from_mulligan": true,
+      "own_card_identity_changed": false,
+      "starting_deck": {
+        "TLC_451": 2,
+        "TIME_026": 2,
+        "BE_094": 2,
+        "CORE_UNG_205": 2,
+        "TLC_603": 2,
+        "BE_726": 2,
+        "CATA_210": 2,
+        "CORE_SCH_713": 2,
+        "BE_085": 2,
+        "TIME_025": 2,
+        "CAP_405": 1,
+        "BE_729": 2,
+        "BE_086": 2,
+        "EDR_856": 1,
+        "BE_728": 1,
+        "TIME_029": 2,
+        "BE_090": 1
+      },
+      "own_seen_original": [
+        {
+          "id": 200,
+          "card_id": "TLC_451"
+        },
+        {
+          "id": 201,
+          "card_id": "TLC_451"
+        },
+        {
+          "id": 202,
+          "card_id": "TIME_026"
+        },
+        {
+          "id": 203,
+          "card_id": "TIME_026"
+        },
+        {
+          "id": 204,
+          "card_id": "BE_094"
+        },
+        {
+          "id": 205,
+          "card_id": "BE_094"
+        },
+        {
+          "id": 206,
+          "card_id": "CORE_UNG_205"
+        },
+        {
+          "id": 207,
+          "card_id": "CORE_UNG_205"
+        },
+        {
+          "id": 208,
+          "card_id": "TLC_603"
+        },
+        {
+          "id": 209,
+          "card_id": "TLC_603"
+        },
+        {
+          "id": 210,
+          "card_id": "BE_726"
+        },
+        {
+          "id": 211,
+          "card_id": "BE_726"
+        },
+        {
+          "id": 212,
+          "card_id": "CATA_210"
+        },
+        {
+          "id": 213,
+          "card_id": "CATA_210"
+        },
+        {
+          "id": 214,
+          "card_id": "CORE_SCH_713"
+        },
+        {
+          "id": 215,
+          "card_id": "CORE_SCH_713"
+        },
+        {
+          "id": 216,
+          "card_id": "BE_085"
+        },
+        {
+          "id": 217,
+          "card_id": "BE_085"
+        },
+        {
+          "id": 218,
+          "card_id": "TIME_025"
+        },
+        {
+          "id": 219,
+          "card_id": "TIME_025"
+        },
+        {
+          "id": 220,
+          "card_id": "CAP_405"
+        },
+        {
+          "id": 221,
+          "card_id": "BE_729"
+        },
+        {
+          "id": 222,
+          "card_id": "BE_729"
+        },
+        {
+          "id": 223,
+          "card_id": "BE_086"
+        },
+        {
+          "id": 224,
+          "card_id": "BE_086"
+        },
+        {
+          "id": 225,
+          "card_id": "EDR_856"
+        },
+        {
+          "id": 226,
+          "card_id": "BE_728"
+        },
+        {
+          "id": 227,
+          "card_id": "TIME_029"
+        },
+        {
+          "id": 228,
+          "card_id": "TIME_029"
+        },
+        {
+          "id": 229,
+          "card_id": "BE_090"
+        }
+      ],
+      "own_known_deck": [
+        {
+          "id": 300,
+          "card_id": "TIME_025t",
+          "generated": true
+        }
+      ]
+    },
+    "expected": [
+      {
+        "kind": "play",
+        "source_id": 100,
+        "target_id": 20
+      }
+    ],
+    "criterion": "The reconciled deck contains one Shred. Life Tap leaves two health then draws three self-damage; freeze the visible attacker instead."
+  }
+]

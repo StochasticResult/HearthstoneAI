@@ -1,0 +1,338 @@
+[
+  {
+    "case": "buff_before_sacrificing_own_tax",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 6295,
+    "tokens": 4747
+  },
+  {
+    "case": "buff_before_sacrificing_own_tax",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 4400,
+    "tokens": 4725
+  },
+  {
+    "case": "reborn_heals_twice_and_windfury",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 4275,
+    "tokens": 4784
+  },
+  {
+    "case": "reborn_heals_twice_and_windfury",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 5596,
+    "tokens": 4747
+  },
+  {
+    "case": "two_auras_buff_before_enemy_aura_dies",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 6146,
+    "tokens": 4418
+  },
+  {
+    "case": "two_auras_buff_before_enemy_aura_dies",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 3176,
+    "tokens": 4423
+  },
+  {
+    "case": "lifesteal_overkill_survival_target",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 2989,
+    "tokens": 4136
+  },
+  {
+    "case": "lifesteal_overkill_survival_target",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 5188,
+    "tokens": 4135
+  },
+  {
+    "case": "take_a_calculated_not_guaranteed_out",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 4412,
+    "tokens": 4698
+  },
+  {
+    "case": "take_a_calculated_not_guaranteed_out",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 2690,
+    "tokens": 4669
+  },
+  {
+    "case": "coin_tax_spellpower_and_highest_cost",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 4072,
+    "tokens": 4638
+  },
+  {
+    "case": "coin_tax_spellpower_and_highest_cost",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 5578,
+    "tokens": 4569
+  },
+  {
+    "case": "priest_two_ruins_spent",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 4367,
+    "tokens": 4210
+  },
+  {
+    "case": "priest_two_ruins_spent",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 2739,
+    "tokens": 4181
+  },
+  {
+    "case": "priest_two_moonwells_spent",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 4317,
+    "tokens": 4232
+  },
+  {
+    "case": "priest_two_moonwells_spent",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 4519,
+    "tokens": 4231
+  },
+  {
+    "case": "buff_to_preserve_the_spell_tax_aura",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 6123,
+    "tokens": 4005
+  },
+  {
+    "case": "buff_to_preserve_the_spell_tax_aura",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 2756,
+    "tokens": 3948
+  },
+  {
+    "case": "reserve_two_slots_for_next_ritual_wave",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 2807,
+    "tokens": 4237
+  },
+  {
+    "case": "reserve_two_slots_for_next_ritual_wave",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 4373,
+    "tokens": 4246
+  },
+  {
+    "case": "weapon_trigger_versus_visible_eight_damage",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 6737,
+    "tokens": 4070
+  },
+  {
+    "case": "weapon_trigger_versus_visible_eight_damage",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 3277,
+    "tokens": 4053
+  },
+  {
+    "case": "generated_card_is_not_archetype_evidence",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 3090,
+    "tokens": 4070
+  },
+  {
+    "case": "generated_card_is_not_archetype_evidence",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 5613,
+    "tokens": 4094
+  },
+  {
+    "case": "buff_before_sacrificing_own_tax",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 7456,
+    "tokens": 4783
+  },
+  {
+    "case": "buff_before_sacrificing_own_tax",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 5078,
+    "tokens": 4820
+  },
+  {
+    "case": "reborn_heals_twice_and_windfury",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 4073,
+    "tokens": 4758
+  },
+  {
+    "case": "reborn_heals_twice_and_windfury",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 11883,
+    "tokens": 4978
+  },
+  {
+    "case": "two_auras_buff_before_enemy_aura_dies",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 5902,
+    "tokens": 4444
+  },
+  {
+    "case": "two_auras_buff_before_enemy_aura_dies",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3002,
+    "tokens": 4416
+  },
+  {
+    "case": "lifesteal_overkill_survival_target",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3444,
+    "tokens": 4185
+  },
+  {
+    "case": "lifesteal_overkill_survival_target",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 5775,
+    "tokens": 4154
+  },
+  {
+    "case": "take_a_calculated_not_guaranteed_out",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 4325,
+    "tokens": 4693
+  },
+  {
+    "case": "take_a_calculated_not_guaranteed_out",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 2591,
+    "tokens": 4666
+  },
+  {
+    "case": "coin_tax_spellpower_and_highest_cost",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3013,
+    "tokens": 4549
+  },
+  {
+    "case": "coin_tax_spellpower_and_highest_cost",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 5788,
+    "tokens": 4549
+  },
+  {
+    "case": "priest_two_ruins_spent",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 3584,
+    "tokens": 4171
+  },
+  {
+    "case": "priest_two_ruins_spent",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 2786,
+    "tokens": 4195
+  },
+  {
+    "case": "priest_two_moonwells_spent",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 2792,
+    "tokens": 4205
+  },
+  {
+    "case": "priest_two_moonwells_spent",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 4842,
+    "tokens": 4242
+  },
+  {
+    "case": "buff_to_preserve_the_spell_tax_aura",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 5131,
+    "tokens": 3981
+  },
+  {
+    "case": "buff_to_preserve_the_spell_tax_aura",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3036,
+    "tokens": 3947
+  },
+  {
+    "case": "reserve_two_slots_for_next_ritual_wave",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3095,
+    "tokens": 4261
+  },
+  {
+    "case": "reserve_two_slots_for_next_ritual_wave",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 5054,
+    "tokens": 4264
+  },
+  {
+    "case": "weapon_trigger_versus_visible_eight_damage",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 11358,
+    "tokens": 4160
+  },
+  {
+    "case": "weapon_trigger_versus_visible_eight_damage",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3121,
+    "tokens": 4029
+  },
+  {
+    "case": "generated_card_is_not_archetype_evidence",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3427,
+    "tokens": 4079
+  },
+  {
+    "case": "generated_card_is_not_archetype_evidence",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 4771,
+    "tokens": 4088
+  }
+]

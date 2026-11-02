@@ -10,6 +10,7 @@
 - (id)getFormat;
 - (id)getSelectedDeck;
 - (id)getDecks;
+- (id)getDeckPickerState;
 - (id)getMulliganState;
 - (id)getBoardState:(BOOL)includeOpposing;
 - (id)getBigCardState;
@@ -38,7 +39,7 @@ static id jsonValue(id value, int depth) {
     NSString *className = NSStringFromClass([value class]);
     NSSet *allowed = [NSSet setWithArray:@[@"MirrorSceneMgrState", @"MirrorDeck", @"MirrorCard",
         @"MirrorBoardState", @"MirrorPlayZoneState", @"MirrorBoardCard",
-        @"MirrorMulliganState", @"MirrorMulliganCardState", @"MirrorBigCardState"]];
+        @"MirrorMulliganState", @"MirrorMulliganCardState", @"MirrorBigCardState", @"MirrorDeckPickerState"]];
     if (![allowed containsObject:className]) return [NSString stringWithFormat:@"[%@]", className];
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
     unsigned count = 0;
@@ -82,6 +83,7 @@ int main(int argc, const char **argv) {
         out[@"format"] = jsonValue([h getFormat], 0);
         id selected = [h getSelectedDeck];
         out[@"selected_deck"] = jsonValue(selected, 0);
+        if (argc == 2) out[@"deck_picker"] = jsonValue([h getDeckPickerState], 0);
         // getSelectedDeck is an ID, not a MirrorDeck. Only menu polling needs
         // the collection lookup; normal board reads must remain lightweight.
         id lookupId = requestedDeck ?: selected;

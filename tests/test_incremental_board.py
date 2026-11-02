@@ -37,6 +37,14 @@ def fixture():
 
 
 class IncrementalTests(unittest.TestCase):
+    def test_client_option_submission_is_counted_without_exposing_payload(self):
+        parser = inc.IncrementalBoard()
+        parser.feed(fixture())
+        parser.feed(b'D 10:00:01.0000000 GameState.SendOption() - selectedOption=0 selectedSubOption=-1 selectedTarget=0 selectedPosition=0\n')
+        self.assertEqual(parser.sent_options,1)
+        parser.feed(fixture())
+        self.assertEqual(parser.sent_options,0)
+
     def test_chunked_matches_upstream_and_hides_other_hand(self):
         data = fixture()
         parser = inc.IncrementalBoard()
@@ -50,6 +58,7 @@ class IncrementalTests(unittest.TestCase):
         self.assertFalse(snap["ritual_state_verified"])
         self.assertEqual(snap["mana"], 4)
         self.assertEqual(snap["enemy_hero"]["health"], 9)
+        self.assertEqual(snap["enemy_hero"]["max_health"], 12)
         self.assertEqual(snap["my_hand"][0]["card_id"], "BE_086")
         self.assertNotIn("ENEMY_PRIVATE_CARD", json.dumps(snap))
         other_view = parser.snapshot(2)
@@ -208,6 +217,30 @@ class IncrementalTests(unittest.TestCase):
         other.feed(fixture() + secret.encode())
         with self.assertRaisesRegex(inc.UnsafeState, "secret"):
             other.snapshot(1)
+
+    def test_extended_secret_count_never_exports_hidden_identity(self):
+        p=inc.IncrementalBoard()
+        secret=power("FULL_ENTITY - Creating ID=44 CardID=EX1_287")+power("  tag=CARDTYPE value=SPELL")+power("  tag=ZONE value=SECRET")+power("  tag=CONTROLLER value=2")
+        p.feed(fixture()+secret.encode())
+        state=p.snapshot(1,extended=True)
+        self.assertEqual(state['enemy_secret_count'],1)
+        self.assertNotIn('EX1_287',json.dumps(state))
+        self.assertFalse(state['enemy_active_rituals'])
+
+    def test_public_hero_enchantment_is_available_to_arithmetic_guard(self):
+        p=inc.IncrementalBoard()
+        effect=power('FULL_ENTITY - Creating ID=44 CardID=KNOWN_PUBLIC_EFFECT')+power('  tag=CARDTYPE value=ENCHANTMENT')+power('  tag=ZONE value=PLAY')+power('  tag=ATTACHED value=10')
+        p.feed(fixture()+effect.encode())
+        self.assertEqual(p.snapshot(1,extended=True)['my_hero']['modifiers'],[{'card_id':'KNOWN_PUBLIC_EFFECT'}])
+
+    def test_public_enemy_ritual_is_separate_from_own_ritual_and_hidden_secret(self):
+        p=inc.IncrementalBoard()
+        ritual=power("FULL_ENTITY - Creating ID=44 CardID=BE_085")+power("  tag=CARDTYPE value=SPELL")+power("  tag=ZONE value=SECRET")+power("  tag=CONTROLLER value=2")+power("  tag=OBJECTIVE_COUNTDOWN value=1")
+        p.feed(fixture()+ritual.encode())
+        state=p.snapshot(1,extended=True)
+        self.assertFalse(state['active_rituals'])
+        self.assertEqual(state['enemy_active_rituals'][0]['card_id'],'BE_085')
+        self.assertEqual(state['enemy_secret_count'],0)
 
     def test_custom_trial_uses_observed_parts_in_hand_and_active_zone(self):
         p = inc.IncrementalBoard()

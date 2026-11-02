@@ -5,7 +5,7 @@ import Security
 final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let keyField = NSSecureTextField()
-    let modelField = NSTextField(string: "gpt-6.1-terra")
+    let modelField = NSTextField(string: "gpt-6.1-sol")
     let status = NSTextField(labelWithString: "就绪 · 尚未启动游戏")
     let resources = NSTextField(labelWithString: "资源采样将在测试期间显示")
     let keyStatus = NSTextField(labelWithString: "密钥不会写入日志或项目文件")
@@ -73,7 +73,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let title = label("Hearthstone AI", 27, bold: true)
         let subtitle = label("独立运行的炉石 AI · 动物园术 · 实验版", 14)
         subtitle.textColor = .secondaryLabelColor
-        let note = label("本版只进入练习模式。每次最多运行 5 分钟、调用 API 40 次，结束时关闭本次启动的炉石。请先退出炉石并接通电源。", 13)
+        let note = label("本版只进入练习模式。每次最多运行 10 分钟、调用 API 40 次，结束时关闭本次启动的炉石。请先退出炉石并接通电源。", 13)
         let beta = label("API 完整对局尚未验收；可能因无法确认局面而提前停止。", 12)
         beta.textColor = .secondaryLabelColor
         keyField.placeholderString = "在本机粘贴 OpenAI API Key"
@@ -81,7 +81,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         modelField.setAccessibilityLabel("OpenAI 模型")
         modelField.widthAnchor.constraint(equalToConstant: 250).isActive = true
-        modelField.stringValue = UserDefaults.standard.string(forKey: "model") ?? "gpt-6.1-terra"
+        modelField.stringValue = UserDefaults.standard.string(forKey: "model") ?? "gpt-6.1-sol"
         keyStatus.font = .systemFont(ofSize: 11)
         keyStatus.textColor = .secondaryLabelColor
         let save = button("存入钥匙串", #selector(saveKey))

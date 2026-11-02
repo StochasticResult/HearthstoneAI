@@ -1,0 +1,34 @@
+{
+  "run": "run-20261101-201029",
+  "game_type": null,
+  "outcome": "INCOMPLETE",
+  "models": [],
+  "api_responses": 0,
+  "api_tokens": 0,
+  "median_decision_ms": null,
+  "confirmed_decisions": 0,
+  "unconfirmed_decisions": [],
+  "local_calculations": 0,
+  "resources": {
+    "game": {
+      "peak_sampled_rss_mib": 1075.4,
+      "peak_sampled_cpu_pct": 351.4,
+      "peak_thermal_state": 0
+    },
+    "ai": {
+      "peak_sampled_rss_mib": 78.8,
+      "peak_sampled_cpu_pct": 38.5,
+      "peak_thermal_state": 0
+    }
+  },
+  "guard_stop_reasons": [
+    "interrupted",
+    "interrupted"
+  ],
+  "game_closed": true,
+  "needs_review": true,
+  "reconnect_recovery_used": false,
+  "mulligan_confirmed": false,
+  "consecutive_losses": 0,
+  "review_before_next_game": true
+}

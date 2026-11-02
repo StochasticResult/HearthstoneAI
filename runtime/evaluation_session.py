@@ -20,14 +20,14 @@ def consume_request(data):
         raise ValueError("棋力测试请求无效；未启动游戏")
     request = json.loads(path.read_text())
     path.unlink()
-    if (set(request) != {"suite", "expires_at"} or request["suite"] != "strategy-v1"
+    if (set(request) != {"suite", "expires_at"} or request["suite"] not in ("strategy-v1", "model-comparison-v1", "hard-comparison-v1", "rule-transfer-v1", "tracking-v1")
             or type(request["expires_at"]) not in (int, float)
             or not 0 <= request["expires_at"] - time.time() <= 300):
         raise ValueError("棋力测试请求已过期或无效；未启动游戏")
-    return True
+    return request["suite"]
 
 
-def run_evaluation(config, root, data, parent_pid, emit, stop_child):
+def run_evaluation(config, root, data, parent_pid, emit, stop_child, suite="strategy-v1"):
     from session import lock_session, drain_guards
     lock = lock_session()
     guard = caffeine = None
@@ -36,15 +36,19 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        dest = data / "evaluation"
+        comparison = suite == "model-comparison-v1"
+        hard = suite == "hard-comparison-v1"
+        transfer = suite == "rule-transfer-v1"
+        tracking = suite == "tracking-v1"
+        dest = data / ("tracking-evaluation" if tracking else "rule-transfer" if transfer else "hard-comparison" if hard else "model-comparison" if comparison else "evaluation")
         dest.mkdir(mode=0o700, parents=True, exist_ok=True)
-        emit("正在运行固定局面棋力评测：最多 16 次 API 请求，不启动炉石、不发送游戏输入")
+        emit("正在运行固定局面棋力评测：最多 %d 次 API 请求，不启动炉石、不发送游戏输入" % (4 if tracking else 48 if comparison or hard else 16))
         caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-t", "320", "-w", str(os.getpid())],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         guard = subprocess.Popen([sys.executable, str(root / "resource_guard.py"),
             "--log", str(dest / "evaluation.log"), "--timeout", "300", "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", sys.executable,
-            str(root / "state-bridge/strategy_eval.py"), str(dest / "results.jsonl")],
+            str(root / ("state-bridge/tracking_eval.py" if tracking else "state-bridge/rule_transfer.py" if transfer else "state-bridge/hard_comparison.py" if hard else "state-bridge/model_comparison.py" if comparison else "state-bridge/strategy_eval.py")), str(dest / "results.jsonl")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         guard.stdin.write((json.dumps(config) + "\n").encode()); guard.stdin.close()
         config["api_key"] = ""

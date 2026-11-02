@@ -1,0 +1,44 @@
+{
+  "reviewed_before_unmasking": true,
+  "results_sha256": "d1112d2727fb20da389fedb9e0536052ec9e6cd8b9af27dbbdc1e8632533ac4f",
+  "grading": {
+    "A": {
+      "tactical": 5,
+      "tactical_total": 12,
+      "strategic": 2,
+      "strategic_total": 8
+    },
+    "B": {
+      "tactical": 12,
+      "tactical_total": 12,
+      "strategic": 8,
+      "strategic_total": 8
+    },
+    "C": {
+      "tactical": 12,
+      "tactical_total": 12,
+      "strategic": 8,
+      "strategic_total": 8
+    }
+  },
+  "critical_findings": {
+    "A": [
+      "Missed the guaranteed eight-damage buff lethal.",
+      "Cast Blasphemy before removing the higher-cost card.",
+      "Picked targeted healing with no enemy minion instead of certain CThun lethal.",
+      "Mistook tied highest Blasphemy and claimed it damages own hero.",
+      "Reason said freeze hero but actual action targeted the minion.",
+      "Claimed one minion attack both breaks Divine Shield and kills its bearer.",
+      "Consumed the only ready attacker instead of spell-clearing taunt for lethal."
+    ],
+    "B": [],
+    "C": []
+  },
+  "strategic_review": {
+    "A": "Correctly attacks face instead of advancing Egg. Other three cases contain a wrong action/reason mismatch, invented remaining mana/card cost, or wrong freeze target. 2/8.",
+    "B": "All four strategic actions and decisive reasons are sound. No assumptions that an unseen removal is definitely in hand. 8/8.",
+    "C": "All four strategic actions and decisive reasons are sound; shorter reasons remain sufficient. 8/8."
+  },
+  "decision_before_identity": "B and C tied on decision quality in this sample. If either is Luna select Luna per user; otherwise choose the lower median latency. A is not close enough.",
+  "limitation": "Synthetic first-action choices only, one sample each. Does not establish win rate or legend capability."
+}

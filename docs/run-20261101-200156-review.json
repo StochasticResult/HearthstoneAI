@@ -1,0 +1,36 @@
+{
+  "run": "run-20261101-200156",
+  "game_type": "GT_VS_AI",
+  "outcome": "INCOMPLETE",
+  "models": [
+    "gpt-6.1-sol"
+  ],
+  "api_responses": 22,
+  "api_tokens": 100476,
+  "median_decision_ms": 3795.0,
+  "confirmed_decisions": 25,
+  "unconfirmed_decisions": [],
+  "local_calculations": 0,
+  "resources": {
+    "game": {
+      "peak_sampled_rss_mib": 1243.5,
+      "peak_sampled_cpu_pct": 361.6,
+      "peak_thermal_state": 0
+    },
+    "ai": {
+      "peak_sampled_rss_mib": 78.2,
+      "peak_sampled_cpu_pct": 19.1,
+      "peak_thermal_state": 0
+    }
+  },
+  "guard_stop_reasons": [
+    "interrupted"
+  ],
+  "game_closed": true,
+  "needs_review": true,
+  "reconnect_recovery_used": false,
+  "mulligan_confirmed": true,
+  "driver_stop_detail": "Session API request/token limit reached",
+  "consecutive_losses": 0,
+  "review_before_next_game": true
+}

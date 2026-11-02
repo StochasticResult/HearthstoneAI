@@ -37,7 +37,7 @@ def card(cid, eid, *, cost=None, attack=None, health=None):
 
 def base():
     return {"game_type": "GT_VS_AI", "format": "FT_STANDARD", "phase": "main", "game_turn": "8",
-            "own_turn": True, "options_id": 1, "end_turn_allowed": True, "mana": 4,
+            "own_turn": True, "options_id": 1, "end_turn_allowed": True, "mana": 4, "mana_cap": 10,
             "my_hero": {"id": 1, "card_id": "HERO_07", "health": 20, "armor": 0, "attack": 0},
             "enemy_hero": {"id": 2, "card_id": "HERO_09", "health": 20, "armor": 0, "attack": 0},
             "my_hero_power": {"id": 3, "card_id": "CS2_056", "cost": 2, "exhausted": False},

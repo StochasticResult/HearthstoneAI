@@ -35,7 +35,7 @@ class MirrorIdentityTests(unittest.TestCase):
             practice_identity(self.parser.game, mirror([], []))
         wrong = mirror([self.a], [self.b])
         wrong["game_type"] = 2
-        with self.assertRaisesRegex(UnsafeState, "not in practice"):
+        with self.assertRaisesRegex(UnsafeState, "mode not confirmed"):
             practice_identity(self.parser.game, wrong)
 
     def test_real_mirror_null_for_empty_side(self):

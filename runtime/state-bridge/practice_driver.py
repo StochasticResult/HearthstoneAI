@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from input_command import input_command
 from deck_observation import public_selected_deck
+from game_mode import expected_type
 
 from capture_practice import Capture, CaptureError, LOG_ROOT
 from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board
@@ -27,6 +28,7 @@ from openai_advisor import AdvisorError, OpenAIAdvisor, action_menu, signature
 
 ROOT = Path(__file__).resolve().parent.parent
 FRAMEWORK = "/Applications/HSTracker.app/Contents/Frameworks/HearthMirror.framework/Versions/A/HearthMirror"
+RUN_MODE = "practice"
 
 
 class Stop(Exception):
@@ -68,11 +70,14 @@ def mirror():
     if scene.get("mode") == 9:
         raise ClientFatal("Hearthstone client entered FATAL_ERROR")
     game_type = status.get("game_type")
-    if game_type not in (None, 0, 1):
-        raise Stop("mirror observed a non-practice game type: %r" % game_type)
-    if game_type != 1 or scene.get("mode") != 4 or scene.get("sceneLoaded") is not True or scene.get("transitioning"):
+    numeric_type = expected_type(RUN_MODE)[1]
+    if scene.get("mode") == 4 and game_type not in (None, 0, numeric_type):
+        raise Stop("mirror observed an unexpected game type: %r" % game_type)
+    if game_type != numeric_type or scene.get("mode") != 4 or scene.get("sceneLoaded") is not True or scene.get("transitioning"):
         raise NotReady("practice scene is not ready: type=%r mode=%r loaded=%r transitioning=%r" %
                        (game_type, scene.get("mode"), scene.get("sceneLoaded"), scene.get("transitioning")))
+    if RUN_MODE == "ranked" and status.get("format") != 2:
+        raise Stop("ranked game is not confirmed Standard")
     return status
 
 
@@ -110,7 +115,7 @@ def hover():
     while time.monotonic() < end:
         status = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--hover"]))
         scene = status.get("scene") or {}
-        if status.get("game_type") == 1 and scene.get("mode") == 4 and not status.get("popup") and not status.get("shop_open"):
+        if status.get("game_type") == expected_type(RUN_MODE)[1] and scene.get("mode") == 4 and not status.get("popup") and not status.get("shop_open"):
             value = status.get("hover")
             return value if isinstance(value, dict) else {}
         time.sleep(.3)
@@ -124,6 +129,22 @@ def hover_matches(value, hand, source):
                 and value.get("cardId") == card["card_id"]
                 and value.get("zonePosition") == card["position"]
                 and value.get("zoneSize") == len(hand))
+
+
+def waiting_for_first_mana(parser, own):
+    """Second player has no RESOURCES tag until their first turn starts.
+
+    Do not manufacture zero mana or ask the model to act in that interval.
+    Missing mana on any later turn remains an error.
+    """
+    game = parser.game
+    if not game:
+        return False
+    entity = board._game_entity(game)
+    player = next((p for p in board._players(game) if board._tag_int(p, "PLAYER_ID") == own), None)
+    return bool(entity and player and board._tag_int(entity, "TURN") <= 1
+                and board._tag_int(player, "CURRENT_PLAYER") != 1
+                and "RESOURCES" not in player["tags"])
 
 
 def visual_ready(state):
@@ -298,12 +319,14 @@ class Driver:
     def identify(self, status):
         if self.parser.game is None or not self.parser.game["meta"].get("GameType"):
             raise NotReady("practice log is not ready")
-        if self.parser.game["meta"].get("GameType") != "GT_VS_AI":
-            raise Stop("game is not practice")
+        if self.parser.game["meta"].get("GameType") != expected_type(RUN_MODE)[0]:
+            raise Stop("game does not match requested mode")
+        if RUN_MODE == "ranked" and self.parser.game["meta"].get("FormatType") != "FT_STANDARD":
+            raise Stop("ranked log is not confirmed Standard")
         if self.owner is not None and self.identity_game is not self.parser.game:
             raise Stop("game changed during a single-game session")
         try:
-            crosschecked = practice_identity(self.parser.game, status)
+            crosschecked = practice_identity(self.parser.game, status, mode=RUN_MODE)
         except UnsafeState as error:
             sides = (status.get("board") or {})
             cards = (sides.get("friendly") or {}).get("boardCards", []) + (sides.get("opposing") or {}).get("boardCards", [])
@@ -320,7 +343,7 @@ class Driver:
                     raise NotReady("waiting for mirror and log to converge") from error
                 raise Stop("tracker board and game log disagree") from error
             try:
-                crosschecked = mulligan_identity(self.parser, status)
+                crosschecked = mulligan_identity(self.parser, status, mode=RUN_MODE)
             except UnsafeState:
                 crosschecked = None
         if crosschecked is not None:
@@ -345,13 +368,13 @@ class Driver:
     def wait_until(self, predicate, seconds=8):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            time.sleep(.35)
             self.poll()
             try:
                 if predicate():
                     return
             except UnsafeState:
                 pass
+            time.sleep(.15)
         raise Stop("action was not confirmed in game log")
 
     def verify_hand_point(self, own, state, source, initial):
@@ -377,28 +400,30 @@ class Driver:
         # An enlarged card can remain under the cursor after a prior action;
         # clear it first so Mirror cannot return an old enlarged-card result.
         observed = []
-        # Hand hit-testing can lag behind the turn animation; revisit the
-        # central candidates once after scanning nearby positions.
-        time.sleep(2)
+        # Poll the actual hover instead of always sleeping two seconds. If
+        # hit-testing lags, keep the same bounded wait before scanning offsets.
         for dx in (0, -20, 20, -40, 40, -60, 60, -80, 80, 0, -20, 20):
             still_current()
             move((1050, 690))
-            for _ in range(10):
-                time.sleep(.3)
+            clear_deadline = time.monotonic() + 3
+            while time.monotonic() < clear_deadline:
                 if hover().get("isHand") is not True:
                     break
+                time.sleep(.12)
             else:
                 raise Stop("hand hover did not clear within three seconds")
             candidate = (initial[0] + dx, initial[1])
             if not watchdog_alive(self.watchdog):
                 raise Stop("game watchdog is not running")
             move(candidate)
-            for _ in range(5):
-                time.sleep(.3)
+            probe_deadline = time.monotonic() + 1.8
+            seen = {}
+            while time.monotonic() < probe_deadline:
                 seen = hover()
                 if hover_matches(seen, state["my_hand"], source):
                     still_current()
                     return candidate
+                time.sleep(.12)
             observed.append({"point": candidate, "card": seen.get("cardId"), "position": seen.get("zonePosition"),
                              "hand_size": seen.get("zoneSize"), "side": seen.get("side"), "is_hand": seen.get("isHand")})
         print(json.dumps({"hover_probe": observed}), flush=True)
@@ -448,10 +473,36 @@ class Driver:
             raise Stop("game confirmed a different choice; no further input was sent")
         return True
 
+    def execute_end_turn(self, own, state):
+        sent_before = self.parser.sent_options
+        def done():
+            if self.game_result():
+                return True
+            try:
+                return not self.snapshot(own)['own_turn']
+            except UnsafeState:
+                return False
+        for attempt in range(3):
+            self.poll()
+            if done():
+                return
+            if self.parser.sent_options != sent_before:
+                self.wait_until(done,6)
+                return
+            self.revalidate(own,state,{'kind':'end_turn'})
+            click((1180,435))
+            try:
+                self.wait_until(done,4)
+                return
+            except Stop as error:
+                if str(error) != 'action was not confirmed in game log' or attempt == 2:
+                    raise
+
     def run(self, max_seconds, max_actions, diagnose_hover=False, previous=None):
         deadline = time.monotonic() + max_seconds
         actions = 0
-        ready_deadline = time.monotonic() + 35
+        initial_wait = 120 if RUN_MODE == "ranked" else 35
+        ready_deadline = time.monotonic() + initial_wait
         choice_deadline = None
         refreshed_reconnect = False
         borrowed_options = None
@@ -460,6 +511,7 @@ class Driver:
         first_options_deadline = None
         mirror_wait_started = None
         resolving_since = None
+        first_mana_wait = None
         visual_wait_since = None
         while time.monotonic() < deadline and actions < max_actions:
             self.poll()
@@ -474,7 +526,7 @@ class Driver:
                 if mirror_wait_started is None:
                     mirror_wait_started = time.monotonic()
                     print("waiting for observation: " + str(error), flush=True)
-                if time.monotonic() - mirror_wait_started >= (35 if self.owner is None else 8):
+                if time.monotonic() - mirror_wait_started >= (initial_wait if self.owner is None else 8):
                     raise Stop("game observation did not recover: " + str(error)) from error
                 time.sleep(.5)
                 continue
@@ -500,11 +552,14 @@ class Driver:
             if choice and choice["type"] == "TARGET":
                 target_state = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
                 advice = self.advisor.target(choice, target_state)
+                before_options = self.parser.options_id
                 time.sleep(.4)
                 self.execute_target(own, choice, target_state, advice)
                 self.advisor.confirm_target(advice)
                 print("confirmed target choice", flush=True)
                 actions += 1
+                borrowed_options = before_options
+                awaiting_fresh_options = True
                 time.sleep(1.5)
                 continue
             if choice and choice["type"] == "GENERAL":
@@ -526,14 +581,24 @@ class Driver:
                     raise Stop("choice is covered by a menu")
                 xs = [370, 735, 1090] if len(choice["items"]) == 3 else [310, 595, 880, 1160]
                 checked_geometry()
+                before_options = self.parser.options_id
                 click((xs[index], 455))
                 before_id = choice["id"]
                 self.wait_until(lambda: self.choice_confirmed(before_id, [choice["items"][index]["id"]]), 10)
                 self.advisor.confirm_choice(choice, index)
                 print("choice resolved", flush=True)
                 actions += 1
+                borrowed_options = before_options
+                awaiting_fresh_options = True
                 time.sleep(2)
                 continue
+            if waiting_for_first_mana(self.parser, own):
+                first_mana_wait = first_mana_wait or time.monotonic()
+                if time.monotonic() - first_mana_wait >= 90:
+                    raise Stop("first-turn resource observation did not arrive")
+                time.sleep(.7)
+                continue
+            first_mana_wait = None
             try:
                 state = self.snapshot(own)
             except UnsafeState as error:
@@ -594,6 +659,8 @@ class Driver:
                 else:
                     # End only this practice turn to obtain a fresh list; never
                     # guess missing entity IDs.
+                    if RUN_MODE != "practice":
+                        raise Stop("ranked reconnect requires complete legal options")
                     if not state.get("end_turn_allowed"):
                         raise Stop("reconnect options do not confirm end turn")
                     time.sleep(5)
@@ -617,7 +684,9 @@ class Driver:
                     actions += 1
                     continue
             prepared = state
+            decision_started = time.monotonic()
             advice = self.advisor.ask(prepared)
+            input_started = time.monotonic()
             self.revalidate(own, state, advice)
             plan = plan_inputs(state, advice)
             checked_geometry()
@@ -640,8 +709,7 @@ class Driver:
             self.revalidate(own, state, advice)
             before_attacks = board._tag_int(self.parser.game["entities"].get(source_id, {"tags": {}}), "NUM_ATTACKS_THIS_TURN")
             if kind == "click":
-                click(first)
-                self.wait_until(lambda: bool(self.game_result()) or not self.snapshot(own)["own_turn"], 10)
+                self.execute_end_turn(own,state)
             elif kind == "click_power":
                 click(first)
                 self.wait_until(lambda: bool(self.game_result()) or self.snapshot(own)["options_id"] != state["options_id"], 10)
@@ -687,15 +755,25 @@ class Driver:
                                 board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks))
                 self.wait_until(attacked, 10)
             print("confirmed", advice["kind"], flush=True)
+            print(json.dumps({"action_timing": {"kind": advice["kind"],
+                "decision_ms": round((input_started-decision_started)*1000),
+                "input_confirmation_ms": round((time.monotonic()-input_started)*1000)}}), flush=True)
             self.advisor.confirm(advice, state)
-            if borrowed_options is not None:
-                awaiting_fresh_options = True
+            # Entity changes can arrive before the next legal-option packet.
+            # Require a new option list after every action, not just reconnect
+            # actions, before asking the model to decide again.
+            borrowed_options = state["options_id"]
+            awaiting_fresh_options = True
             actions += 1
+            # Server confirmation can precede the end of a client animation.
+            # Keep this settling window; hand verification itself now polls
+            # readiness and avoids the old unconditional two-second delay.
             time.sleep(1.5)
         print("practice limit reached, actions=%d" % actions, flush=True)
 
 
 def main():
+    global RUN_MODE
     ap = argparse.ArgumentParser()
     logs = ap.add_mutually_exclusive_group(required=True)
     logs.add_argument("--log", type=Path)
@@ -709,9 +787,11 @@ def main():
     ap.add_argument("--deck-snapshot", type=Path)
     ap.add_argument("--reconnect-evidence", type=Path, action="append", default=[])
     ap.add_argument("--openai-config-stdin", action="store_true", help="read API settings privately from stdin")
+    ap.add_argument("--mode", choices=("practice","ranked"), default="practice")
     args = ap.parse_args()
-    if not 1 <= args.seconds <= 300 or not 1 <= args.max_actions <= 80:
-        ap.error("practice limits exceeded")
+    RUN_MODE = args.mode
+    if not 1 <= args.seconds <= (900 if RUN_MODE == "ranked" else 600) or not 1 <= args.max_actions <= (160 if RUN_MODE == "ranked" else 80):
+        ap.error("game limits exceeded")
     if not watchdog_alive(args.watchdog_pid):
         raise Stop("no armed game watchdog")
     if not args.openai_config_stdin:

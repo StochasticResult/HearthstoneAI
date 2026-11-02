@@ -28,6 +28,31 @@ def next_navigation(stage, status):
     return None
 
 
+def next_ranked_navigation(stage, status):
+    """Only launch a verified Standard deck from the observed Tournament menu.
+
+    The format switch is deliberately not guessed: the user has selected
+    Standard, and an unexpected format/deck is a stop rather than a queue.
+    """
+    scene = status.get("scene") or {}
+    if not scene.get("sceneLoaded") or scene.get("transitioning") or status.get("popup") or status.get("shop_open"):
+        return None
+    if stage == 0 and scene.get("mode") == 3:
+        return (735, 310)
+    if stage == 1 and scene.get("mode") == 7:
+        picker = status.get("deck_picker") or {}
+        if picker.get("isModeSwitching") or picker.get("setRotationOpen"):
+            return None
+        from deck_observation import public_selected_deck
+        if picker.get("visualsFormatType") != 2:
+            raise Stop("选牌界面不是标准模式；未开始匹配")
+        if (status.get("selected_deck") != DECK_ID or picker.get("selectedDeck") != DECK_ID
+                or not public_selected_deck(status.get("selected_deck_details"))):
+            raise Stop("动物园卡组身份或完整 30 张牌未确认；未开始匹配")
+        return (1070, 735)
+    return None
+
+
 def read_json_line(process, timeout):
     pending = getattr(process, "_pending_line_bytes", b"")
     deadline = time.monotonic() + timeout

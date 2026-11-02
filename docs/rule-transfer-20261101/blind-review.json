@@ -1,0 +1,66 @@
+{
+  "reviewed_before_unmasking": true,
+  "results_sha256": "e6dad356a9a0ac0a7a8fb00ec7f9d24bce04900392761015ea5295fcd7a43276",
+  "case_order": [
+    "overkill_ten_and_four_attack",
+    "shield_blocks_lifesteal",
+    "fragile_windfury_cannot_clear_reborn",
+    "two_taxes_coin_must_wait"
+  ],
+  "grades": {
+    "P": [
+      [
+        2,
+        2,
+        1,
+        1
+      ],
+      [
+        0,
+        2,
+        2,
+        1
+      ]
+    ],
+    "Q": [
+      [
+        2,
+        2,
+        2,
+        1
+      ],
+      [
+        2,
+        2,
+        null,
+        2
+      ]
+    ]
+  },
+  "totals": {
+    "P": {
+      "score": 11,
+      "answered_max": 16,
+      "requests_returned": 8
+    },
+    "Q": {
+      "score": 13,
+      "answered_max": 14,
+      "requests_returned": 7
+    }
+  },
+  "findings": {
+    "P": [
+      "Rep1 wrong Glare target and treats spell damage as if it reduces attack; there are fourteen opposing attack, not nine.",
+      "Rep0 fragile Windfury dies to the reborn minion, losing the proposed lethal.",
+      "Rep0 Coin before seven-cost minion at ten current mana cannot raise usable mana to eleven.",
+      "Rep1 gives up the available lethal by casting a single Blasphemy before removing the higher-cost minion."
+    ],
+    "Q": [
+      "Rep0 Coin-before-minion sequence incorrectly claims eleven current mana at the normal ten-crystal cap.",
+      "Rep1 fragile-Windfury trial has no usable response; separate availability failure, not graded as a card-rule error."
+    ]
+  },
+  "decision_before_identity": "Q is the stronger answerer on these transfer cases, but one request failed. Keep operational deadline and distinguish failures from decision quality. Add deterministic Glare survival arithmetic and a Coin cap reminder; do not rely on prompting alone.",
+  "limitation": "Four counterfactual cases, not independent win-rate evidence. Two simultaneous changes (generic rules and output order), so no causal attribution to either alone."
+}

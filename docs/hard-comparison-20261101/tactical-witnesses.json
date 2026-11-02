@@ -1,0 +1,249 @@
+{
+  "buff_before_sacrificing_own_tax": [
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 100,
+        "target_id": 11
+      },
+      "mana": 5,
+      "enemy_health": 7,
+      "enemy_armor": 1,
+      "remaining_taunts": [
+        20,
+        21
+      ]
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 12,
+        "target_id": 21
+      },
+      "mana": 5,
+      "enemy_health": 7,
+      "enemy_armor": 1,
+      "remaining_taunts": [
+        20,
+        21
+      ]
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 10,
+        "target_id": 20
+      },
+      "mana": 5,
+      "enemy_health": 7,
+      "enemy_armor": 1,
+      "remaining_taunts": [
+        21
+      ]
+    },
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 101
+      },
+      "mana": 1,
+      "enemy_health": 6,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 11,
+        "target_id": 2
+      },
+      "mana": 1,
+      "enemy_health": 0,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    }
+  ],
+  "reborn_heals_twice_and_windfury": [
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 100
+      },
+      "mana": 4,
+      "enemy_health": 13,
+      "enemy_armor": 0,
+      "remaining_taunts": [
+        20,
+        21
+      ]
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 13,
+        "target_id": 20
+      },
+      "mana": 4,
+      "enemy_health": 13,
+      "enemy_armor": 0,
+      "remaining_taunts": [
+        20,
+        21
+      ]
+    },
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 101
+      },
+      "mana": 0,
+      "enemy_health": 15,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 10,
+        "target_id": 2
+      },
+      "mana": 0,
+      "enemy_health": 10,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 11,
+        "target_id": 2
+      },
+      "mana": 0,
+      "enemy_health": 6,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 12,
+        "target_id": 2
+      },
+      "mana": 0,
+      "enemy_health": 3,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 12,
+        "target_id": 2
+      },
+      "mana": 0,
+      "enemy_health": 0,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    }
+  ],
+  "two_auras_buff_before_enemy_aura_dies": [
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 100,
+        "target_id": 11
+      },
+      "mana": 7,
+      "enemy_health": 14,
+      "enemy_armor": 2,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 101
+      },
+      "mana": 1,
+      "enemy_health": 12,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 10,
+        "target_id": 2
+      },
+      "mana": 1,
+      "enemy_health": 8,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 11,
+        "target_id": 2
+      },
+      "mana": 1,
+      "enemy_health": 0,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    }
+  ],
+  "coin_tax_spellpower_and_highest_cost": [
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 10,
+        "target_id": 20
+      },
+      "mana": 10,
+      "enemy_health": 10,
+      "enemy_armor": 1,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 100
+      },
+      "mana": 4,
+      "enemy_health": 10,
+      "enemy_armor": 1,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "play",
+        "source_id": 101
+      },
+      "mana": 0,
+      "enemy_health": 5,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 11,
+        "target_id": 2
+      },
+      "mana": 0,
+      "enemy_health": 4,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    },
+    {
+      "action": {
+        "kind": "attack",
+        "source_id": 12,
+        "target_id": 2
+      },
+      "mana": 0,
+      "enemy_health": 0,
+      "enemy_armor": 0,
+      "remaining_taunts": []
+    }
+  ]
+}

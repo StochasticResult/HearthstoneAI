@@ -1,0 +1,114 @@
+[
+  {
+    "case": "overkill_ten_and_four_attack",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 3137,
+    "tokens": 4292
+  },
+  {
+    "case": "overkill_ten_and_four_attack",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 5963,
+    "tokens": 4324
+  },
+  {
+    "case": "shield_blocks_lifesteal",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 3995,
+    "tokens": 4266
+  },
+  {
+    "case": "shield_blocks_lifesteal",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 2811,
+    "tokens": 4302
+  },
+  {
+    "case": "fragile_windfury_cannot_clear_reborn",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 6359,
+    "tokens": 5102
+  },
+  {
+    "case": "fragile_windfury_cannot_clear_reborn",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 7177,
+    "tokens": 4930
+  },
+  {
+    "case": "two_taxes_coin_must_wait",
+    "candidate": "Q",
+    "repetition": 0,
+    "elapsed_ms": 6136,
+    "tokens": 4984
+  },
+  {
+    "case": "two_taxes_coin_must_wait",
+    "candidate": "P",
+    "repetition": 0,
+    "elapsed_ms": 6319,
+    "tokens": 5110
+  },
+  {
+    "case": "overkill_ten_and_four_attack",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 3039,
+    "tokens": 4330
+  },
+  {
+    "case": "overkill_ten_and_four_attack",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 4042,
+    "tokens": 4274
+  },
+  {
+    "case": "shield_blocks_lifesteal",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 3003,
+    "tokens": 4260
+  },
+  {
+    "case": "shield_blocks_lifesteal",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 2681,
+    "tokens": 4289
+  },
+  {
+    "case": "fragile_windfury_cannot_clear_reborn",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 4138,
+    "tokens": 4964
+  },
+  {
+    "case": "fragile_windfury_cannot_clear_reborn",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 12150,
+    "tokens": 0
+  },
+  {
+    "case": "two_taxes_coin_must_wait",
+    "candidate": "Q",
+    "repetition": 1,
+    "elapsed_ms": 7679,
+    "tokens": 5013
+  },
+  {
+    "case": "two_taxes_coin_must_wait",
+    "candidate": "P",
+    "repetition": 1,
+    "elapsed_ms": 5857,
+    "tokens": 5112
+  }
+]

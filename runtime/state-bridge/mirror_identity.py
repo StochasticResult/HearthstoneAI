@@ -1,14 +1,13 @@
 """Verify practice identity by reconciling HSTracker's local board and Power.log."""
 from incremental_board import UnsafeState, board
 from collections import Counter
+from game_mode import matching_game
 
 
-def mulligan_identity(parser, mirror):
+def mulligan_identity(parser, mirror, mode="practice"):
     """Identify our side from the locally visible opening cards, without a tracker UI."""
-    if not parser.game or parser.game["meta"].get("GameType") != "GT_VS_AI":
-        raise UnsafeState("practice log not confirmed")
-    if mirror.get("game_type") != 1 or (mirror.get("scene") or {}).get("mode") != 4:
-        raise UnsafeState("mirror is not in practice game")
+    if not parser.game or not matching_game(parser.game["meta"], mirror, mode):
+        raise UnsafeState("requested game mode not confirmed by log and mirror")
     mulligan = mirror.get("mulligan") or {}
     rows = mulligan.get("mulliganCards") or []
     if not mirror.get("mulligan_waiting") or not mulligan.get("waitingForUserInput") or len(rows) not in (3, 4):
@@ -57,11 +56,9 @@ def _log_rows(game, player):
             for e in board._of_side(game, player, "PLAY", "MINION")}
 
 
-def practice_identity(game, mirror):
-    if not game or game.get("meta", {}).get("GameType") != "GT_VS_AI":
-        raise UnsafeState("practice log not confirmed")
-    if mirror.get("game_type") != 1 or (mirror.get("scene") or {}).get("mode") != 4:
-        raise UnsafeState("mirror is not in practice game")
+def practice_identity(game, mirror, mode="practice"):
+    if not game or not matching_game(game.get("meta", {}), mirror, mode):
+        raise UnsafeState("requested game mode not confirmed by log and mirror")
     mirror_board = mirror.get("board") or {}
     if "friendly" not in mirror_board or "opposing" not in mirror_board:
         raise UnsafeState("incomplete mirror board")

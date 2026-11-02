@@ -1,0 +1,125 @@
+{
+  "reviewed_before_unmasking": true,
+  "results_sha256": "4d7f603afacc6bf1cc780ea4dead10242e390734d455657c34ce17df52f409f1",
+  "cases": [
+    "buff_before_sacrificing_own_tax",
+    "reborn_heals_twice_and_windfury",
+    "two_auras_buff_before_enemy_aura_dies",
+    "lifesteal_overkill_survival_target",
+    "take_a_calculated_not_guaranteed_out",
+    "coin_tax_spellpower_and_highest_cost",
+    "priest_two_ruins_spent",
+    "priest_two_moonwells_spent",
+    "buff_to_preserve_the_spell_tax_aura",
+    "reserve_two_slots_for_next_ritual_wave",
+    "weapon_trigger_versus_visible_eight_damage",
+    "generated_card_is_not_archetype_evidence"
+  ],
+  "scores": {
+    "P": [
+      [
+        2,
+        1,
+        2,
+        0,
+        2,
+        2,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4
+      ],
+      [
+        2,
+        2,
+        2,
+        0,
+        2,
+        2,
+        4,
+        4,
+        4,
+        4,
+        3,
+        3
+      ]
+    ],
+    "Q": [
+      [
+        2,
+        2,
+        2,
+        0,
+        2,
+        2,
+        3,
+        4,
+        4,
+        4,
+        3,
+        4
+      ],
+      [
+        2,
+        1,
+        2,
+        0,
+        2,
+        1,
+        4,
+        4,
+        3,
+        4,
+        3,
+        4
+      ]
+    ]
+  },
+  "totals": {
+    "P": 65,
+    "Q": 62
+  },
+  "maximum": 72,
+  "hard_calculation_maximum": 20,
+  "hard_calculation_scores": {
+    "P": 15,
+    "Q": 14
+  },
+  "uncertainty_maximum": 4,
+  "uncertainty_scores": {
+    "P": 4,
+    "Q": 4
+  },
+  "judgment_maximum": 48,
+  "judgment_scores": {
+    "P": 46,
+    "Q": 44
+  },
+  "critical_first_action_failures": {
+    "P": 2,
+    "Q": 2
+  },
+  "critical_failure": "Both repetitions of the Glare target case. Targeting the 1/1 heals five, leaving 9 health against eight attack; both models instead target the 8/8, leaving nine attack and losing.",
+  "calculation_findings": {
+    "P": [
+      "Rep0 Reborn explanation wrongly implies both lives are removed by the two spell waves; a reborn taunt remains. First action is still on a winning line: grade 1.",
+      "Rep1 Glare reason explicitly caps healing at remaining target health, which is incorrect.",
+      "Rep1 slow-Warlock counterplay uses five mana to deny Hellfire+Tap, but the opponent reaches six next turn; grade 3 rather than 4."
+    ],
+    "Q": [
+      "Rep1 Reborn reason omits the second three-health deathrattle and gives an incorrect twelve-damage total; the selected first action still permits the winning line: grade 1.",
+      "Rep1 Kithix first is valid, but the intended Coin then Blasphemy is unaffordable until Mawman dies; grade 1.",
+      "Some strategic reasons acknowledge uncertainty without identifying the main concrete answer/threshold; three points where evidence of prediction is incomplete."
+    ]
+  },
+  "rubric_correction": "The initial Reborn criterion suggested saving Windfury and trading the normal body. After Continuity, the Windfury body is 3/3 and survives the reborn 2/1, so spending one of its attacks also produces exact fifteen face damage. This valid alternative receives full credit (Q rep0, P rep1). The frozen manifest is retained unchanged.",
+  "selection_before_identity": "P has a small edge in calculation/forecast explanation, with identical critical first-action failure count. Prefer P provisionally for quality, not as a statistically established winner. Both require the Lifesteal rules fix before ladder.",
+  "limitations": [
+    "Two repeated first-action samples per case; strategic scoring includes judgment.",
+    "No full-game rollout or win-rate estimate.",
+    "Some public-history facts are synthetic fixtures and are not yet extracted by the production app.",
+    "A short reason is incomplete evidence of multi-turn competence."
+  ]
+}

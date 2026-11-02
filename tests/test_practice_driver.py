@@ -2,11 +2,15 @@ import json
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 
-from practice_driver import Stop, NotReady, ClientFatal, client_error, choice_index, hover_matches, plan_inputs, visual_ready, mirror
+from practice_driver import Driver, Stop, NotReady, ClientFatal, client_error, choice_index, hover_matches, plan_inputs, visual_ready, mirror
 from practice_state import prepare
 from incremental_board import UnsafeState
+from practice_driver import waiting_for_first_mana
+from incremental_board import IncrementalBoard
+from test_incremental_board import fixture, power
 
 
 def sample():
@@ -19,6 +23,19 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def test_second_player_waits_for_first_observed_mana_without_defaulting_to_zero(self):
+        p=IncrementalBoard();p.feed(fixture());player=p.game['entities'][3]
+        player['tags'].pop('RESOURCES');p.game['entities'][1]['tags']['TURN']='1'
+        self.assertTrue(waiting_for_first_mana(p,2))
+        with self.assertRaisesRegex(UnsafeState,'missing RESOURCES'):p.snapshot(2)
+        p.feed((power('TAG_CHANGE Entity=3 tag=RESOURCES value=1')+
+                power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1')).encode())
+        self.assertFalse(waiting_for_first_mana(p,2));self.assertEqual(p.snapshot(2)['mana'],1)
+        player['tags'].pop('RESOURCES')
+        self.assertFalse(waiting_for_first_mana(p,2))
+        player['tags']['CURRENT_PLAYER']='0';p.game['entities'][1]['tags']['TURN']='3'
+        self.assertFalse(waiting_for_first_mana(p,2))
+
     def test_client_timeout_is_classified_without_echoing_private_log_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             power=Path(tmp)/"Power.log"
@@ -40,7 +57,7 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(mirror(), observation)
         observation["game_type"] = 2
         with patch("practice_driver.run_checked", return_value=json.dumps(observation)):
-            with self.assertRaisesRegex(Stop, "non-practice"):
+            with self.assertRaisesRegex(Stop, "unexpected game type"):
                 mirror()
 
     def test_prepares_only_known_practice_and_public_board(self):
@@ -96,6 +113,93 @@ class DriverTests(unittest.TestCase):
         self.assertFalse(visual_ready(state))
         state["visual_step"] = "MAIN_ACTION"
         self.assertTrue(visual_ready(state))
+
+    def hand_driver(self):
+        state = sample()
+        state.update(game_turn='6', visual_turn='6', game_step='MAIN_ACTION', visual_step='MAIN_ACTION')
+        driver = Driver.__new__(Driver)
+        driver.watchdog = 123
+        driver.poll = lambda: None
+        driver.snapshot = lambda _own: state
+        seen = {'isHand':True, 'side':1, 'cardId':'TIME_025', 'zonePosition':1, 'zoneSize':1}
+        return driver, state, seen
+
+    def test_ready_hand_hover_is_used_immediately_without_a_fixed_delay(self):
+        driver, state, seen = self.hand_driver()
+        with patch('practice_driver.move'), patch('practice_driver.watchdog_alive',return_value=True), \
+             patch('practice_driver.hover',side_effect=[{},seen]), patch('practice_driver.time.sleep') as sleep:
+            self.assertEqual(driver.verify_hand_point(1,state,14,(705,817)),(705,817))
+            sleep.assert_not_called()
+
+    def test_lagging_hover_is_polled_until_the_right_card_is_observed(self):
+        driver, state, seen = self.hand_driver()
+        wrong = dict(seen, cardId='TLC_603')
+        with patch('practice_driver.move'), patch('practice_driver.watchdog_alive',return_value=True), \
+             patch('practice_driver.hover',side_effect=[wrong,{},wrong,seen]), patch('practice_driver.time.sleep') as sleep:
+            self.assertEqual(driver.verify_hand_point(1,state,14,(705,817)),(705,817))
+            self.assertEqual(sleep.call_count,2)
+
+    def test_fast_hover_still_rejects_a_state_change_before_returning_a_point(self):
+        driver, state, seen = self.hand_driver()
+        with patch.object(driver,'snapshot',side_effect=[state,dict(state,options_id=8)]), \
+             patch('practice_driver.move'), patch('practice_driver.watchdog_alive',return_value=True), \
+             patch('practice_driver.hover',side_effect=[{},seen]), patch('practice_driver.time.sleep'):
+            with self.assertRaisesRegex(Stop,'changed'):
+                driver.verify_hand_point(1,state,14,(705,817))
+
+    def test_already_confirmed_action_needs_no_fixed_sleep(self):
+        driver, _, _ = self.hand_driver()
+        with patch('practice_driver.time.sleep') as sleep:
+            driver.wait_until(lambda: True)
+            sleep.assert_not_called()
+
+    def test_next_decision_waits_for_new_options_even_when_card_state_already_changed(self):
+        driver, initial, _ = self.hand_driver()
+        initial.update(my_hero_power={'id':50},legal_options=[{'id':50,'targets':[]}])
+        changed = dict(initial,mana=0)
+        fresh = dict(changed,options_id=8,legal_options=[],end_turn_allowed=True)
+        driver.parser = SimpleNamespace(pending_choice=lambda _own: None,
+                                        game={'entities':{50:{'tags':{}}}}, options=[], options_id=7)
+        driver.game_result = lambda: None
+        driver.identify = lambda _status: 1
+        driver.revalidate = Mock()
+        driver.wait_until = Mock()
+        driver.execute_end_turn = Mock()
+        driver.advisor = Mock()
+        driver.advisor.ask.side_effect = [{'kind':'hero_power','source_id':50},{'kind':'end_turn'}]
+        states = iter([initial,changed,fresh])
+        def snapshot(_own):
+            state = next(states)
+            driver.parser.options_id = state['options_id']
+            return state
+        with patch.object(driver,'snapshot',side_effect=snapshot), \
+             patch('practice_driver.mirror',return_value={}), patch('practice_driver.checked_geometry'), \
+             patch('practice_driver.click'), patch('practice_driver.time.sleep'), patch('builtins.print'):
+            driver.run(10,2)
+        self.assertEqual([c.args[0]['options_id'] for c in driver.advisor.ask.call_args_list],[7,8])
+
+    def test_end_turn_retries_ignored_click_but_never_a_sent_option(self):
+        for submitted, expected_clicks in ((False,2),(True,1)):
+            driver,state,_ = self.hand_driver()
+            driver.parser = SimpleNamespace(sent_options=0)
+            driver.game_result = lambda: None
+            driver.revalidate = Mock()
+            def click(_point):
+                if submitted:driver.parser.sent_options += 1
+            with patch.object(driver,'wait_until',side_effect=[Stop('action was not confirmed in game log'),None]), \
+                 patch('practice_driver.click',side_effect=click) as send:
+                driver.execute_end_turn(1,state)
+                self.assertEqual(send.call_count,expected_clicks)
+
+    def test_end_turn_rejects_changed_state_before_retry(self):
+        driver,state,_ = self.hand_driver()
+        driver.parser = SimpleNamespace(sent_options=0)
+        driver.game_result = lambda: None
+        driver.revalidate = Mock(side_effect=[None,Stop('changed state')])
+        with patch.object(driver,'wait_until',side_effect=Stop('action was not confirmed in game log')), \
+             patch('practice_driver.click') as send:
+            with self.assertRaisesRegex(Stop,'changed state'):driver.execute_end_turn(1,state)
+            self.assertEqual(send.call_count,1)
 
 
 if __name__ == "__main__":

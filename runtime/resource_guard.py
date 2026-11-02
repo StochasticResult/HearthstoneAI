@@ -59,6 +59,20 @@ def swap_used():
     return float(match.group(1)) * {"K": 1024, "M": MIB, "G": GIB}[match.group(2)]
 
 
+def memory_free_percentage():
+    result = subprocess.run(["/usr/bin/memory_pressure", "-Q"], capture_output=True, text=True, timeout=3, check=True)
+    match = re.search(r"System-wide memory free percentage:\s*(\d+)%", result.stdout)
+    if not match:
+        raise RuntimeError("memory pressure reading unavailable")
+    return int(match.group(1))
+
+
+def swap_exceeded(current, baseline, maximum=1024*MIB, growth=256*MIB):
+    # Swap can remain allocated after memory pressure has recovered. Bound
+    # both its absolute total and growth during this exact session.
+    return current > maximum or current - baseline > growth
+
+
 def group_usage(pgid):
     result = subprocess.run(["/bin/ps", "-axo", "pgid=,rss=,pcpu="], capture_output=True, text=True, timeout=3, check=True)
     members = []
@@ -111,7 +125,8 @@ def main():
     p.add_argument("--timeout", type=float, default=180)
     p.add_argument("--max-rss-mib", type=int, default=800)
     p.add_argument("--min-free-gib", type=float, default=10)
-    p.add_argument("--max-swap-mib", type=int, default=512)
+    p.add_argument("--max-swap-mib", type=int, default=1024)
+    p.add_argument("--max-swap-growth-mib", type=int, default=256)
     p.add_argument("--max-cpu", type=float, default=160)
     p.add_argument("--max-output-mib", type=int, default=4)
     p.add_argument("--parent-pid", type=int)
@@ -119,11 +134,13 @@ def main():
     a = p.parse_args()
     disk_path = "/System/Volumes/Data"
     ac, initial_battery = battery_status()
+    initial_swap = swap_used()
     initial = {"free_gib": round(shutil.disk_usage(disk_path).free / GIB, 2),
                "thermal_state": thermal_state(), "ac": ac,
-               "battery_pct": initial_battery, "swap_mib": round(swap_used() / MIB, 1)}
+               "battery_pct": initial_battery, "swap_mib": round(initial_swap / MIB, 1),
+               "memory_free_pct": memory_free_percentage()}
     print(json.dumps({"preflight": initial}), flush=True)
-    if initial["free_gib"] < a.min_free_gib or initial["thermal_state"] >= 2 or not ac or initial["swap_mib"] > a.max_swap_mib:
+    if initial["free_gib"] < a.min_free_gib or initial["thermal_state"] >= 2 or not ac or initial["swap_mib"] > a.max_swap_mib or initial["memory_free_pct"] < 20:
         print("Preflight failed: insufficient disk, elevated thermal state, no AC, or excessive swap.", file=sys.stderr)
         return 2
     if a.check:
@@ -177,8 +194,10 @@ def main():
                         reason = "process group memory limit"
                     elif free < a.min_free_gib * GIB:
                         reason = "disk reserve"
-                    elif used_swap > a.max_swap_mib * MIB:
+                    elif swap_exceeded(used_swap, initial_swap, a.max_swap_mib*MIB, a.max_swap_growth_mib*MIB):
                         reason = "swap threshold"
+                    elif memory_free_percentage() < 20:
+                        reason = "system memory pressure threshold"
                     elif tstate >= 2:
                         reason = "serious or critical thermal state"
                     elif consecutive_high_cpu >= 3:

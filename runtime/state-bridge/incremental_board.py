@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from card_metadata import CATALOG, PUBLIC_OBJECTIVES, RITUALS
+from card_metadata import CATALOG, PUBLIC_OBJECTIVES, RITUALS, is_secret_card
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "state-upstream" / "src"))
@@ -28,6 +28,18 @@ TRIAL_CARDS = frozenset(("CAP_405tb1", "CAP_405tb2", "CAP_405tb3"))
 
 class UnsafeState(Exception):
     pass
+
+
+def is_public_objective(entity, played_publicly):
+    """Public countdowns can enter the secret zone without a normal play event."""
+    cid = entity.get('cardId')
+    secret = board._num(entity['tags'].get('SECRET'))
+    if cid not in CATALOG or secret not in (None, 0) or is_secret_card(cid):
+        return False
+    if cid in PUBLIC_OBJECTIVES or cid in RITUALS or entity['id'] in played_publicly:
+        return True
+    return (secret == 0 and CATALOG[cid].get('type') == 'SPELL'
+            and board._tag_int(entity, 'OBJECTIVE_COUNTDOWN') > 0)
 
 
 def custom_effects(entity):
@@ -405,10 +417,7 @@ class IncrementalBoard:
             ctype = board._ctype(entity)
             if entity.get("zone") == "SECRET":
                 cid=entity.get('cardId')
-                public_objective=(cid in PUBLIC_OBJECTIVES or cid in RITUALS or
-                    (cid in CATALOG and 'SECRET' not in CATALOG[cid].get('mechanics',[])
-                     and entity['id'] in played_publicly))
-                if public_objective and (entity.get('controller')==own_player_id or extended):
+                if is_public_objective(entity, played_publicly) and (entity.get('controller')==own_player_id or extended):
                     row={"id": entity["id"], "card_id": cid,
                         "countdown_tag": board._num(entity["tags"].get("OBJECTIVE_COUNTDOWN")),
                         "quest_progress": board._num(entity["tags"].get("QUEST_PROGRESS")),
@@ -600,7 +609,7 @@ class IncrementalBoard:
                        'generated': bool(board._tag_int(e, 'CREATOR') or board._tag_int(e, 'COPIED_FROM_ENTITY_ID'))}
                 if e.get('zone') == 'HAND':
                     known_hand.append(row)
-                elif eid in enemy_secret_ids:
+                elif eid in enemy_secret_ids and is_secret_card(memory['card_id']):
                     known_secrets.append(row)
         known_deck = [{'id': e['id'], 'card_id': e['cardId'],
                        'generated': bool(board._tag_int(e, 'CREATOR') or board._tag_int(e, 'COPIED_FROM_ENTITY_ID'))}

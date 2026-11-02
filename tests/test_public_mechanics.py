@@ -21,6 +21,48 @@ class PublicMechanicsTests(unittest.TestCase):
     def parser(self,extra=b''):
         p=IncrementalBoard();p.feed(fixture()+extra);return p
 
+    def test_revealed_and_generated_rituals_do_not_trigger_secret_probes(self):
+        # The two entities from run-20261102-113400 arrived without a play event.
+        p = self.parser(entity(47, '', 'SPELL', 2, 'HAND'))
+        p.feed(power('SHOW_ENTITY - Updating Entity=47 CardID=BE_005').encode())
+        for tag, value in [('SECRET',0), ('OBJECTIVE_COUNTDOWN',1), ('QUEST_PROGRESS_TOTAL',2),
+                           ('QUEST_PROGRESS',1), ('ZONE','SECRET')]:
+            p.feed(power(f'TAG_CHANGE Entity=47 tag={tag} value={value}').encode())
+        p.feed(entity(149, 'BE_090t3', 'SPELL', 2, 'SECRET', SECRET=0, OBJECTIVE_COUNTDOWN=1,
+                      QUEST_PROGRESS_TOTAL=2, CREATOR=58))
+        state = p.snapshot(1, extended=True)
+        view = OpenAIAdvisor({'api_key':'offline-test-placeholder'}).view(state)
+        expected = [(47, 'BE_005'), (149, 'BE_090t3')]
+        for field in ('enemy_objectives', 'enemy_active_rituals'):
+            self.assertEqual([(c['id'], c['card_id']) for c in view[field]], expected)
+        self.assertEqual(view['enemy_objectives'][0]['quest_progress'], 1)
+        self.assertEqual(view['enemy_secret_count'], 0)
+        self.assertEqual(view['enemy_known_secrets'], [])
+        self.assertNotIn('secret_context', view)
+        self.assertEqual(view['card_definitions']['BE_090t3']['text'], CATALOG['BE_090t3']['text'])
+        # A real hidden trap can be present alongside these same objectives.
+        p.feed(entity(150, 'EX1_287', 'SPELL', 2, 'SECRET', SECRET=1))
+        state = p.snapshot(1, extended=True)
+        self.assertEqual(state['enemy_secret_ids'], [150])
+        self.assertEqual(state['enemy_known_secrets'], [])
+        self.assertNotIn('EX1_287', json.dumps(public_view(state)))
+
+    def test_countdown_evidence_and_conflicting_secret_tags(self):
+        for cid, tags, visible in (
+                ('AV_268', {'SECRET':0, 'OBJECTIVE_COUNTDOWN':1}, True),
+                ('AV_268', {'OBJECTIVE_COUNTDOWN':1}, False),
+                ('AV_268', {'SECRET':0}, False),
+                ('EX1_287', {'SECRET':0, 'OBJECTIVE_COUNTDOWN':1}, False),
+                ('BE_005', {'SECRET':1, 'OBJECTIVE_COUNTDOWN':1}, False),
+                ('', {'SECRET':0, 'OBJECTIVE_COUNTDOWN':1}, False)):
+            with self.subTest(cid=cid, tags=tags):
+                p = self.parser(entity(47, cid, 'SPELL', 2, 'SECRET', **tags))
+                state = p.snapshot(1, extended=True)
+                self.assertEqual([c['id'] for c in state['enemy_objectives']], [47] if visible else [])
+                self.assertEqual(state['enemy_secret_ids'], [] if visible else [47])
+                self.assertEqual(state['enemy_known_secrets'], [])
+                self.assertFalse(state['enemy_active_rituals'])
+
     def test_real_zero_attack_weapon_uses_observed_health_and_damage(self):
         p=self.parser(entity(27,'BE_227','WEAPON',2,HEALTH=3,DAMAGE=1))
         w=p.snapshot(1,extended=True)['enemy_weapon']

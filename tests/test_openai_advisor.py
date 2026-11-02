@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from openai_advisor import (AdvisorError, OpenAIAdvisor, action_menu, public_view,
                             request_payload, parse_response, MAX_REQUESTS, DEFAULT_MODEL)
-from practice_driver import Driver, Stop
+from practice_driver import Driver, Stop, NotReady
 from test_practice_driver import sample
 
 
@@ -118,6 +118,18 @@ class APITests(unittest.TestCase):
             with self.assertRaisesRegex(Stop, "state changed"):
                 driver.revalidate(1, old, {"kind": "play", "source_id": 14})
             click.assert_not_called(); drag.assert_not_called()
+
+    def test_brief_unavailable_mirror_is_rechecked_against_unchanged_state(self):
+        driver = Driver.__new__(Driver)
+        driver.poll = lambda: None
+        observed = state()
+        driver.snapshot = lambda own: copy.deepcopy(observed)
+        driver.identify = lambda status: 1
+        with patch("practice_driver.mirror", side_effect=[NotReady("null scene"), {}]) as read, \
+             patch("practice_driver.time.sleep"), patch("practice_driver.click") as click:
+            driver.revalidate(1, observed, {"kind": "play", "source_id": 14})
+            self.assertEqual(read.call_count, 2)
+            click.assert_not_called()
 
 
 if __name__ == "__main__":

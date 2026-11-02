@@ -309,7 +309,11 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     config = validate_config(json.loads(sys.stdin.readline(4097)))
-    run(config, args.parent_pid)
+    from evaluation_session import consume_request, run_evaluation
+    if consume_request(DATA):
+        run_evaluation(config, ROOT, DATA, args.parent_pid, emit, stop_child)
+    else:
+        run(config, args.parent_pid)
 
 
 if __name__ == "__main__":

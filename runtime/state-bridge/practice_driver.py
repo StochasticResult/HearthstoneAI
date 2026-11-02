@@ -36,6 +36,23 @@ class NotReady(Exception):
     pass
 
 
+class ClientFatal(Stop):
+    pass
+
+
+def client_error(power_path):
+    path = power_path.with_name("Hearthstone.log")
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, path.stat().st_size - 65536))
+            tail = handle.read(65536)
+        if b"NetCache Error: TIMEOUT" in tail:
+            return "炉石客户端设备服务请求超时（NetCache TIMEOUT）；已停止，不自动重开"
+    except OSError:
+        pass
+    return "炉石客户端进入 FATAL_ERROR 场景；已停止，不自动重开"
+
+
 def run_checked(args, timeout=4):
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
@@ -47,10 +64,14 @@ def run_checked(args, timeout=4):
 def mirror():
     status = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--board"]))
     scene = status.get("scene") or {}
-    if status.get("game_type") != 1 or scene.get("mode") != 4:
-        raise Stop("mirror does not confirm a practice game")
-    if scene.get("sceneLoaded") is not True or scene.get("transitioning"):
-        raise Stop("practice scene is still loading")
+    if scene.get("mode") == 9:
+        raise ClientFatal("Hearthstone client entered FATAL_ERROR")
+    game_type = status.get("game_type")
+    if game_type not in (None, 0, 1):
+        raise Stop("mirror observed a non-practice game type: %r" % game_type)
+    if game_type != 1 or scene.get("mode") != 4 or scene.get("sceneLoaded") is not True or scene.get("transitioning"):
+        raise NotReady("practice scene is not ready: type=%r mode=%r loaded=%r transitioning=%r" %
+                       (game_type, scene.get("mode"), scene.get("sceneLoaded"), scene.get("transitioning")))
     return status
 
 
@@ -223,16 +244,24 @@ class Driver:
         return board._playstate(players[0]) if len(players) == 1 else "COMPLETE"
 
     def revalidate(self, own, old, advice):
-        self.poll()
-        current = self.snapshot(own)
-        if not visual_ready(current) or not current["own_turn"] or signature(current) != signature(old):
-            raise Stop("state changed during decision; no input was sent")
-        if advice not in action_menu(current).values():
-            raise Stop("chosen action is no longer supported or legal")
-        status = mirror()
-        if status.get("popup") or status.get("shop_open") or status.get("game_menu"):
-            raise Stop("game is covered by a menu or popup")
-        self.identify(status)
+        deadline = time.monotonic() + 4
+        while True:
+            self.poll()
+            current = self.snapshot(own)
+            if not visual_ready(current) or not current["own_turn"] or signature(current) != signature(old):
+                raise Stop("state changed during decision; no input was sent")
+            if advice not in action_menu(current).values():
+                raise Stop("chosen action is no longer supported or legal")
+            try:
+                status = mirror()
+                if status.get("popup") or status.get("shop_open") or status.get("game_menu"):
+                    raise Stop("game is covered by a menu or popup")
+                self.identify(status)
+                return
+            except NotReady as error:
+                if time.monotonic() >= deadline:
+                    raise Stop("observation did not recover before input: " + str(error)) from error
+                time.sleep(.3)
 
     def poll(self):
         if not watchdog_alive(self.watchdog):
@@ -281,6 +310,7 @@ class Driver:
             raise Stop("local identity changed")
         self.owner = candidate
         self.identity_game = self.parser.game
+        self.advisor.observe_deck(status.get("selected_deck"))
         return candidate
 
     def wait_until(self, predicate, seconds=8):
@@ -355,6 +385,7 @@ class Driver:
         awaiting_fresh_options = False
         fresh_options_deadline = None
         first_options_deadline = None
+        mirror_wait_started = None
         while time.monotonic() < deadline and actions < max_actions:
             self.poll()
             outcome = self.game_result()
@@ -363,11 +394,15 @@ class Driver:
                 return
             try:
                 status = mirror()
-            except Stop as error:
-                if self.owner is None and time.monotonic() < ready_deadline:
-                    time.sleep(.5)
-                    continue
-                raise error
+                mirror_wait_started = None
+            except NotReady as error:
+                if mirror_wait_started is None:
+                    mirror_wait_started = time.monotonic()
+                    print("waiting for observation: " + str(error), flush=True)
+                if time.monotonic() - mirror_wait_started >= (35 if self.owner is None else 8):
+                    raise Stop("game observation did not recover: " + str(error)) from error
+                time.sleep(.5)
+                continue
             try:
                 own = self.identify(status)
                 choice = self.parser.pending_choice(own)
@@ -395,21 +430,21 @@ class Driver:
                     time.sleep(.5)
                     continue
                 choice_deadline = None
-                count = len(board._of_side(self.parser.game, own, "PLAY", "MINION"))
-                players = [p for p in board._players(self.parser.game) if board._tag_int(p, "PLAYER_ID") == own]
-                if len(players) != 1:
-                    raise Stop("player resources unavailable")
-                player = players[0]
-                mana = board._tag_int(player, "RESOURCES") - board._tag_int(player, "RESOURCES_USED") + board._tag_int(player, "TEMP_RESOURCES")
-                index = self.advisor.choose(choice, count, mana)
+                choice_state = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
+                index = self.advisor.choose(choice, choice_state)
                 self.poll()
-                if self.parser.pending_choice(own) != choice:
-                    raise Stop("choice changed during decision")
+                current_choice = self.parser.snapshot(own, allow_practice=True, extended=True, choice_id=choice["id"])
+                if self.parser.pending_choice(own) != choice or signature(current_choice) != signature(choice_state):
+                    raise Stop("choice or board changed during decision")
+                fresh_status = mirror()
+                if fresh_status.get("popup") or fresh_status.get("shop_open") or fresh_status.get("game_menu"):
+                    raise Stop("choice is covered by a menu")
                 xs = [370, 735, 1090] if len(choice["items"]) == 3 else [310, 595, 880, 1160]
                 checked_geometry()
                 click((xs[index], 455))
                 before_id = choice["id"]
                 self.wait_until(lambda: (self.parser.pending_choice(own) or {}).get("id") != before_id, 10)
+                self.advisor.confirm_choice(choice, index)
                 print("choice resolved", flush=True)
                 actions += 1
                 time.sleep(2)
@@ -555,6 +590,7 @@ class Driver:
                                 board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks))
                 self.wait_until(attacked, 10)
             print("confirmed", advice["kind"], flush=True)
+            self.advisor.confirm(advice, state)
             if borrowed_options is not None:
                 awaiting_fresh_options = True
             actions += 1
@@ -581,8 +617,9 @@ def main():
         raise Stop("no armed game watchdog")
     if not args.openai_config_stdin:
         raise Stop("Start this driver through the standalone application")
-    api_advisor = OpenAIAdvisor(json.loads(sys.stdin.readline(4097)))
     args.evidence.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    api_advisor = OpenAIAdvisor(json.loads(sys.stdin.readline(4097)),
+                               audit_path=args.evidence.parent / "decisions.jsonl")
     path = args.log
     if args.new_session:
         previous = {p.name for p in LOG_ROOT.glob("Hearthstone_*")}
@@ -622,6 +659,8 @@ def main():
     driver = Driver(path, args.evidence, args.watchdog_pid, advisor=api_advisor)
     try:
         driver.run(args.seconds, args.max_actions, diagnose_hover=args.diagnose_hover, previous=previous)
+    except ClientFatal as error:
+        raise Stop(client_error(path)) from error
     finally:
         driver.close()
 
@@ -629,6 +668,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (Stop, UnsafeState, CaptureError, AdvisorError, OSError, subprocess.SubprocessError, ValueError) as exc:
+    except (Stop, NotReady, UnsafeState, CaptureError, AdvisorError, OSError, subprocess.SubprocessError, ValueError) as exc:
         print("practice driver stopped: " + str(exc), file=sys.stderr, flush=True)
         sys.exit(2)

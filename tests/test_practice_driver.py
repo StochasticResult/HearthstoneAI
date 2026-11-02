@@ -1,8 +1,10 @@
 import json
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
-from practice_driver import Stop, choice_index, hover_matches, plan_inputs, visual_ready, mirror
+from practice_driver import Stop, NotReady, ClientFatal, client_error, choice_index, hover_matches, plan_inputs, visual_ready, mirror
 from practice_state import prepare
 from incremental_board import UnsafeState
 
@@ -17,15 +19,29 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def test_client_timeout_is_classified_without_echoing_private_log_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            power=Path(tmp)/"Power.log"
+            path=power.with_name("Hearthstone.log")
+            path.write_text("private-account-data NetCache Error: TIMEOUT more-private-data")
+            self.assertIn("NetCache TIMEOUT",client_error(power))
+            self.assertNotIn("private",client_error(power))
+        with patch("practice_driver.run_checked",return_value='{"scene":{"mode":9},"game_type":1}'):
+            with self.assertRaises(ClientFatal): mirror()
+
     def test_reconnect_log_readiness_does_not_bypass_scene_loading(self):
         for loaded, transitioning in ((False, True), (True, True), (None, False)):
             observation = {"game_type": 1, "scene": {"mode": 4, "sceneLoaded": loaded, "transitioning": transitioning}}
             with patch("practice_driver.run_checked", return_value=json.dumps(observation)):
-                with self.assertRaisesRegex(Stop, "still loading"):
+                with self.assertRaisesRegex(NotReady, "not ready"):
                     mirror()
         observation["scene"].update(sceneLoaded=True, transitioning=False)
         with patch("practice_driver.run_checked", return_value=json.dumps(observation)):
             self.assertEqual(mirror(), observation)
+        observation["game_type"] = 2
+        with patch("practice_driver.run_checked", return_value=json.dumps(observation)):
+            with self.assertRaisesRegex(Stop, "non-practice"):
+                mirror()
 
     def test_prepares_only_known_practice_and_public_board(self):
         ready = prepare(sample(), identity_verified=True)

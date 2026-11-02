@@ -248,17 +248,30 @@ class IncrementalBoard:
         choice = dict(pending[0])
         source = self.game["entities"].get(choice["source"], {})
         choice["source_card_id"] = choice["source_card_id"] or source.get("cardId", "")
-        choice["items"] = [dict(item, card_id=item["card_id"] or self.game["entities"].get(item["id"], {}).get("cardId", ""))
-                           for item in choice["items"]]
+        items = []
+        for item in choice["items"]:
+            entity = self.game["entities"].get(item["id"], {})
+            row = dict(item, card_id=item["card_id"] or entity.get("cardId", ""))
+            for field, tag in (("cost", "COST"), ("attack", "ATK"), ("health", "HEALTH")):
+                value = board._num(entity.get("tags", {}).get(tag))
+                if value is not None:
+                    row[field] = value
+            items.append(row)
+        choice["items"] = items
         return choice
 
-    def snapshot(self, own_player_id, *, allow_practice=False, extended=False):
+    def snapshot(self, own_player_id, *, allow_practice=False, extended=False, choice_id=None):
         if self.game is None or self.blocked:
             raise UnsafeState(self.blocked or "no game")
         game = self.game
         if self.partial:
             raise UnsafeState("incomplete trailing log line")
-        if game["blocks"] or game.get("ec_choice") or game.get("ec_confirm"):
+        choice = self.pending_choice(own_player_id) if choice_id is not None else None
+        choosing = bool(choice and choice["id"] == choice_id and choice["type"] == "GENERAL"
+                        and choice["shown"] and len(choice["items"]) in (3, 4))
+        if choice_id is not None and not choosing:
+            raise UnsafeState("requested choice is not currently visible")
+        if not choosing and (game["blocks"] or game.get("ec_choice") or game.get("ec_confirm")):
             raise UnsafeState("game is resolving an action or choice")
         if board.is_mulligan(game):
             raise UnsafeState("mulligan is not supported")
@@ -292,7 +305,7 @@ class IncrementalBoard:
                         **custom_effects(entity)})
                 else:
                     raise UnsafeState("secret state is not modeled")
-            if entity.get("zone") == "PLAY" and ctype in ("LOCATION", "WEAPON"):
+            if entity.get("zone") == "PLAY" and (ctype == "LOCATION" or (ctype == "WEAPON" and not extended)):
                 raise UnsafeState("location or weapon is not modeled")
             if entity.get("zone") == "PLAY" and ctype in ("MINION", "HERO"):
                 unsupported = ("DIVINE_SHIELD", "WINDFURY", "MEGA_WINDFURY", "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED")
@@ -315,7 +328,21 @@ class IncrementalBoard:
             return {"id": entity["id"], "card_id": entity["cardId"],
                     "health": required_number(entity, "HEALTH") - board._tag_int(entity, "DAMAGE"),
                     "armor": board._tag_int(entity, "ARMOR"), "attack": board._tag_int(entity, "ATK"),
-                    "frozen": board._tag_int(entity, "FROZEN") == 1}
+                    "frozen": board._tag_int(entity, "FROZEN") == 1,
+                    "immune": board._tag_int(entity, "IMMUNE") != 0,
+                    "exhausted": board._tag_int(entity, "EXHAUSTED") != 0,
+                    "attacks_this_turn": board._tag_int(entity, "NUM_ATTACKS_THIS_TURN")}
+
+        def weapon_state(owner):
+            weapons = board._of_side(game, owner, "PLAY", "WEAPON")
+            if len(weapons) > 1:
+                raise UnsafeState("ambiguous weapon state")
+            if not weapons:
+                return None
+            entity = weapons[0]
+            return {"id": entity["id"], "card_id": entity["cardId"],
+                    "attack": required_number(entity, "ATK"),
+                    "durability": required_number(entity, "DURABILITY") - board._tag_int(entity, "DAMAGE")}
 
         def minion_state(entity):
             result = {"id": entity["id"], "card_id": entity["cardId"], "position": entity["zone_pos"],
@@ -326,7 +353,29 @@ class IncrementalBoard:
                 for tag in ("DIVINE_SHIELD", "WINDFURY", "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED"):
                     result[tag.lower()] = board._tag_int(entity, tag) != 0
                 result["attacks_this_turn"] = board._tag_int(entity, "NUM_ATTACKS_THIS_TURN")
+                result["modifiers"] = modifiers(entity)
+            for n in (1, 2):
+                value = board._num(entity["tags"].get("TAG_SCRIPT_DATA_NUM_%d" % n))
+                if value is not None:
+                    result["script_data_%d" % n] = value
             return result
+
+        def modifiers(entity):
+            # Only called for our hand and public board entities; never walk
+            # or export an attachment on an opponent's hidden hand card.
+            rows = []
+            for effect in game["entities"].values():
+                if (board._ctype(effect) == "ENCHANTMENT" and effect.get("zone") == "PLAY"
+                        and board._tag_int(effect, "ATTACHED") == entity["id"] and effect.get("cardId")):
+                    row = {"card_id": effect["cardId"]}
+                    for n in (1, 2):
+                        value = board._num(effect["tags"].get("TAG_SCRIPT_DATA_NUM_%d" % n))
+                        if value is not None:
+                            row["script_data_%d" % n] = value
+                    rows.append(row)
+            if len(rows) > 12:
+                raise UnsafeState("too many visible modifiers for bounded context")
+            return rows
 
         hand = board._in_zone(game, own_player_id, "HAND")
         hand.sort(key=lambda e: (e["zone_pos"], e["id"]))
@@ -339,7 +388,7 @@ class IncrementalBoard:
             health = board._num(card["tags"].get("HEALTH"))
             own_hand.append({"id": card["id"], "card_id": card["cardId"], "position": card["zone_pos"],
                              "cost": required_number(card, "COST"), "card_type": ctype,
-                             "attack": attack, "health": health, **custom_effects(card)})
+                             "attack": attack, "health": health, "modifiers": modifiers(card), **custom_effects(card)})
         own_board = board._of_side(game, own_player_id, "PLAY", "MINION")
         enemy_board = board._of_side(game, rival["controller"], "PLAY", "MINION")
         own_entities = {e["id"] for e in hand + own_board}
@@ -362,7 +411,26 @@ class IncrementalBoard:
                  for opt in self.options if opt["id"] in own_entities and opt["error"] == "NONE"]
         powers = board._of_side(game, own_player_id, "PLAY", "HERO_POWER")
         power = powers[0] if len(powers) == 1 else None
+        # Only cards with public play/death evidence or visible board presence.
+        # In particular, never enumerate an opponent's hand/deck IDs, even if
+        # a malformed log happens to contain a card name there.
+        public_eids = {ev.get("eid") for ev in game["events"] if ev.get("type") in ("play", "death")}
+        public_eids.update(e["id"] for e in enemy_board)
+        public_cards = []
+        for eid in sorted(e for e in public_eids if isinstance(e, int)):
+            e = game["entities"].get(eid)
+            if (e and e.get("controller") == rival["controller"] and e.get("cardId")
+                    and e.get("zone") not in ("HAND", "DECK", "SECRET", "SETASIDE")
+                    and board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION")):
+                public_cards.append({"id": eid, "card_id": e["cardId"],
+                    "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))})
+        seen_own = [{"id": e["id"], "card_id": e["cardId"]} for e in game["entities"].values()
+            if e.get("controller") == own_player_id and e.get("cardId")
+            and e.get("zone") in ("HAND", "PLAY", "GRAVEYARD", "SECRET")
+            and board._ctype(e) in ("MINION", "SPELL")
+            and not board._tag_int(e, "CREATOR") and not board._tag_int(e, "COPIED_FROM_ENTITY_ID")]
         return {
+            "phase": "choose_one" if choosing else "main",
             "format": game["meta"].get("FormatType"), "game_type": game["meta"].get("GameType"),
             # EXHAUSTED alone does not prove attack readiness, and ritual timing is
             # not yet reconstructed. Consumers must not promote this to live play.
@@ -370,14 +438,26 @@ class IncrementalBoard:
             "own_player_id": own_player_id, "own_turn": board._tag_int(own, "CURRENT_PLAYER") == 1,
             "mana": required_number(own, "RESOURCES") - board._tag_int(own, "RESOURCES_USED") + board._tag_int(own, "TEMP_RESOURCES"),
             "my_hero": hero_state(own_hero), "enemy_hero": hero_state(enemy_hero),
+            "my_weapon": weapon_state(own_player_id), "enemy_weapon": weapon_state(rival["controller"]),
             "my_hero_power": {"id": power["id"], "card_id": power["cardId"],
                               "cost": board._num(power["tags"].get("COST")),
                               "exhausted": board._tag_int(power, "EXHAUSTED") == 1} if power else None,
             "my_hand": own_hand, "my_board": [minion_state(e) for e in own_board],
             "enemy_board": [minion_state(e) for e in enemy_board],
+            "my_deck_count": len(board._in_zone(game, own_player_id, "DECK")),
+            "enemy_deck_count": len(board._in_zone(game, rival["controller"], "DECK")),
+            "enemy_hand_count": len(board._in_zone(game, rival["controller"], "HAND")),
+            "my_fatigue": board._tag_int(own, "FATIGUE"),
+            "enemy_fatigue": board._tag_int(rival, "FATIGUE"),
+            "enemy_mana_crystals": board._tag_int(rival, "RESOURCES"),
+            "enemy_corpses": board._num(rival["tags"].get("CORPSES")),
+            "opponent_public_cards": public_cards[-40:],
+            "own_seen_original": sorted(seen_own, key=lambda e: e["id"])[-60:],
             "active_rituals": active_rituals,
-            "options_id": self.options_id, "legal_options": legal,
-            "end_turn_allowed": end_turn_allowed,
+            # A read-only choice observation must never open ordinary actions.
+            "options_id": None if choosing else self.options_id,
+            "legal_options": [] if choosing else legal,
+            "end_turn_allowed": end_turn_allowed and not choosing,
             "game_step": game_entity["tags"].get("STEP") if game_entity else None,
             "game_turn": game_entity["tags"].get("TURN") if game_entity else None,
             "visual_step": self.visual_step, "visual_turn": self.visual_turn,

@@ -13,6 +13,8 @@ cd ~/Projects/HearthstoneAI
 
 本机首次安装后，Python 和辅助程序的后续更新使用 `python3 scripts/install_runtime.py`，安装到本用户独占的 `~/Library/Application Support/HearthstoneAI/runtime`。后台会话必须先停止。此更新不修改原生应用签名，从而保持钥匙串及辅助功能授权的应用身份；原生 UI 变动仍需重新构建并核对授权。没有外部运行目录时应用使用自身携带的组件。
 
+原生更新后的辅助功能检查必须通过应用里的「离线自检」执行；从开发终端直接运行同一输入程序返回 true，不能证明它作为应用子进程时已获准。0.2 安装时旧条目虽显示开启，实际仍被拒绝；通过系统设置移除旧条目、从原安装路径重新加入后，应用内检查才通过。仅刷新该应用既有权限，不修改其他应用授权。系统凭据验证由用户完成。
+
 构建脚本会从 `native/Mirror.m` 编译 `runtime/mirror-status`，并使用与此前经过实际读取的版本相同的 debugger entitlement 签名。它通过动态载入 HSTracker 的 HearthMirror 读取局面；应用不包含该第三方框架。重新构建后的权限与实际读取仍须独立验证。
 
 ## 测试

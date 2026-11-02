@@ -182,8 +182,19 @@ def navigation_click(point):
     frame = json.loads(geometry.stdout)
     if any(abs(float(frame[k]) - v) > 2 for k, v in {"x": 0, "y": 33, "width": 1470, "height": 846}.items()):
         raise SessionError("游戏窗口与已校准的 1470×846 布局不同，已停止操作")
-    subprocess.run(input_command("click", *point),
-                   check=True, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Activating an app is asynchronous. A native foreground rejection occurs
+    # before any mouse event; only that exact rejection may be retried briefly.
+    # Never retry a successful click or an uncertain input failure.
+    deadline = time.monotonic() + .8
+    while True:
+        result = subprocess.run(input_command("click", *point),
+                                capture_output=True, text=True, timeout=4)
+        if result.returncode == 0:
+            return
+        detail = result.stderr.strip()
+        if detail != "Hearthstone is not the frontmost app" or time.monotonic() >= deadline:
+            raise SessionError("导航输入失败：" + detail.replace("\n", " ")[:180])
+        time.sleep(.15)
 
 
 def run(config, parent_pid, mode="practice"):

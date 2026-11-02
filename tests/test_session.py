@@ -4,11 +4,37 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 from session import (validate_config, SessionError, lock_session, session_directory,
-                     EventLog, emit, guard_event, drain_guards, launch_hearthstone, BATTLENET_EXEC, scene_ready)
+                     EventLog, emit, guard_event, drain_guards, launch_hearthstone, BATTLENET_EXEC, scene_ready, navigation_click)
 
 
 class SessionTests(unittest.TestCase):
+    def test_navigation_retries_only_a_pre_input_foreground_rejection(self):
+        geometry = SimpleNamespace(stdout='{"x":0,"y":33,"width":1470,"height":846}')
+        rejected = SimpleNamespace(returncode=1, stderr='Hearthstone is not the frontmost app\n')
+        success = SimpleNamespace(returncode=0, stderr='')
+        with patch('session.subprocess.run', side_effect=[geometry, rejected, success]) as run, \
+             patch('session.time.sleep'):
+            navigation_click((735,310))
+            self.assertEqual(run.call_count,3)
+        with patch('session.subprocess.run', side_effect=[geometry, success]) as run:
+            navigation_click((735,310))
+            self.assertEqual(run.call_count,2)
+        with patch('session.subprocess.run', side_effect=[geometry, SimpleNamespace(returncode=1, stderr='Cannot create mouse event')]) as run:
+            with self.assertRaisesRegex(SessionError,'Cannot create mouse event'):
+                navigation_click((735,310))
+            self.assertEqual(run.call_count,2)
+
+    def test_navigation_foreground_wait_is_bounded(self):
+        geometry = SimpleNamespace(stdout='{"x":0,"y":33,"width":1470,"height":846}')
+        rejected = SimpleNamespace(returncode=1, stderr='Hearthstone is not the frontmost app')
+        with patch('session.subprocess.run', side_effect=[geometry, rejected]) as run, \
+             patch('session.time.monotonic',side_effect=[0,1]):
+            with self.assertRaisesRegex(SessionError,'frontmost'):
+                navigation_click((735,310))
+            self.assertEqual(run.call_count,2)
+
     def test_no_shell_paths_or_extras_in_settings(self):
         base = {"api_key": "fake-key-not-a-secret-123", "model": "gpt-5.6-terra"}
         self.assertEqual(validate_config(base), base)

@@ -35,6 +35,10 @@ class GameModeTests(unittest.TestCase):
             self.assertEqual(consume_game_request(data),'practice')
             p.write_text(json.dumps({'mode':'ranked','expires_at':time.time()+100}))
             self.assertEqual(consume_game_request(data),'ranked');self.assertFalse(p.exists())
+            p.write_text(json.dumps({'mode':'ranked_batch','expires_at':time.time()+100}))
+            self.assertEqual(consume_game_request(data),'ranked_batch');self.assertFalse(p.exists())
+            p.write_text(json.dumps({'mode':'ranked_auto','expires_at':time.time()+100}))
+            self.assertEqual(consume_game_request(data),'ranked_auto');self.assertFalse(p.exists())
             for request in ({'mode':'ranked','expires_at':time.time()-1},
                             {'mode':'wild','expires_at':time.time()+100}):
                 p.write_text(json.dumps(request))

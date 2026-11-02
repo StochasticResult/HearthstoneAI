@@ -106,7 +106,7 @@ def launch_hearthstone():
 
 
 def validate_config(config):
-    if not isinstance(config, dict) or not set(config) <= {"api_key", "model"}:
+    if not isinstance(config, dict) or not set(config) <= {"api_key", "model", "mode"}:
         raise SessionError("Invalid application settings")
     if not isinstance(config.get("api_key"), str) or not 20 <= len(config["api_key"]) <= 512:
         raise SessionError("请先在应用中填写 OpenAI API Key")
@@ -116,7 +116,12 @@ def validate_config(config):
     import re
     if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise SessionError("模型名称无效")
-    return {"api_key": config["api_key"], "model": model}
+    result = {"api_key": config["api_key"], "model": model}
+    if 'mode' in config:
+        if config['mode'] not in ('practice', 'ranked', 'ranked_auto'):
+            raise SessionError("游戏模式无效")
+        result['mode'] = config['mode']
+    return result
 
 
 def preflight():
@@ -184,12 +189,14 @@ def navigation_click(point):
 def run(config, parent_pid, mode="practice"):
     global _event_log
     expected = expected_type(mode)[1]
-    label = "标准天梯测试" if mode == "ranked" else "人机测试"
+    label = "标准天梯" if mode == "ranked" else "人机练习"
     lock = lock_session()
     watchdog = driver = caffeine = None
     tail = None
     dest = None
+    review_summary = None
     streams, sources = {}, {}
+    previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     def interrupted(_signal, _frame):
         raise SessionError("已收到停止指令")
     signal.signal(signal.SIGTERM, interrupted)
@@ -198,11 +205,11 @@ def run(config, parent_pid, mode="practice"):
         preflight()
         dest = session_directory()
         _event_log = EventLog(dest / "session-events.jsonl")
-        emit("本次运行：%s · 仅 1 局" % label, game_mode=mode)
-        emit("正在建立资源保护：本次最多 10 分钟、40 次 API 请求、22 万 token；内存和温度限制不变",
-             log_directory=str(dest), limits={"game_seconds": 600, "api_requests": 40, "api_tokens": 220000})
+        emit("本局模式：%s" % label, game_mode=mode)
+        emit("正在建立资源保护：不设对局时长、动作次数或累计 API 配额；保留内存、温度与电源检查",
+             log_directory=str(dest), limits={"game_seconds": None, "api_requests": None, "api_tokens": None})
         watchdog = subprocess.Popen([sys.executable, str(ROOT / "game_watchdog.py"),
-            "--startup-seconds", "120", "--run-seconds", "600", "--temporary-fps", "30",
+            "--startup-seconds", "120", "--run-seconds", "0", "--temporary-fps", "30",
             "--parent-pid", str(os.getpid())], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         armed = read_json_line(watchdog, 10)
         guard_event(json.dumps(armed).encode(), "游戏守护")
@@ -215,11 +222,11 @@ def run(config, parent_pid, mode="practice"):
             if len(reconnect_args) == 8:
                 break
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
-            "--log", str(dest / "actions.log"), "--timeout", "730", "--max-rss-mib", "200", "--max-cpu", "130",
+            "--log", str(dest / "actions.log"), "--timeout", "0", "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", "/usr/bin/nice", "-n", "10", sys.executable,
             str(ROOT / "state-bridge/practice_driver.py"), "--new-session", "--evidence", str(dest / "Power.log"),
             "--deck-snapshot", str(dest / "selected-deck.json"),
-            "--watchdog-pid", str(watchdog.pid), "--seconds", "600", "--max-actions", "80", "--mode", mode, "--openai-config-stdin"] + reconnect_args,
+            "--watchdog-pid", str(watchdog.pid), "--seconds", "0", "--max-actions", "0", "--mode", mode, "--openai-config-stdin"] + reconnect_args,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         driver.stdin.write((json.dumps(config) + "\n").encode())
         driver.stdin.close()
@@ -231,7 +238,7 @@ def run(config, parent_pid, mode="practice"):
             raise SessionError("AI 进程资源保护启动失败")
         streams = {p.stdout: getattr(p, "_pending_line_bytes", b"") for p in (watchdog, driver)}
         sources = {watchdog.stdout: "游戏守护", driver.stdout: "AI 守护"}
-        caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-t", "750", "-w", str(os.getpid())],
+        caffeine = subprocess.Popen(["/usr/bin/caffeinate", "-dimsu", "-w", str(os.getpid())],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Establish the driver's log baseline before launching. This is the
         # only application launched; no global app-switch shortcut is used.
@@ -242,10 +249,9 @@ def run(config, parent_pid, mode="practice"):
         emit("已向战网请求启动炉石，正在等待实际游戏进程和主界面")
         stage, last_click, focused, in_game = 0, 0, False, False
         previous_scene = None
-        deadline = time.monotonic() + 730
         tail = (dest / "actions.log").open("rb")
         log_buffer = b""
-        while time.monotonic() < deadline:
+        while True:
             if parent_pid and os.getppid() != parent_pid:
                 raise SessionError("应用已退出，停止本次运行")
             # Drain child pipes so resource telemetry can never block a guard.
@@ -262,7 +268,7 @@ def run(config, parent_pid, mode="practice"):
                 if driver.returncode != 0:
                     raise SessionError("AI 已停止，原因见上方运行记录")
                 emit("本次%s结束" % label)
-                return
+                break
             if watchdog.poll() is not None:
                 raise SessionError("游戏资源保护已结束运行，原因见上方守护记录")
             if not in_game:
@@ -297,7 +303,6 @@ def run(config, parent_pid, mode="practice"):
                             last_click = time.monotonic()
                             emit("正在进入%s（%d/%d）" % (label, stage, 2 if mode == "ranked" else 6))
             time.sleep(.5)
-        raise SessionError("测试达到时间上限")
     finally:
         # Block repeated stop signals while finally restores settings.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -323,14 +328,22 @@ def run(config, parent_pid, mode="practice"):
         try:
             if dest:
                 from match_review import write_review
-                summary = write_review(dest, DATA / "learning")
-                emit("对局复盘已保存：%s；%s" % (summary["outcome"],
-                     "下次开局前需复盘" if summary["review_before_next_game"] else "已记录决策和资源指标"),
-                     review_outcome=summary["outcome"])
+                review_summary = write_review(dest, DATA / "learning")
+                emit("对局复盘已保存：%s；%s" % (review_summary["outcome"],
+                     "下次开局前需复盘" if review_summary["review_before_next_game"] else "已记录决策和资源指标"),
+                     review_outcome=review_summary["outcome"])
         except (OSError, ValueError):
             emit("复盘报告未能保存；原始有界记录仍在本次运行目录中", error=True)
         finally:
             lock.close()
+            if _event_log:
+                _event_log.close()
+                _event_log = None
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
+    if review_summary is None:
+        raise SessionError("缺少完整复盘记录；不继续下一局")
+    return review_summary
 
 
 def main():
@@ -339,13 +352,22 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     config = validate_config(json.loads(sys.stdin.readline(4097)))
+    if config.get('mode') == 'ranked_auto':
+        from ranked_autoplay import run_autoplay
+        run_autoplay(config, args.parent_pid, DATA, run, emit)
+        return
     from evaluation_session import consume_request, run_evaluation
     suite = consume_request(DATA)
     if suite:
         run_evaluation(config, ROOT, DATA, args.parent_pid, emit, stop_child, suite)
     else:
         from game_request import consume_game_request
-        run(config, args.parent_pid, consume_game_request(DATA))
+        mode = consume_game_request(DATA)
+        if mode in ("ranked_batch", "ranked_auto"):
+            from ranked_autoplay import run_autoplay
+            run_autoplay(config, args.parent_pid, DATA, run, emit)
+        else:
+            run(config, args.parent_pid, mode if mode != 'practice' else config.get('mode', mode))
 
 
 if __name__ == "__main__":

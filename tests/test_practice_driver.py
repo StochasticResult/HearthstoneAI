@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from practice_driver import Driver, Stop, NotReady, ClientFatal, client_error, choice_index, hover_matches, plan_inputs, visual_ready, mirror
 from practice_state import prepare
 from incremental_board import UnsafeState
-from practice_driver import waiting_for_first_mana
+from practice_driver import waiting_for_first_mana, run_checked
 from incremental_board import IncrementalBoard
 from test_incremental_board import fixture, power
 
@@ -23,6 +23,24 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def test_only_input_rejected_before_sending_can_retry_a_brief_focus_handoff(self):
+        unfocused = SimpleNamespace(returncode=1, stderr='Hearthstone is not the frontmost app\n', stdout='')
+        success = SimpleNamespace(returncode=0, stderr='', stdout='ok\n')
+        with patch('practice_driver.subprocess.run', side_effect=[unfocused, success]) as run, \
+             patch('practice_driver.time.sleep'):
+            self.assertEqual(run_checked(['native', '--input', 'click', '1', '2']), 'ok')
+            self.assertEqual(run.call_count, 2)
+        failure = SimpleNamespace(returncode=1, stderr='input failed', stdout='')
+        for args, result in ((['mirror-status'], unfocused), (['native', '--input', 'click'], failure)):
+            with patch('practice_driver.subprocess.run', return_value=result) as run:
+                with self.assertRaises(Stop): run_checked(args)
+                run.assert_called_once()
+
+    def test_zero_quotas_still_enter_the_loop_and_observe_game_end(self):
+        driver=Driver.__new__(Driver)
+        driver.poll=Mock();driver.game_result=Mock(return_value='WON')
+        with patch('builtins.print'):driver.run(0,0)
+        driver.poll.assert_called_once();driver.game_result.assert_called_once()
     def test_second_player_waits_for_first_observed_mana_without_defaulting_to_zero(self):
         p=IncrementalBoard();p.feed(fixture());player=p.game['entities'][3]
         player['tags'].pop('RESOURCES');p.game['entities'][1]['tags']['TURN']='1'

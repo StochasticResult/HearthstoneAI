@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Standalone GT_VS_AI driver using verified local observations and an API advisor.
+"""Standalone practice/Standard ranked driver using verified local observations.
 
-This does not open the game, queue games, use ranked, spend currency, or use
+This does not open the game, queue games, spend currency, or use
 the earlier controller. A separately armed game watchdog is mandatory. Input
 is checked against fresh legal options, then verified in the log. Unsupported
 states, missing confirmation, loss of focus, or incomplete data stop the run.
@@ -58,6 +58,17 @@ def client_error(power_path):
 
 def run_checked(args, timeout=4):
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    # Clicking the app's "stop after this game" briefly activates its
+    # control window before it returns focus to Hearthstone. A rejected
+    # native command has sent no input, so allow this short handoff to finish.
+    if (result.returncode and len(args) > 1 and args[1] == '--input'
+            and result.stderr.strip() == 'Hearthstone is not the frontmost app'):
+        deadline = time.monotonic() + .8
+        while result.returncode and time.monotonic() < deadline:
+            time.sleep(.15)
+            result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+            if result.stderr.strip() != 'Hearthstone is not the frontmost app':
+                break
     if result.returncode:
         detail = result.stderr.strip().replace("\n", " ")[:180]
         raise Stop(Path(args[0]).name + " failed" + (": " + detail if detail else ""))
@@ -499,7 +510,7 @@ class Driver:
                     raise
 
     def run(self, max_seconds, max_actions, diagnose_hover=False, previous=None):
-        deadline = time.monotonic() + max_seconds
+        deadline = time.monotonic() + max_seconds if max_seconds else float('inf')
         actions = 0
         initial_wait = 120 if RUN_MODE == "ranked" else 35
         ready_deadline = time.monotonic() + initial_wait
@@ -513,7 +524,7 @@ class Driver:
         resolving_since = None
         first_mana_wait = None
         visual_wait_since = None
-        while time.monotonic() < deadline and actions < max_actions:
+        while time.monotonic() < deadline and (not max_actions or actions < max_actions):
             self.poll()
             outcome = self.game_result()
             if outcome:
@@ -790,8 +801,8 @@ def main():
     ap.add_argument("--mode", choices=("practice","ranked"), default="practice")
     args = ap.parse_args()
     RUN_MODE = args.mode
-    if not 1 <= args.seconds <= (900 if RUN_MODE == "ranked" else 600) or not 1 <= args.max_actions <= (160 if RUN_MODE == "ranked" else 80):
-        ap.error("game limits exceeded")
+    if args.seconds < 0 or args.max_actions < 0:
+        ap.error("game limits must be nonnegative; 0 means no quota")
     if not watchdog_alive(args.watchdog_pid):
         raise Stop("no armed game watchdog")
     if not args.openai_config_stdin:

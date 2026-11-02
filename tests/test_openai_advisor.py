@@ -2,10 +2,11 @@ import copy
 import json
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 
 from openai_advisor import (AdvisorError, OpenAIAdvisor, action_menu, public_view,
-                            request_payload, parse_response, MAX_REQUESTS, DEFAULT_MODEL)
+                            request_payload, parse_response, DEFAULT_MODEL, MAX_INPUT_BYTES)
 from practice_driver import Driver, Stop, NotReady
 from test_practice_driver import sample
 
@@ -22,6 +23,30 @@ def response(action_id="a0", status="completed"):
 
 
 class APITests(unittest.TestCase):
+    def test_real_ranked_request_fits_without_losing_current_state_or_actions(self):
+        sample=json.loads(Path(__file__).with_name('fixtures').joinpath('ranked-request-size-20261101.json').read_text())
+        original=copy.deepcopy(sample['view'])
+        payload,size=request_payload(DEFAULT_MODEL,sample['view'],sample['menu'])
+        self.assertLessEqual(size,24000)
+        self.assertEqual(sample['view'],original)
+        body=json.loads(payload['input']);observed=body['observation']
+        self.assertEqual(body['actions'],sample['menu'])
+        for group in ('my_board','enemy_board'):
+            restored=[{**observed.get('defaults_by_entity_group',{}).get(group,{}),**row} for row in observed[group]]
+            self.assertEqual(restored,original[group])
+        for key in ('my_hand','my_hero','enemy_hero','enemy_known_hand','enemy_known_secrets',
+                    'active_rituals','enemy_active_rituals','mana','own_seen_original'):
+            self.assertEqual(observed.get(key),original.get(key))
+        self.assertEqual({**body['deck_knowledge']['card_definitions'],**observed['card_definitions']},original['card_definitions'])
+
+    def test_missing_status_never_becomes_a_false_default(self):
+        view=public_view(state())
+        view['my_board']=[{'id':1,'taunt':False},{'id':2,'taunt':False},{'id':3}]
+        payload,_=request_payload(DEFAULT_MODEL,view,{'a0':{'kind':'end_turn'}})
+        observed=json.loads(payload['input'])['observation']
+        self.assertNotIn('taunt',observed.get('defaults_by_entity_group',{}).get('my_board',{}))
+        self.assertNotIn('taunt',observed['my_board'][2])
+
     def test_evaluated_sol_default_preserves_function_contract(self):
         self.assertEqual(DEFAULT_MODEL, "gpt-6.1-sol")
         payload, _ = request_payload(DEFAULT_MODEL, public_view(state()), action_menu(state()))
@@ -73,15 +98,17 @@ class APITests(unittest.TestCase):
             with self.assertRaises(AdvisorError):
                 parse_response(value, menu)
 
-    def test_budget_is_checked_before_network_and_one_call_per_decision(self):
+    def test_cumulative_quotas_are_removed_but_accounting_is_preserved(self):
         calls = []
         advisor = OpenAIAdvisor({"api_key": "fake-key-not-a-secret-123"}, lambda p: (calls.append(p) or response()))
         self.assertEqual(advisor.ask(state())["kind"], "play")
         self.assertEqual((advisor.calls, advisor.tokens, len(calls)), (1, 100, 1))
-        advisor.calls = MAX_REQUESTS
-        with self.assertRaises(AdvisorError):
-            advisor.ask(state())
-        self.assertEqual(len(calls), 1)
+        advisor.calls = 100000
+        advisor.tokens = 10000000
+        advisor.ask(state())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(advisor.calls,100001)
+        self.assertEqual(advisor.tokens,10000100)
         self.assertNotIn("fake-key", json.dumps(calls))
 
     def test_api_has_no_automatic_retry_or_strategy_fallback(self):

@@ -1,0 +1,39 @@
+{
+  "run": "run-20261101-203918",
+  "game_type": "GT_RANKED",
+  "outcome": "INCOMPLETE",
+  "requested_mode": "ranked",
+  "first_decision_game_turn": "1",
+  "models": [
+    "gpt-6.1-sol"
+  ],
+  "api_responses": 6,
+  "api_tokens": 33335,
+  "median_decision_ms": 2801.5,
+  "confirmed_decisions": 9,
+  "unconfirmed_decisions": [],
+  "local_calculations": 0,
+  "resources": {
+    "game": {
+      "peak_sampled_rss_mib": 1183.5,
+      "peak_sampled_cpu_pct": 359.5,
+      "peak_thermal_state": 0
+    },
+    "ai": {
+      "peak_sampled_rss_mib": 78.4,
+      "peak_sampled_cpu_pct": 19.8,
+      "peak_thermal_state": 0
+    }
+  },
+  "guard_stop_reasons": [
+    "interrupted"
+  ],
+  "game_closed": true,
+  "needs_review": true,
+  "reconnect_recovery_used": false,
+  "mulligan_confirmed": true,
+  "started_without_mulligan": false,
+  "driver_stop_detail": "Decision context exceeds the request size limit",
+  "consecutive_losses": 0,
+  "review_before_next_game": true
+}

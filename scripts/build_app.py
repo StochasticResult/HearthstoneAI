@@ -27,7 +27,7 @@ def main():
     with (APP / "Contents/Info.plist").open("wb") as f:
         plistlib.dump({"CFBundleName": "Hearthstone AI", "CFBundleDisplayName": "Hearthstone AI",
             "CFBundleIdentifier": "local.hearthstoneai.app", "CFBundleExecutable": "HearthstoneAI",
-            "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1",
+            "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "2",
             "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": True,
             "NSHumanReadableCopyright": "Local experimental project. Includes MIT-licensed hearthstone-cli parser."}, f)
     # Do not deep re-sign the separately signed HearthMirror helper.

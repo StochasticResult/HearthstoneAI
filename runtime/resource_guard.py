@@ -122,7 +122,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--check", action="store_true")
     p.add_argument("--log", type=Path)
-    p.add_argument("--timeout", type=float, default=180)
+    p.add_argument("--timeout", type=float, default=180, help="0 disables the wall-clock quota; resource checks remain active")
     p.add_argument("--max-rss-mib", type=int, default=800)
     p.add_argument("--min-free-gib", type=float, default=10)
     p.add_argument("--max-swap-mib", type=int, default=1024)
@@ -132,6 +132,8 @@ def main():
     p.add_argument("--parent-pid", type=int)
     p.add_argument("command", nargs=argparse.REMAINDER)
     a = p.parse_args()
+    if a.timeout < 0:
+        p.error("timeout must be nonnegative")
     disk_path = "/System/Volumes/Data"
     ac, initial_battery = battery_status()
     initial_swap = swap_used()
@@ -211,7 +213,7 @@ def main():
                         print(json.dumps({"elapsed_s": round(now-started, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "members": members, "thermal_state": tstate, "free_gib": round(free/GIB, 2)}), flush=True)
                         last_status = now
                     sample_at = now + 2
-                if now - started > a.timeout:
+                if a.timeout and now - started > a.timeout:
                     reason = "wall-clock timeout"
                 if reason:
                     break

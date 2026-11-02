@@ -7,10 +7,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let keyField = NSSecureTextField()
     let modelField = NSTextField(string: "gpt-6.1-sol")
     let status = NSTextField(labelWithString: "就绪 · 尚未启动游戏")
-    let resources = NSTextField(labelWithString: "资源采样将在测试期间显示")
+    let resources = NSTextField(labelWithString: "资源保护已准备 · 等待启动")
     let keyStatus = NSTextField(labelWithString: "密钥不会写入日志或项目文件")
     let log = NSTextView()
     var startButton: NSButton!
+    var practiceButton: NSButton!
+    var stopAfterGameButton: NSButton!
     var stopButton: NSButton!
     var checkButton: NSButton!
     var process: Process?
@@ -67,14 +69,14 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 720),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Hearthstone AI · 人机测试版"
+        window.title = "Hearthstone AI"
         window.delegate = self
         let content = window.contentView!
         let title = label("Hearthstone AI", 27, bold: true)
-        let subtitle = label("独立运行的炉石 AI · 动物园术 · 实验版", 14)
+        let subtitle = label("标准天梯 · 动物园术 · 自动对局与复盘", 14)
         subtitle.textColor = .secondaryLabelColor
-        let note = label("本版只进入练习模式。每次最多运行 10 分钟、调用 API 40 次，结束时关闭本次启动的炉石。请先退出炉石并接通电源。", 13)
-        let beta = label("API 完整对局尚未验收；可能因无法确认局面而提前停止。", 12)
+        let note = label("开始后持续进行标准天梯，不设局数、对局时长或累计 API 调用上限。复盘和更新在对局结束后进行。", 13)
+        let beta = label("运行时请让炉石保持前台并接通电源。内存、温度及电源保护持续生效；异常会停止并保存记录。", 12)
         beta.textColor = .secondaryLabelColor
         keyField.placeholderString = "在本机粘贴 OpenAI API Key"
         keyField.setAccessibilityLabel("OpenAI API Key")
@@ -86,9 +88,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyStatus.textColor = .secondaryLabelColor
         let save = button("存入钥匙串", #selector(saveKey))
         let forget = button("删除密钥", #selector(forgetKey))
-        startButton = button("开始人机测试", #selector(start))
+        startButton = button("开始自动天梯", #selector(start))
         startButton.bezelColor = .controlAccentColor
-        stopButton = button("停止", #selector(stop))
+        practiceButton = button("人机练习", #selector(startPractice))
+        stopAfterGameButton = button("打完这局停止", #selector(stopAfterGame))
+        stopAfterGameButton.isEnabled = false
+        stopButton = button("立即停止", #selector(stop))
         stopButton.isEnabled = false
         checkButton = button("离线自检", #selector(check))
         let permission = button("辅助功能权限", #selector(permissionSettings))
@@ -110,7 +115,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scroll.widthAnchor.constraint(equalToConstant: 604).isActive = true
         let stack = NSStackView(views: [title, subtitle, note, beta,
             row([label("API Key"), keyField, save]), row([keyStatus, forget]),
-            row([label("模型"), modelField]), row([startButton, stopButton, checkButton]),
+            row([label("模型"), modelField]), row([startButton, practiceButton, stopAfterGameButton]),
+            row([stopButton, checkButton]),
             status, resources, scroll, row([permission, logs])])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -120,7 +126,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 26)])
-        append("离线自检不连接 API、不启动游戏。密钥仅在开始测试时用于 api.openai.com。")
+        append("每局保存决策与结果。正常对局期间仅记录数据；离线自检不调用 API。")
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -169,11 +175,36 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func start() {
+        startMode("ranked_auto")
+    }
+
+    @objc func startPractice() {
+        startMode("practice")
+    }
+
+    func startMode(_ mode: String) {
         guard process == nil else { return }
         guard let key = readKey(), key.count >= 20 else { status.stringValue = "请先填写 API Key，或存入钥匙串"; return }
         let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(model, forKey: "model")
-        launch(script: "session.py", config: ["api_key": key, "model": model])
+        launch(script: "session.py", config: ["api_key": key, "model": model, "mode": mode])
+    }
+
+    @objc func stopAfterGame() {
+        guard process != nil else { return }
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/HearthstoneAI/learning")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: ["reason": "user_requested_stop", "requested_at": Date().timeIntervalSince1970])
+            let target = directory.appendingPathComponent("pause-after-game.json")
+            try data.write(to: target, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+            stopAfterGameButton.isEnabled = false
+            status.stringValue = "已安排 · 本局结束后停止"
+            NSRunningApplication.runningApplications(withBundleIdentifier: "unity.Blizzard Entertainment.Hearthstone")
+                .first?.activate(options: [.activateIgnoringOtherApps])
+        } catch { append("未能保存停止请求；可使用立即停止。") }
     }
 
     @objc func check() { launch(script: "selfcheck.py", config: nil) }
@@ -209,6 +240,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let self = self else { return }
                 self.process = nil
                 self.startButton.isEnabled = true
+                self.practiceButton.isEnabled = true
+                self.stopAfterGameButton.isEnabled = false
                 self.checkButton.isEnabled = true
                 self.stopButton.isEnabled = false
                 self.status.stringValue = finished.terminationStatus == 0 ? "本次运行结束" : "已停止 · 请查看运行记录"
@@ -218,8 +251,10 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try task.run()
             process = task
-            startButton.isEnabled = false; checkButton.isEnabled = false; stopButton.isEnabled = true
-            status.stringValue = config == nil ? "正在离线自检" : "正在准备人机测试"
+            startButton.isEnabled = false; practiceButton.isEnabled = false
+            stopAfterGameButton.isEnabled = config?["mode"] == "ranked_auto"
+            checkButton.isEnabled = false; stopButton.isEnabled = true
+            status.stringValue = config == nil ? "正在离线自检" : config?["mode"] == "ranked_auto" ? "正在启动自动天梯" : "正在准备人机练习"
             if let config = config {
                 var data = try JSONSerialization.data(withJSONObject: config)
                 data.append(10)
@@ -230,6 +265,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
             task.terminate()
             process = nil
             startButton.isEnabled = true; checkButton.isEnabled = true; stopButton.isEnabled = false
+            practiceButton.isEnabled = true; stopAfterGameButton.isEnabled = false
             status.stringValue = "启动失败"
             append("未能启动程序组件。请检查 Python 与应用是否完整。")
         }
@@ -244,6 +280,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
                 append(String(decoding: line, as: UTF8.self)); continue
             }
+            if let playStatus = object["play_status"] as? String { status.stringValue = playStatus }
             if let metrics = object["metrics"] as? [String: Any], let rss = metrics["rss_mib"] as? Double {
                 let kind = metrics["game_seconds"] != nil ? "炉石" : "AI 进程"
                 resources.stringValue = "\(kind)：\(Int(rss)) MiB　CPU：\(metrics["cpu_pct"] ?? "—")%　热状态：\(metrics["thermal_state"] ?? "—")"

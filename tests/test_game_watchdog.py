@@ -43,7 +43,7 @@ child = subprocess.Popen(["/bin/sh", "-c", "trap '' TERM; exec /bin/sleep 15"])
 guard_proc = None
 try:
     guard_proc = subprocess.Popen(["/usr/bin/python3", str(guard), "--expected", "/bin/sleep",
-        "--claim-pid", str(child.pid), "--startup-seconds", "3", "--run-seconds", "10"],
+        "--claim-pid", str(child.pid), "--startup-seconds", "3", "--run-seconds", "0"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert json.loads(guard_proc.stdout.readline())["watchdog"] == "armed"
     assert json.loads(guard_proc.stdout.readline())["claimed_pid"] == child.pid

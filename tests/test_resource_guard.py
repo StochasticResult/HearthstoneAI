@@ -8,7 +8,7 @@ from pathlib import Path
 
 guard = Path(__file__).resolve().parent.parent / "runtime/resource_guard.py"
 with tempfile.TemporaryDirectory() as temp:
-    proc = subprocess.Popen(["/usr/bin/python3", str(guard), "--timeout", "15", "--log", str(Path(temp) / "output.log"),
+    proc = subprocess.Popen(["/usr/bin/python3", str(guard), "--timeout", "0", "--log", str(Path(temp) / "output.log"),
                              "--", "/bin/sh", "-c", "trap '' TERM; exec /bin/sleep 15"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         preflight = json.loads(proc.stdout.readline())

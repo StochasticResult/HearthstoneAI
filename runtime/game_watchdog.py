@@ -77,11 +77,13 @@ def main():
     parser.add_argument("--expected", default=GAME_EXEC)
     parser.add_argument("--claim-pid", type=int, help="for disposable watchdog self-tests only")
     parser.add_argument("--startup-seconds", type=int, default=30)
-    parser.add_argument("--run-seconds", type=int, default=75)
+    parser.add_argument("--run-seconds", type=int, default=75, help="0 monitors resources without a game-duration quota")
     parser.add_argument("--temporary-fps", type=int, choices=(30,), help="temporarily set 30 fps and restore afterwards")
     parser.add_argument("--background-policy", action="store_true", help="lower the claimed process scheduling/I/O priority; not a CPU cap")
     parser.add_argument("--parent-pid", type=int, help="stop and restore settings if the session supervisor exits")
     args = parser.parse_args()
+    if args.run_seconds < 0:
+        parser.error("run seconds must be nonnegative")
     if args.expected != GAME_EXEC and args.claim_pid is None:
         parser.error("only the game executable may be discovered automatically")
 
@@ -167,7 +169,7 @@ def main():
                     reason = "system memory pressure threshold"
                 elif shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
                     reason = "disk reserve"
-                elif now - game_start >= args.run_seconds:
+                elif args.run_seconds and now - game_start >= args.run_seconds:
                     reason = "short test deadline"
                 if now - previous_status >= 10:
                     print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": thermal_state(), "memory_free_pct": free_memory_pct,

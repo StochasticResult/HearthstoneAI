@@ -20,6 +20,23 @@ def fixture(state=None):
 
 
 class TacticalChecksTests(unittest.TestCase):
+    def test_live_six_minion_face_only_position_handles_cosmetic_hero_and_stat_buffs(self):
+        s=base()
+        s['enemy_hero'].update(id=74,card_id='HERO_11c',modifiers=[],health=30,attack=0)
+        s['my_board']=[card(cid,eid) for eid,cid in (
+            (25,'CORE_SCH_713'),(19,'CATA_210'),(4,'TIME_025'),(33,'CATA_210'),(108,'BE_085t'),(109,'BE_085t'))]
+        for body,attack in zip(s['my_board'],(4,1,5,1,6,4)):
+            body.update(attack=attack,modifiers=[{'card_id':'TIME_026e'}])
+        s['my_board'][4]['modifiers'].append({'card_id':'BE_094e','script_data_1':2})
+        menu={str(eid):{'kind':'attack','source_id':eid,'target_id':74} for eid in (25,108,109)}
+        menu['end']={'kind':'end_turn'}
+        self.assertEqual(forced_face_attack(s,menu)['action'],menu['108'])
+        for field in ('enemy_player_effects','enemy_locations','enemy_objectives'):
+            with self.subTest(field=field):
+                self.assertIsNone(forced_face_attack({**s,field:[{'card_id':'effect'}]},menu))
+        s['my_board'][1]['modifiers'].append({'card_id':'UNMODELED_BOARD_TRIGGER'})
+        self.assertIsNone(forced_face_attack(s,menu))
+
     def test_only_plain_face_attacks_can_skip_model_but_other_choices_cannot(self):
         s=base();s['enemy_hero'].update(modifiers=[])
         s['my_board']=[card('TIME_025',10),card('TLC_603',11)]

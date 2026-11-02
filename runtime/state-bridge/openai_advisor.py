@@ -363,7 +363,7 @@ class OpenAIAdvisor:
         # Fixed-size counters survive the detailed-log cap. No credentials or
         # card/identity data are stored here; there is one outstanding action.
         self.summary = {'api_responses': 0, 'api_tokens': 0, 'confirmed_decisions': 0,
-                        'unconfirmed_decisions': [], 'local_calculations': 0,
+                        'unconfirmed_decisions': [], 'expired_decisions': 0, 'local_calculations': 0,
                         'models': [], 'game_type': None, 'first_decision_game_turn': None,
                         'mulligan_confirmed': False, 'outcome': 'INCOMPLETE',
                         'diagnostics_capped': False}
@@ -395,11 +395,12 @@ class OpenAIAdvisor:
             model = event.get('model')
             if isinstance(model, str) and model[:160] not in self.summary['models']:
                 self.summary['models'] = (self.summary['models'] + [model[:160]])[-4:]
-        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target'):
+        elif kind in ('confirmed', 'confirmed_choice', 'confirmed_target', 'expired_without_submission'):
             pending = self.summary['unconfirmed_decisions']
             if self.decision_seq in pending:
                 pending.remove(self.decision_seq)
-                self.summary['confirmed_decisions'] += 1
+                count = 'expired_decisions' if kind == 'expired_without_submission' else 'confirmed_decisions'
+                self.summary[count] += 1
         elif kind == 'mulligan_confirmed':
             self.summary['mulligan_confirmed'] = True
             self.summary['game_type'] = event.get('game_type', self.summary['game_type'])

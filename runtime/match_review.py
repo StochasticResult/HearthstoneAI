@@ -32,7 +32,9 @@ def summarize(dest):
     proposed = [r for r in decisions if r.get('event') == 'proposed']
     confirmed = {r.get('decision_id') for r in decisions
                  if r.get('event') in ('confirmed', 'confirmed_choice', 'confirmed_target')}
-    pending = [r for r in proposed if r.get('decision_id') not in confirmed]
+    expired = {r.get('decision_id') for r in decisions if r.get('event') == 'expired_without_submission'}
+    resolved = confirmed | expired
+    pending = [r for r in proposed if r.get('decision_id') not in resolved]
     outcomes = [r['game_result'] for r in actions if r.get('game_result') in ('WON', 'LOST', 'TIED')]
     outcome = outcomes[-1] if len(set(outcomes)) == 1 else 'INCOMPLETE'
     timings = [r['elapsed_ms'] for r in proposed if type(r.get('elapsed_ms')) is int]
@@ -69,6 +71,7 @@ def summarize(dest):
                'api_responses': len(timings), 'api_tokens': sum(r.get('tokens', 0) for r in proposed),
                'median_decision_ms': statistics.median(timings) if timings else None,
                'confirmed_decisions': len(confirmed),
+               'expired_decisions': len(expired),
                'unconfirmed_decisions': [r.get('decision_id') for r in pending],
                'local_calculations': sum(bool(r.get('local_rule')) for r in proposed),
                'resources': metrics, 'guard_stop_reasons': stops,
@@ -95,6 +98,7 @@ def summarize(dest):
         if compact_path.stat().st_size > 8192:
             raise ValueError('Decision summary exceeds its bound')
         compact = json.loads(compact_path.read_text())
+        summary['expired_decisions'] = compact.get('expired_decisions', len(expired))
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
                     'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):

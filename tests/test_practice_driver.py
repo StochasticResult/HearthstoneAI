@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 from types import SimpleNamespace
 
-from practice_driver import Driver, Stop, NotReady, ClientFatal, client_error, choice_index, hover_matches, plan_inputs, visual_ready, mirror
+from practice_driver import Driver, Stop, NotReady, ClientFatal, ExpiredProposal, client_error, choice_index, hover_matches, plan_inputs, visual_ready, mirror
 from practice_state import prepare
 from incremental_board import UnsafeState
 from practice_driver import waiting_for_first_mana, run_checked
@@ -23,6 +23,57 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def test_submitted_or_same_turn_actions_are_never_treated_as_expired(self):
+        d=self.identified_driver()
+        p=d.parser
+        p.feed(power('TAG_CHANGE Entity=1 tag=TURN value=9').encode())
+        d.proposal_window=(p.game,9,p.sent_options)
+        d.check_proposal_window()
+        p.feed((power('TAG_CHANGE Entity=1 tag=TURN value=10')+
+                power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=0')+
+                power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1')).encode())
+        with self.assertRaises(ExpiredProposal):
+            d.check_proposal_window()
+        p.feed(b'D 10:00:01.0000000 GameState.SendOption() - selectedOption=4 selectedTarget=34\n')
+        d.check_proposal_window()
+
+    def test_expired_unsent_attack_resumes_next_own_turn_and_keeps_result(self):
+        d=self.identified_driver();p=d.parser
+        p.feed(power('TAG_CHANGE Entity=1 tag=TURN value=9').encode())
+        p.options_id=7
+        d.poll=Mock()
+        d.identify=lambda _:1
+        baseline=sample()
+        def snapshot(_):
+            turn=p.game['entities'][1]['tags']['TURN']
+            return {**baseline,'game_turn':turn,'visual_turn':turn,'game_step':'MAIN_ACTION',
+                    'visual_step':'MAIN_ACTION','options_id':p.options_id}
+        d.snapshot=snapshot
+        d.advisor.ask.return_value={'kind':'attack','source_id':33,'target_id':66}
+        finished=[]
+        d.game_result=lambda:'WON' if finished else None
+        def execute(_,state,*args):
+            if state['game_turn']=='9':
+                p.feed((power('TAG_CHANGE Entity=1 tag=TURN value=10')+
+                        power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=0')+
+                        power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1')).encode())
+                d.check_proposal_window()
+                self.fail('Expired action was allowed through')
+            finished.append(state['game_turn'])
+        def pause(_):
+            if d.opponent_turn():
+                p.feed((power('TAG_CHANGE Entity=1 tag=TURN value=11')+
+                        power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=1')+
+                        power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=0')).encode())
+                p.options_id=8
+        d.execute_main_action=execute
+        with patch('practice_driver.mirror',return_value={}),patch('practice_driver.time.sleep',side_effect=pause),patch('builtins.print'):
+            d.run(0,0)
+        self.assertEqual([c.args[0]['game_turn'] for c in d.advisor.ask.call_args_list],['9','11'])
+        self.assertEqual(finished,['11'])
+        self.assertEqual([c.args[0]['event'] for c in d.advisor.record.call_args_list],
+                         ['expired_without_submission','game_complete'])
+
     def identified_driver(self):
         driver=Driver.__new__(Driver)
         driver.parser=IncrementalBoard();driver.parser.feed(fixture())

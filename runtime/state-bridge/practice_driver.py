@@ -39,6 +39,10 @@ class NotReady(Exception):
     pass
 
 
+class ExpiredProposal(Exception):
+    """The server advanced past a proposed action with no logged submission."""
+
+
 class ClientFatal(Stop):
     pass
 
@@ -272,6 +276,7 @@ class Driver:
         self.identity_game = None
         self.board_mismatch_since = None
         self.board_mismatch_signature = None
+        self.proposal_window = None
         self.deck_snapshot = deck_snapshot
         self.reconnect_evidence = tuple(reconnect_evidence)[:4]
         self.recovered_previous = None
@@ -314,7 +319,7 @@ class Driver:
         players = [p for p in board._players(self.parser.game) if board._tag_int(p, "PLAYER_ID") == self.owner]
         return board._playstate(players[0]) if len(players) == 1 else "COMPLETE"
 
-    def waiting_on_opponent(self):
+    def opponent_turn(self):
         # Identity was already proved for this exact game. Opponent animations
         # need no mouse geometry, Mirror process, or model call. Reconcile the
         # complete board again before our next decision or pending choice.
@@ -324,7 +329,10 @@ class Driver:
         own=[p for p in players if board._tag_int(p,'PLAYER_ID')==self.owner]
         other=[p for p in players if board._tag_int(p,'PLAYER_ID')!=self.owner]
         return (len(own)==len(other)==1 and board._num(own[0]['tags'].get('CURRENT_PLAYER'))==0
-                and board._tag_int(other[0],'CURRENT_PLAYER')==1 and self.parser.pending_choice(self.owner) is None)
+                and board._tag_int(other[0],'CURRENT_PLAYER')==1)
+
+    def waiting_on_opponent(self):
+        return self.opponent_turn() and self.parser.pending_choice(self.owner) is None
 
     def board_difference(self, status):
         # A bounded, public-only diagnostic, never the complete Mirror object.
@@ -365,6 +373,21 @@ class Driver:
                 break
         if self.follower.offset < self.follower.path.stat().st_size:
             raise Stop("log reader fell behind")
+        self.check_proposal_window()
+
+    def check_proposal_window(self):
+        if self.proposal_window is None:
+            return
+        game, turn, submissions = self.proposal_window
+        if (self.parser.game is not game or self.identity_game is not game
+                or self.parser.partial or self.parser.sent_options != submissions):
+            return
+        if self.game_result() in ('WON','LOST','TIED'):
+            raise ExpiredProposal('game ended before submission')
+        game_entity = board._game_entity(game)
+        current_turn = board._num(game_entity['tags'].get('TURN')) if game_entity else None
+        if turn is not None and current_turn is not None and current_turn > turn and self.opponent_turn():
+            raise ExpiredProposal('turn ended before submission')
 
     def identify(self, status):
         if self.parser.game is None or not self.parser.game["meta"].get("GameType"):
@@ -555,6 +578,105 @@ class Driver:
             except Stop as error:
                 if str(error) != 'action was not confirmed in game log' or attempt == 2:
                     raise
+
+    def execute_main_action(self, own, state, advice, diagnose_hover, decision_started):
+        input_started = time.monotonic()
+        self.revalidate(own, state, advice)
+        plan = plan_inputs(state, advice)
+        checked_geometry()
+        kind, first, second = plan
+        source_id = int(advice.get("source_id", 0))
+        source_card = next((c.get("card_id") for c in state["my_hand"] + state["my_board"] + state.get('my_locations',[])
+                            + [state.get('my_hero_power') or {},state['my_hero']]
+                           if c.get("id") == source_id), None)
+        print(json.dumps({"attempt": advice["kind"], "card": source_card, "source_id": source_id,
+                          "from": first, "to": second, "hand_size": len(state["my_hand"])}), flush=True)
+        if diagnose_hover and advice["kind"] == "play":
+            run_checked(input_command("move", *first))
+            time.sleep(.7)
+            observed = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--hover"]))
+            card = next(c for c in state["my_hand"] if c["id"] == source_id)
+            print(json.dumps({"hover_diagnostic": observed.get("hover"), "expected_card": card["card_id"],
+                              "expected_position": card["position"]}), flush=True)
+            raise Stop("hover diagnostic completed without playing a card")
+        if advice["kind"] == "play":
+            first = self.verify_hand_point(own, state, source_id, first)
+            print(json.dumps({"verified_hand_point": first, "card": source_card, "source_id": source_id}), flush=True)
+        self.revalidate(own, state, advice)
+        before_attacks = board._tag_int(self.parser.game["entities"].get(source_id, {"tags": {}}), "NUM_ATTACKS_THIS_TURN")
+        before_events = len(self.parser.game.get('events', ()))
+        before_submissions = self.parser.sent_options
+        if kind == "click":
+            self.execute_end_turn(own,state)
+        elif kind in ('click_power','ability_target'):
+            sent_before = self.parser.sent_options
+            click(first)
+            if second is not None:
+                time.sleep(.5)
+                self.poll()
+                if self.parser.options_id!=state['options_id'] or target_point(self.snapshot(own),int(advice['target_id']))!=second:
+                    raise Stop('targeted ability changed before target input')
+                click(second)
+            self.wait_until(lambda: bool(self.game_result()) or
+                (self.parser.sent_options>sent_before and self.parser.options_id!=state['options_id']),10)
+        elif kind == "drag":
+            drag(first, second)
+        elif kind == "battlecry":
+            drag(first, (735, 510))
+            time.sleep(2.5)
+            # The target reticle is a client animation and can appear
+            # after the drag. Retry only while the same source, target,
+            # options and board layout are still confirmed in the log.
+            for target_attempt in range(3):
+                self.poll()
+                current = self.snapshot(own)
+                if all(c["id"] != source_id for c in current["my_hand"]):
+                    break
+                target_id = int(advice["target_id"])
+                option = next((o for o in current["legal_options"] if o["id"] == source_id), None)
+                if (not current["own_turn"] or current["options_id"] != state["options_id"]
+                        or option is None or target_id not in option["targets"]
+                        or target_point(current, target_id) != second):
+                    raise Stop("battlecry target state changed")
+                click(second)
+                try:
+                    self.wait_until(lambda: self.parser.game is not None and not self.parser.partial and
+                                    all(c["id"] != source_id for c in board._in_zone(self.parser.game, own, "HAND")), 4)
+                    break
+                except Stop as error:
+                    if str(error) != "action was not confirmed in game log" or target_attempt == 2:
+                        raise
+        source = int(advice.get("source_id", 0))
+        if advice["kind"] == "play":
+            # A played card may immediately open Discover, in which case
+            # snapshot() intentionally blocks until that choice resolves.
+            self.wait_until(lambda: self.parser.game is not None and not self.parser.partial and
+                            all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")), 10)
+        elif advice["kind"] == "attack":
+            def attacked():
+                if self.parser.sent_options <= before_submissions:
+                    return False
+                game = self.parser.game
+                if any(event['type'] == 'attack' and event.get('actor') == own
+                       and event.get('turn') == board._num(state['game_turn'])
+                       and board._ref_id(event.get('atk_ref') or '') == source
+                       and board._ref_id(event.get('tgt_ref') or '') == advice['target_id']
+                       for event in game['events'][before_events:]):
+                    return True
+                if self.game_result():
+                    return True
+                current = board._game_entity(game)
+                if not current or current['tags'].get('TURN') != state['game_turn']:
+                    return False
+                entity = game["entities"].get(source)
+                return bool(entity and (entity.get("zone") != "PLAY" or
+                            board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks))
+            self.wait_until(attacked, 10)
+        print("confirmed", advice["kind"], flush=True)
+        print(json.dumps({"action_timing": {"kind": advice["kind"],
+            "decision_ms": round((input_started-decision_started)*1000),
+            "input_confirmation_ms": round((time.monotonic()-input_started)*1000)}}), flush=True)
+        self.advisor.confirm(advice, state)
 
     def run(self, max_seconds, max_actions, diagnose_hover=False, previous=None):
         deadline = time.monotonic() + max_seconds if max_seconds else float('inf')
@@ -771,92 +893,21 @@ class Driver:
                     refreshed_reconnect = True
                     actions += 1
                     continue
-            prepared = state
             decision_started = time.monotonic()
-            advice = self.advisor.ask(prepared)
-            input_started = time.monotonic()
-            self.revalidate(own, state, advice)
-            plan = plan_inputs(state, advice)
-            checked_geometry()
-            kind, first, second = plan
-            source_id = int(advice.get("source_id", 0))
-            source_card = next((c.get("card_id") for c in state["my_hand"] + state["my_board"] + state.get('my_locations',[])
-                                + [state.get('my_hero_power') or {},state['my_hero']]
-                               if c.get("id") == source_id), None)
-            print(json.dumps({"attempt": advice["kind"], "card": source_card, "source_id": source_id,
-                              "from": first, "to": second, "hand_size": len(state["my_hand"])}), flush=True)
-            if diagnose_hover and advice["kind"] == "play":
-                run_checked(input_command("move", *first))
-                time.sleep(.7)
-                observed = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--hover"]))
-                card = next(c for c in state["my_hand"] if c["id"] == source_id)
-                print(json.dumps({"hover_diagnostic": observed.get("hover"), "expected_card": card["card_id"],
-                                  "expected_position": card["position"]}), flush=True)
-                raise Stop("hover diagnostic completed without playing a card")
-            if advice["kind"] == "play":
-                first = self.verify_hand_point(own, state, source_id, first)
-                print(json.dumps({"verified_hand_point": first, "card": source_card, "source_id": source_id}), flush=True)
-            self.revalidate(own, state, advice)
-            before_attacks = board._tag_int(self.parser.game["entities"].get(source_id, {"tags": {}}), "NUM_ATTACKS_THIS_TURN")
-            if kind == "click":
-                self.execute_end_turn(own,state)
-            elif kind in ('click_power','ability_target'):
-                sent_before = self.parser.sent_options
-                click(first)
-                if second is not None:
-                    time.sleep(.5)
-                    self.poll()
-                    if self.parser.options_id!=state['options_id'] or target_point(self.snapshot(own),int(advice['target_id']))!=second:
-                        raise Stop('targeted ability changed before target input')
-                    click(second)
-                self.wait_until(lambda: bool(self.game_result()) or
-                    (self.parser.sent_options>sent_before and self.parser.options_id!=state['options_id']),10)
-            elif kind == "drag":
-                drag(first, second)
-            elif kind == "battlecry":
-                drag(first, (735, 510))
-                time.sleep(2.5)
-                # The target reticle is a client animation and can appear
-                # after the drag. Retry only while the same source, target,
-                # options and board layout are still confirmed in the log.
-                for target_attempt in range(3):
-                    self.poll()
-                    current = self.snapshot(own)
-                    if all(c["id"] != source_id for c in current["my_hand"]):
-                        break
-                    target_id = int(advice["target_id"])
-                    option = next((o for o in current["legal_options"] if o["id"] == source_id), None)
-                    if (not current["own_turn"] or current["options_id"] != state["options_id"]
-                            or option is None or target_id not in option["targets"]
-                            or target_point(current, target_id) != second):
-                        raise Stop("battlecry target state changed")
-                    click(second)
-                    try:
-                        self.wait_until(lambda: self.parser.game is not None and not self.parser.partial and
-                                        all(c["id"] != source_id for c in board._in_zone(self.parser.game, own, "HAND")), 4)
-                        break
-                    except Stop as error:
-                        if str(error) != "action was not confirmed in game log" or target_attempt == 2:
-                            raise
-            source = int(advice.get("source_id", 0))
-            if advice["kind"] == "play":
-                # A played card may immediately open Discover, in which case
-                # snapshot() intentionally blocks until that choice resolves.
-                self.wait_until(lambda: self.parser.game is not None and not self.parser.partial and
-                                all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")), 10)
-            elif advice["kind"] == "attack":
-                def attacked():
-                    if self.game_result():
-                        return True
-                    entity = self.parser.game["entities"].get(source)
-                    return bool(entity and (entity.get("zone") != "PLAY" or
-                                board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks))
-                self.wait_until(attacked, 10)
-            print("confirmed", advice["kind"], flush=True)
-            print(json.dumps({"action_timing": {"kind": advice["kind"],
-                "decision_ms": round((input_started-decision_started)*1000),
-                "input_confirmation_ms": round((time.monotonic()-input_started)*1000)}}), flush=True)
-            self.advisor.confirm(advice, state)
+            window = (self.parser.game, board._num(state.get('game_turn')), self.parser.sent_options)
+            advice = self.advisor.ask(state)
+            self.proposal_window = window
+            try:
+                self.execute_main_action(own, state, advice, diagnose_hover, decision_started)
+            except ExpiredProposal as error:
+                self.advisor.record({'event':'expired_without_submission', 'action':advice,
+                                     'game_turn':state.get('game_turn'), 'reason':str(error)})
+                print(json.dumps({'expired_without_submission':advice, 'reason':str(error)}), flush=True)
+                borrowed_options = state['options_id']
+                awaiting_fresh_options = True
+                continue
+            finally:
+                self.proposal_window = None
             # Entity changes can arrive before the next legal-option packet.
             # Require a new option list after every action, not just reconnect
             # actions, before asking the model to decide again.

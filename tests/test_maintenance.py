@@ -152,6 +152,27 @@ class MaintenanceTests(unittest.TestCase):
             self.assertLess((root/'decision-summary.json').stat().st_size,8192)
             self.assertNotIn('fake-testing-key',(root/'decision-summary.json').read_text())
 
+    def test_expired_proposal_is_separate_from_a_confirmed_or_ambiguous_move(self):
+        from openai_advisor import OpenAIAdvisor
+        from match_review import summarize
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            advisor=OpenAIAdvisor({'api_key':'fake-testing-key-123456789'},audit_path=root/'decisions.jsonl')
+            for number in (1,2,3):
+                advisor.decision_seq=number
+                advisor.record({'event':'proposed','observation':{'game_type':'GT_RANKED','game_turn':'9'},
+                                'action':{'kind':'attack'},'elapsed_ms':2800,'tokens':500})
+                if number==1:advisor.record({'event':'confirmed'})
+                if number==2:advisor.record({'event':'expired_without_submission','reason':'turn ended before submission'})
+            advisor.close()
+            for use_summary in (True,False):
+                if not use_summary:(root/'decision-summary.json').unlink()
+                summary,_=summarize(root)
+                self.assertEqual(summary['confirmed_decisions'],1)
+                self.assertEqual(summary['expired_decisions'],1)
+                self.assertEqual(summary['unconfirmed_decisions'],[3])
+                self.assertEqual(summary['api_responses'],3)
+
     def test_multicore_startup_does_not_end_game_when_memory_and_heat_are_normal(self):
         import game_watchdog as guard
         handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}

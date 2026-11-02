@@ -21,26 +21,39 @@ def forced_face_attack(state, menu):
     unknown buffs, weapons, or an alternative playable card/power.
     """
     if (extra_public_effects(state) or state.get('enemy_board') != [] or state.get('enemy_secret_count', 0)
-            or state.get('enemy_weapon') or state.get('enemy_active_rituals')
+            or state.get('my_weapon') or state.get('enemy_weapon') or state.get('enemy_active_rituals')
+            or (state.get('my_hero') or {}).get('modifiers')
             or state.get('healing_as_damage', 0) or state.get('phase', 'main') != 'main'):
         return None
     if any(r.get('card_id') not in ('BE_085', 'BE_726') for r in state.get('active_rituals', [])):
         return None
     enemy = state.get('enemy_hero', {})
+    from card_metadata import CATALOG
+    hero_definition = CATALOG.get(enemy.get('card_id'), {})
+    power = state.get('enemy_hero_power') or {}
+    if power:
+        power_definition = CATALOG.get(power.get('card_id'), {})
+        if (power_definition.get('type') != 'HERO_POWER' or 'passive' in power_definition.get('text','').lower()
+                or 'PASSIVE' in power_definition.get('mechanics', ())):
+            return None
     if (enemy.get('modifiers') != [] or enemy.get('attack') != 0 or enemy.get('immune')
-            or enemy.get('card_id') not in ('HERO_01', 'HERO_02', 'HERO_03', 'HERO_04', 'HERO_05', 'HERO_06', 'HERO_07', 'HERO_08', 'HERO_09')
+            or hero_definition.get('type') != 'HERO' or hero_definition.get('text') or 'cost' in hero_definition
             or type(enemy.get('health')) is not int or enemy['health'] <= 0):
         return None
     moves = [a for a in menu.values() if a.get('kind') != 'end_turn']
     if not moves or any(a.get('kind') != 'attack' or a.get('target_id') != enemy.get('id') for a in moves):
         return None
-    passive_ids = {'TLC_603', 'CORE_UNG_205', 'CATA_210t', 'BE_085t', 'TIME_025', 'BE_729', 'BE_728', 'CAP_405'}
+    passive_ids = {'TLC_603', 'CORE_UNG_205', 'CATA_210t', 'CATA_210', 'CORE_SCH_713',
+                   'BE_085t', 'TIME_025', 'BE_729', 'BE_728', 'CAP_405'}
     bodies = {c['id']: c for c in state.get('my_board', [])}
+    for body in bodies.values():
+        if (body.get('card_id') not in passive_ids or body.get('unknown_modifier_count')
+                or any(mod.get('card_id') not in ('TIME_026e','BE_094e') for mod in body.get('modifiers',[]))):
+            return None
     safe = []
     for action in moves:
         c = bodies.get(action.get('source_id'), {})
-        if (c.get('card_id') not in passive_ids or c.get('modifiers')
-                or c.get('lifesteal') or type(c.get('attack')) is not int or c['attack'] <= 0):
+        if (c.get('stealth') or c.get('lifesteal') or type(c.get('attack')) is not int or c['attack'] <= 0):
             return None
         safe.append((c['attack'], action))
     return {'rule': 'ordinary_face_attacks_only_v1', 'action': max(safe, key=lambda pair: pair[0])[1],

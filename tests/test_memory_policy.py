@@ -6,6 +6,12 @@ from resource_guard import MIB, memory_pressure_level, memory_stop_reason
 
 
 class MemoryPolicyTests(unittest.TestCase):
+    def test_warning_never_masks_critical_or_growth_or_availability_stops(self):
+        for pressure,current,free,reason in ((4,1031,40,'critical system memory pressure'),
+                                            (2,1288,40,'swap growth threshold'),
+                                            (2,1031,19,'system memory availability threshold')):
+            self.assertEqual(memory_stop_reason(current*MIB,1031*MIB,pressure,free),reason)
+
     def test_stable_historical_swap_does_not_indicate_current_pressure(self):
         self.assertIsNone(memory_stop_reason(1031*MIB,1031*MIB,1,51))
         self.assertIsNone(memory_stop_reason(2048*MIB,2048*MIB,1,40))
@@ -15,8 +21,8 @@ class MemoryPolicyTests(unittest.TestCase):
         self.assertEqual(memory_stop_reason(1288*MIB,1031*MIB,1,51),'swap growth threshold')
         self.assertIsNone(memory_stop_reason(900*MIB,1031*MIB,1,51))
 
-    def test_warning_and_critical_pressure_stop_even_without_any_swap(self):
-        self.assertEqual(memory_stop_reason(0,0,2,51),'system memory pressure warning')
+    def test_warning_can_recover_but_critical_pressure_stops_even_without_swap(self):
+        self.assertIsNone(memory_stop_reason(0,0,2,51))
         self.assertEqual(memory_stop_reason(0,0,4,51),'critical system memory pressure')
 
     def test_availability_and_explicit_development_cap_still_stop(self):

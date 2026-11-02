@@ -102,7 +102,8 @@ def main():
     initial_swap = swap_used()
     swap_baseline = initial_swap if args.swap_baseline_mib is None else args.swap_baseline_mib * MIB
     free_memory_pct = memory_free_percentage()
-    memory_reason = memory_stop_reason(initial_swap, swap_baseline, memory_pressure_level(), free_memory_pct)
+    previous_pressure = memory_pressure_level()
+    memory_reason = memory_stop_reason(initial_swap, swap_baseline, previous_pressure, free_memory_pct)
     if memory_reason:
         raise RuntimeError("preflight safety check failed: " + memory_reason)
     if not initial_ac or thermal_state() >= 1 or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
@@ -162,6 +163,10 @@ def main():
                 current_swap = swap_used()
                 pressure = memory_pressure_level()
                 memory_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct)
+                if pressure != previous_pressure:
+                    print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
+                                      'swap_mib': round(current_swap/MIB,1)}), flush=True)
+                    previous_pressure = pressure
                 if thermal_state() >= 1:
                     reason = "thermal state above nominal"
                 elif not ac or pct <= initial_pct - 1:

@@ -72,8 +72,10 @@
 
 用户随后要求定期清理、避免资源不断累积。重新检查时 swap 稳定为 1031.1 MiB，内存可用指标约 49–51%，内核导出的内存压力为 normal，热状态 0。旧 1024 MiB 总量门槛独自阻止启动，不足以证明当前内存不足；应把历史总量与当前压力、运行期间增长分开。Apple 的[活动监视器说明](https://support.apple.com/guide/activity-monitor/view-memory-usage-actmntr1004/mac)同样将可用内存、交换速率等共同用于内存压力判断。
 
-- 用 macOS 实际压力状态取代默认 1 GiB 历史 swap 总量门槛：warning/critical 即停止，未知值拒绝；可用内存指标低于 20% 或本次连续运行 swap 增长超过 256 MiB 仍停止。游戏 1800 MiB、AI 200 MiB、温度、CPU、电源与磁盘边界保持不变。
+- 用 macOS 实际压力状态取代默认 1 GiB 历史 swap 总量门槛：critical 即停止，warning 记录并通过局间清理处理，未知值拒绝；可用内存指标低于 20% 或本次连续运行 swap 增长超过 256 MiB 仍停止。游戏 1800 MiB、AI 200 MiB、温度、CPU、电源与磁盘边界保持不变。
 - `kern.memorystatus_vm_pressure_level` 导出的是 dispatch 位标志 1/2/4，不能误用内核内部 0/1/3 枚举；核对了 [Apple XNU 的 sysctl 转换实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_memorystatus_notify.c)及本机 SDK `dispatch/source.h`。
 - 连续天梯只在首次开始时记录 swap 基线，所有局的两个独立守护使用同一基线。换局不会隐藏累计增长。开发命令显式传入的总量限制仍会生效。
 - 每局显式关闭子进程管道，既有局间进程回收、五局日志、50 条汇总及 10 个复盘案例的边界继续生效。当前应用数据目录约 15 MiB、游戏日志约 1.1 MiB；这次没有发现磁盘日志持续无界增长。
 - 149 项测试通过，含稳定历史 swap、正常压力下增长超限、无 swap 但系统告警、未知值、共享跨局基线及实际子进程回收。测试约 8.03 秒，采样峰值 88.9 MiB、31.9% CPU。测试只使用一次性子进程和模拟读数，没有向系统施加内存压力。
+
+- 21:25:57 初次恢复时，旧版对单次 warning 立即停止，在游戏刚启动、尚未匹配时退出。按 Apple 对 warning（考虑释放缓存）与 critical（严重压力）的区分，改为记录 warning 和每局清理；critical、低可用内存、进程上限和 swap 增长仍立即停止。新增轻度告警不能掩盖其他停止条件的用例后，150 项测试通过。没有通过重设连续运行基线掩盖增长。

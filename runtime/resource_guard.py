@@ -87,14 +87,17 @@ def swap_exceeded(current, baseline, maximum=None, growth=256*MIB):
 def memory_stop_reason(current, baseline, pressure, free_pct, maximum=None, growth=256*MIB):
     if type(pressure) is not int or pressure not in (1, 2, 4) or type(free_pct) not in (int, float) or not 0 <= free_pct <= 100:
         return "unknown system memory status"
-    if pressure != 1:
-        return "system memory pressure warning" if pressure == 2 else "critical system memory pressure"
+    if pressure == 4:
+        return "critical system memory pressure"
     if free_pct < 20:
         return "system memory availability threshold"
     if current - baseline > growth:
         return "swap growth threshold"
     if maximum is not None and current > maximum:
         return "explicit swap total threshold"
+    # A warning asks clients to reduce caches; it is not a critical state.
+    # Record it and clean up at the existing game boundary. Critical pressure,
+    # low availability, and growth limits above remain immediate stops.
     return None
 
 
@@ -182,6 +185,7 @@ def main():
         return 2
     if a.check:
         return 0
+    previous_pressure = initial['memory_pressure_level']
     command = a.command[1:] if a.command[:1] == ["--"] else a.command
     if not command or not a.log:
         p.error("--log and a command after -- are required")
@@ -230,6 +234,10 @@ def main():
                     free_pct = memory_free_percentage()
                     memory_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
                                                        maximum_swap, a.max_swap_growth_mib*MIB)
+                    if pressure != previous_pressure:
+                        print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
+                                          'swap_mib': round(used_swap/MIB,1)}), flush=True)
+                        previous_pressure = pressure
                     consecutive_high_cpu = consecutive_high_cpu + 1 if cpu > a.max_cpu else 0
                     if rss > a.max_rss_mib * MIB:
                         reason = "process group memory limit"

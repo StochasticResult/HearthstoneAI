@@ -361,7 +361,7 @@ class DriverTests(unittest.TestCase):
         initial.update(my_hero_power={'id':50},legal_options=[{'id':50,'type':'POWER','targets':[]}])
         changed = dict(initial,mana=0)
         fresh = dict(changed,options_id=8,legal_options=[],end_turn_allowed=True)
-        driver.parser = SimpleNamespace(pending_choice=lambda _own: None,
+        driver.parser = SimpleNamespace(pending_choice=lambda _own: None, partial=b'',
                                         game={'entities':{50:{'tags':{}}}}, options=[], options_id=7, sent_options=0)
         driver.identity_game=driver.parser.game;driver.owner=1
         driver.game_result = lambda: None

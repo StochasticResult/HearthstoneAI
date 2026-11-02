@@ -20,7 +20,7 @@ from deck_observation import public_selected_deck
 from game_mode import expected_type
 
 from capture_practice import Capture, CaptureError, LOG_ROOT
-from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board
+from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board, choice_for_player
 from mirror_identity import practice_identity, mulligan_identity
 import mulligan
 from practice_state import META, prepare
@@ -367,7 +367,26 @@ class Driver:
                 and board._tag_int(other[0],'CURRENT_PLAYER')==1)
 
     def waiting_on_opponent(self):
-        return self.opponent_turn() and self.parser.pending_choice(self.owner) is None
+        game = self.parser.game
+        if self.owner not in (1, 2) or game is None or self.identity_game is not game or self.parser.partial:
+            return False
+        if not self.opponent_turn():
+            # The first player is CURRENT_PLAYER even while the other player
+            # is still choosing their opening cards. No main action exists yet.
+            if (game.get('turn') or 0) > 1:
+                return False
+            entity = board._game_entity(game)
+            if not entity or entity['tags'].get('STEP') != 'BEGIN_MULLIGAN' or board._tag_int(entity,'TURN') != 1:
+                return False
+            stages = {board._tag_int(p,'PLAYER_ID'): board._norm(p['tags'].get('MULLIGAN_STATE',''), board.MULLIGAN_BY_NUM)
+                      for p in board._players(game)}
+            if (stages.get(self.owner) not in ('READY','DEALING','WAITING','DONE')
+                    or stages.get(3-self.owner) not in ('INPUT','READY','DEALING','WAITING','DONE')):
+                return False
+            if not any(c['type'] == 'MULLIGAN' and c.get('confirmed') and choice_for_player(c, self.owner)
+                       for c in self.parser.choices.values()):
+                return False
+        return self.parser.pending_choice(self.owner) is None
 
     def board_difference(self, status):
         # A bounded, public-only diagnostic, never the complete Mirror object.

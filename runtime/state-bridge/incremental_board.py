@@ -51,6 +51,12 @@ def custom_effects(entity):
     return {"effect_card_ids": parts}
 
 
+def choice_for_player(choice, player):
+    owner = choice.get('owner')
+    return owner == player or (owner is None and choice['type'] != 'TARGET'
+           and {item['owner'] for item in choice['items'] if item['owner'] is not None} == {player})
+
+
 class IncrementalBoard:
     def __init__(self):
         self.game = None
@@ -364,10 +370,7 @@ class IncrementalBoard:
     def pending_choice(self, own_player_id):
         if self.game is None or self.blocked or self.partial:
             raise UnsafeState("game state not ready for a choice")
-        pending = [c for c in self.choices.values() if not c["sent"] and c["items"] and
-                   (c.get("owner") == own_player_id or
-                    (c.get("owner") is None and c["type"] != "TARGET" and
-                     {item["owner"] for item in c["items"] if item["owner"] is not None} == {own_player_id}))]
+        pending = [c for c in self.choices.values() if not c["sent"] and c["items"] and choice_for_player(c, own_player_id)]
         if len(pending) > 1:
             raise UnsafeState("multiple pending own choices")
         if not pending:

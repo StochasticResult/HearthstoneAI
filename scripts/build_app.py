@@ -20,9 +20,8 @@ def main():
                     str(ROOT / "native/Mirror.m"), "-o", str(ROOT / "runtime/mirror-status")], check=True)
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements",
                     str(ROOT / "native/Mirror.entitlements.plist"), str(ROOT / "runtime/mirror-status")], check=True)
-    subprocess.run(["/usr/bin/xcrun", "swiftc", "-num-threads", "1", str(ROOT / "native/Input.swift"),
-                    "-o", str(ROOT / "runtime/quartz-input")], check=True)
-    subprocess.run(["/usr/bin/xcrun", "swiftc", "-num-threads", "1", str(ROOT / "native/App.swift"),
+    subprocess.run(["/usr/bin/xcrun", "swiftc", "-parse-as-library", "-num-threads", "1", str(ROOT / "native/App.swift"),
+                    str(ROOT / "native/InputCommands.swift"),
                     "-o", str(macos / "HearthstoneAI")], check=True)
     shutil.copytree(ROOT / "runtime", resources / "runtime", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     with (APP / "Contents/Info.plist").open("wb") as f:

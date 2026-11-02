@@ -5,7 +5,7 @@ import Security
 final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let keyField = NSSecureTextField()
-    let modelField = NSTextField(string: "gpt-5.6-terra")
+    let modelField = NSTextField(string: "gpt-6.1-terra")
     let status = NSTextField(labelWithString: "就绪 · 尚未启动游戏")
     let resources = NSTextField(labelWithString: "资源采样将在测试期间显示")
     let keyStatus = NSTextField(labelWithString: "密钥不会写入日志或项目文件")
@@ -19,7 +19,14 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var terminating = false
     let service = "local.hearthstoneai.openai"
 
-    var runtime: URL { Bundle.main.resourceURL!.appendingPathComponent("runtime") }
+    var runtime: URL {
+        // Local development updates replace only this user-owned runtime;
+        // the native launcher's signing identity and Keychain ACL stay stable.
+        let installed = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/HearthstoneAI/runtime")
+        if FileManager.default.fileExists(atPath: installed.appendingPathComponent("session.py").path) { return installed }
+        return Bundle.main.resourceURL!.appendingPathComponent("runtime")
+    }
 
     func label(_ text: String, _ size: CGFloat = 13, bold: Bool = false) -> NSTextField {
         let v = NSTextField(wrappingLabelWithString: text)
@@ -74,7 +81,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         modelField.setAccessibilityLabel("OpenAI 模型")
         modelField.widthAnchor.constraint(equalToConstant: 250).isActive = true
-        modelField.stringValue = UserDefaults.standard.string(forKey: "model") ?? "gpt-5.6-terra"
+        modelField.stringValue = UserDefaults.standard.string(forKey: "model") ?? "gpt-6.1-terra"
         keyStatus.font = .systemFont(ofSize: 11)
         keyStatus.textColor = .secondaryLabelColor
         let save = button("存入钥匙串", #selector(saveKey))
@@ -137,7 +144,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
             result = SecItemAdd(add as CFDictionary, nil)
         }
         keyStatus.stringValue = result == errSecSuccess ? "已保存到本机钥匙串" : "保存失败（\(result)）"
-        if result == errSecSuccess { keyField.stringValue = ""; keyField.placeholderString = "已保存；留空即可使用钥匙串密钥" }
+        if result == errSecSuccess { keyField.placeholderString = "已保存；留空即可使用钥匙串密钥" }
     }
 
     @objc func forgetKey() {
@@ -151,9 +158,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !typed.isEmpty { return typed }
         var query = keyQuery()
         query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var output: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &output) == errSecSuccess,
-              let data = output as? Data else { return nil }
+        let result = SecItemCopyMatching(query as CFDictionary, &output)
+        guard result == errSecSuccess, let data = output as? Data else {
+            keyStatus.stringValue = "钥匙串读取失败（\(result)）；请允许钥匙串访问或在安全框中填写密钥"
+            return nil
+        }
         return String(data: data, encoding: .utf8)
     }
 
@@ -180,6 +191,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         environment.removeValue(forKey: "OPENAI_API_KEY")
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["HEARTHSTONE_AI_NATIVE"] = Bundle.main.executableURL!.path
         task.environment = environment
         let input = Pipe(), output = Pipe()
         task.standardInput = input
@@ -278,8 +290,16 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-let app = NSApplication.shared
-let controller = Controller()
-app.delegate = controller
-app.setActivationPolicy(.regular)
-app.run()
+@main
+struct Program {
+    static func main() {
+        if CommandLine.arguments.count >= 2 && CommandLine.arguments[1] == "--input" {
+            runGameInput([CommandLine.arguments[0]] + Array(CommandLine.arguments.dropFirst(2)))
+        }
+        let app = NSApplication.shared
+        let controller = Controller()
+        app.delegate = controller
+        app.setActivationPolicy(.regular)
+        app.run()
+    }
+}

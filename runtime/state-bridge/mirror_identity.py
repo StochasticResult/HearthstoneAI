@@ -19,7 +19,16 @@ def mulligan_identity(parser, mirror):
     candidates = []
     for player in (1, 2):
         choice = parser.pending_choice(player)
-        if choice and choice["type"] == "MULLIGAN" and Counter(item["card_id"] for item in choice["items"]) == visible:
+        if not choice or choice["type"] != "MULLIGAN":
+            continue
+        cards = Counter(item["card_id"] for item in choice["items"])
+        # On the draw the live log includes the unreplaceable Coin as a
+        # fifth item, while Mirror exposes only four replaceable cards.
+        # Permit precisely this extra known card, never arbitrary extras.
+        if len(rows) == 4 and sum(cards.values()) == 5 and cards["GAME_005"] == 1:
+            cards.subtract({"GAME_005": 1})
+            cards = +cards
+        if cards == visible:
             candidates.append(player)
     if len(candidates) != 1:
         raise UnsafeState("opening hand cannot uniquely verify identity")

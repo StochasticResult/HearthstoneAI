@@ -22,10 +22,21 @@ MAX_EVENTS = 5000
 MAX_BLOCK_DEPTH = 64
 ZERO_COST_CARD_IDS = frozenset(json.loads((HERE / "zero-cost-card-ids.json").read_text(encoding="utf-8")))
 ZERO_ATTACK_CARD_IDS = frozenset(json.loads((HERE / "zero-attack-card-ids.json").read_text(encoding="utf-8")))
+TRIAL_PARTS = json.loads((HERE / "trial-parts.json").read_text())
+TRIAL_CARDS = frozenset(("CAP_405tb1", "CAP_405tb2", "CAP_405tb3"))
 
 
 class UnsafeState(Exception):
     pass
+
+
+def custom_effects(entity):
+    if entity.get("cardId") not in TRIAL_CARDS:
+        return {}
+    parts = [TRIAL_PARTS.get(str(entity["tags"].get("MODULAR_ENTITY_PART_%d" % i))) for i in (1, 2)]
+    if any(p is None for p in parts):
+        raise UnsafeState("custom trial effects are not observed or supported")
+    return {"effect_card_ids": parts}
 
 
 class IncrementalBoard:
@@ -272,9 +283,13 @@ class IncrementalBoard:
         for entity in game["entities"].values():
             ctype = board._ctype(entity)
             if entity.get("zone") == "SECRET":
-                if entity.get("controller") == own_player_id and entity.get("cardId") in ("BE_085", "BE_726"):
+                if entity.get("controller") == own_player_id and entity.get("cardId") in {"BE_085", "BE_726", "CAP_405tb2", "CAP_405tb3"}:
                     active_rituals.append({"id": entity["id"], "card_id": entity["cardId"],
-                                           "countdown_tag": board._num(entity["tags"].get("OBJECTIVE_COUNTDOWN"))})
+                        "countdown_tag": board._num(entity["tags"].get("OBJECTIVE_COUNTDOWN")),
+                        "quest_progress": board._num(entity["tags"].get("QUEST_PROGRESS")),
+                        "quest_progress_total": board._num(entity["tags"].get("QUEST_PROGRESS_TOTAL")),
+                        "script_data_1": board._num(entity["tags"].get("TAG_SCRIPT_DATA_NUM_1")),
+                        **custom_effects(entity)})
                 else:
                     raise UnsafeState("secret state is not modeled")
             if entity.get("zone") == "PLAY" and ctype in ("LOCATION", "WEAPON"):
@@ -324,7 +339,7 @@ class IncrementalBoard:
             health = board._num(card["tags"].get("HEALTH"))
             own_hand.append({"id": card["id"], "card_id": card["cardId"], "position": card["zone_pos"],
                              "cost": required_number(card, "COST"), "card_type": ctype,
-                             "attack": attack, "health": health})
+                             "attack": attack, "health": health, **custom_effects(card)})
         own_board = board._of_side(game, own_player_id, "PLAY", "MINION")
         enemy_board = board._of_side(game, rival["controller"], "PLAY", "MINION")
         own_entities = {e["id"] for e in hand + own_board}
@@ -333,6 +348,15 @@ class IncrementalBoard:
                 own_entities.add(e["id"])
         public_targets = {e["id"] for e in own_board + enemy_board} | {own_hero["id"], enemy_hero["id"]}
         game_entity = board._game_entity(game)
+        # END_TURN has no main entity. Real successful end-turn sends use
+        # error=INVALID for that absent entity (observed before MAIN_END),
+        # unlike a POWER/target error. Accept only this exact empty shape,
+        # with our current visual and server turn both actionable.
+        end_turn_allowed = bool(game_entity and board._tag_int(own, "CURRENT_PLAYER") == 1
+            and game_entity["tags"].get("STEP") == "MAIN_ACTION" and self.visual_step == "MAIN_ACTION"
+            and self.visual_turn is not None and self.visual_turn == game_entity["tags"].get("TURN")
+            and any(o["type"] == "END_TURN" and o["id"] is None and not o["targets"]
+                    and o["error"] in ("NONE", "INVALID") for o in self.options))
         legal = [{"id": opt["id"], "type": opt["type"], "requires_target": bool(opt["targets"]),
                   "targets": [eid for eid, error in opt["targets"] if error == "NONE" and eid in public_targets]}
                  for opt in self.options if opt["id"] in own_entities and opt["error"] == "NONE"]
@@ -353,7 +377,7 @@ class IncrementalBoard:
             "enemy_board": [minion_state(e) for e in enemy_board],
             "active_rituals": active_rituals,
             "options_id": self.options_id, "legal_options": legal,
-            "end_turn_allowed": any(o["type"] == "END_TURN" and o["error"] == "NONE" for o in self.options),
+            "end_turn_allowed": end_turn_allowed,
             "game_step": game_entity["tags"].get("STEP") if game_entity else None,
             "game_turn": game_entity["tags"].get("TURN") if game_entity else None,
             "visual_step": self.visual_step, "visual_turn": self.visual_turn,

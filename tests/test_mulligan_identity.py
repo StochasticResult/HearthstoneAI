@@ -23,6 +23,19 @@ class MulliganIdentityTests(unittest.TestCase):
         with self.assertRaises(UnsafeState):
             mulligan_identity(parser, {})
 
+    def test_second_player_coin_is_not_a_replaceable_card(self):
+        parser = Mock()
+        parser.game = {"meta": {"GameType": "GT_VS_AI"}}
+        cards = ["BE_090", "CAP_405", "TIME_029", "TLC_451", "GAME_005"]
+        choices = {1: {"type": "MULLIGAN", "items": [{"card_id": c} for c in cards]}}
+        parser.pending_choice.side_effect = choices.get
+        mirror = {"game_type": 1, "scene": {"mode": 4}, "mulligan_waiting": True,
+                  "mulligan": {"waitingForUserInput": True, "mulliganCards": [{"cardId": c} for c in cards[:4]]}}
+        self.assertEqual(mulligan_identity(parser, mirror), 1)
+        choices[1]["items"][-1]["card_id"] = "UNEXPECTED"
+        with self.assertRaisesRegex(UnsafeState, "uniquely"):
+            mulligan_identity(parser, mirror)
+
 
 if __name__ == "__main__":
     unittest.main()

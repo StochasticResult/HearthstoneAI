@@ -10,10 +10,11 @@ import re
 import ssl
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 CATALOG = {} if sys.argv[1:] == ["--worker"] else json.loads(Path(__file__).with_name("card-catalog.json").read_text())
-DEFAULT_MODEL = "gpt-5.6-terra"
+DEFAULT_MODEL = "gpt-6.1-terra"
 MAX_REQUESTS = 40
 MAX_OUTPUT = 1536
 MAX_INPUT_BYTES = 24000
@@ -67,7 +68,7 @@ def public_view(state):
     entity_keys = ("id", "card_id", "position", "card_type", "cost", "attack", "health", "armor",
                    "taunt", "frozen", "exhausted", "divine_shield", "windfury", "stealth",
                    "lifesteal", "poisonous", "reborn", "immune", "dormant", "silenced",
-                   "attacks_this_turn", "countdown_tag")
+                   "attacks_this_turn", "countdown_tag", "quest_progress", "quest_progress_total", "script_data_1")
     result = {k: state[k] for k in ("game_type", "format", "game_turn", "mana") if k in state}
     ids = set()
     for key in ("my_hero", "enemy_hero", "my_hero_power", "my_hand", "my_board", "enemy_board", "active_rituals"):
@@ -78,6 +79,12 @@ def public_view(state):
             item = {k: row[k] for k in entity_keys if k in row}
             if item.get("card_id"):
                 ids.add(item["card_id"])
+            parts = row.get("effect_card_ids")
+            if isinstance(parts, list) and len(parts) == 2 and all(isinstance(p, str) and p in CATALOG for p in parts):
+                item["effect_card_ids"] = list(parts)
+                ids.update(parts)
+                template = CATALOG.get(item.get("card_id"), {}).get("text", "")
+                item["custom_text"] = template.replace("{0}", CATALOG[parts[0]].get("text", "")).replace("{1}", CATALOG[parts[1]].get("text", ""))
             return item
         result[key] = [clean(row) for row in value] if isinstance(value, list) else clean(value)
     result["card_definitions"] = {cid: {k: CATALOG[cid][k] for k in ("name", "text", "cost", "attack", "health", "type", "mechanics") if k in CATALOG[cid]}
@@ -170,16 +177,28 @@ class OpenAIAdvisor:
         return data
 
     def select(self, view, menu):
+        # With no playable card, attack or power, the observed menu may
+        # contain only end turn. There is no model decision to purchase.
+        if len(menu) == 1 and next(iter(menu.values())) == {"kind": "end_turn"}:
+            print(json.dumps({"automatic_action": "end_turn", "reason": "Only end turn is available"}), flush=True)
+            return {"kind": "end_turn"}
         payload, size = request_payload(self.model, view, menu)
         # Reserve a deliberately conservative byte-based upper bound before
         # sending; successful responses replace it with reported token usage.
         if self.calls >= MAX_REQUESTS or self.tokens + size + MAX_OUTPUT > MAX_SESSION_TOKENS:
             raise AdvisorError("Session API request/token limit reached")
         self.calls += 1
+        started = time.monotonic()
         response = self.transport(payload)
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        actual_model = response.get("model")
+        if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
+            raise AdvisorError("API response model does not match the requested model")
         action, reason, tokens = parse_response(response, menu)
         self.tokens += tokens
-        print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "decision": action,
+        print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,
+                          "api_elapsed_ms": elapsed_ms, "request_bytes": size,
+                          "response_model": actual_model, "decision": action,
                           "reason": reason}, ensure_ascii=False), flush=True)
         return action
 

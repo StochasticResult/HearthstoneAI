@@ -122,6 +122,23 @@ class IncrementalTests(unittest.TestCase):
         self.assertEqual(s["game_step"], "MAIN_ACTION")
         self.assertEqual(s["visual_step"], "MAIN_READY")
 
+    def test_observed_empty_end_turn_sentinel_requires_actionable_own_turn(self):
+        prefix = (fixture() + power("TAG_CHANGE Entity=GameEntity tag=STEP value=MAIN_ACTION").encode()
+                  + power("TAG_CHANGE Entity=GameEntity tag=TURN value=2").encode()
+                  + b"D 10:00:01.0000000 PowerTaskList.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=STEP value=MAIN_ACTION\n"
+                  + b"D 10:00:01.0000000 PowerTaskList.DebugPrintPower() - TAG_CHANGE Entity=GameEntity tag=TURN value=2\n"
+                  + b"D 10:00:01.0000000 GameState.DebugPrintOptions() - id=5\n")
+        for kind, entity, error, expected in (("END_TURN", "", "INVALID", True), ("END_TURN", "", "NONE", True),
+                ("POWER", "", "INVALID", False), ("END_TURN", "[id=20]", "INVALID", False),
+                ("END_TURN", "", "REQ_YOUR_TURN", False)):
+            p = inc.IncrementalBoard()
+            p.feed(prefix + ("D 10:00:01.0000000 GameState.DebugPrintOptions() - option 0 type=%s mainEntity=%s error=%s errorParam=\n"
+                             % (kind, entity, error)).encode())
+            self.assertIs(p.snapshot(1)["end_turn_allowed"], expected)
+            self.assertFalse(p.snapshot(2)["end_turn_allowed"])
+            p.visual_step = "MAIN_READY"
+            self.assertFalse(p.snapshot(1)["end_turn_allowed"])
+
     def test_reconnect_options_before_create_and_visual_initial_snapshot(self):
         prefix = ("D 10:00:00.0000000 GameState.DebugPrintOptions() - id=7\n"
                   "D 10:00:00.0000000 GameState.DebugPrintOptions() - option 0 type=POWER mainEntity=[id=20] error=NONE errorParam=\n").encode()
@@ -191,6 +208,26 @@ class IncrementalTests(unittest.TestCase):
         other.feed(fixture() + secret.encode())
         with self.assertRaisesRegex(inc.UnsafeState, "secret"):
             other.snapshot(1)
+
+    def test_custom_trial_uses_observed_parts_in_hand_and_active_zone(self):
+        p = inc.IncrementalBoard()
+        p.feed(fixture().replace(b"CardID=BE_086", b"CardID=CAP_405tb3"))
+        with self.assertRaisesRegex(inc.UnsafeState, "custom trial effects"):
+            p.snapshot(1)
+        p.feed((power("TAG_CHANGE Entity=20 tag=MODULAR_ENTITY_PART_1 value=132838") +
+                power("TAG_CHANGE Entity=20 tag=MODULAR_ENTITY_PART_2 value=132848")).encode())
+        expected = ["CAP_405t4", "CAP_405t9"]
+        self.assertEqual(p.snapshot(1)["my_hand"][0]["effect_card_ids"], expected)
+        p.feed((power("TAG_CHANGE Entity=20 tag=ZONE value=SECRET") +
+                power("TAG_CHANGE Entity=20 tag=QUEST_PROGRESS_TOTAL value=4") +
+                power("TAG_CHANGE Entity=20 tag=QUEST_PROGRESS value=1")).encode())
+        active = p.snapshot(1)["active_rituals"][0]
+        self.assertEqual(active["effect_card_ids"], expected)
+        self.assertEqual((active["quest_progress"], active["quest_progress_total"]), (1, 4))
+        self.assertIsNone(active["countdown_tag"])
+        p.feed(power("TAG_CHANGE Entity=20 tag=MODULAR_ENTITY_PART_1 value=999999").encode())
+        with self.assertRaisesRegex(inc.UnsafeState, "custom trial effects"):
+            p.snapshot(1)
 
 
 if __name__ == "__main__":

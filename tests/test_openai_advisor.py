@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from openai_advisor import (AdvisorError, OpenAIAdvisor, action_menu, public_view,
-                            request_payload, parse_response, MAX_REQUESTS)
+                            request_payload, parse_response, MAX_REQUESTS, DEFAULT_MODEL)
 from practice_driver import Driver, Stop
 from test_practice_driver import sample
 
@@ -16,11 +16,17 @@ def state():
 
 
 def response(action_id="a0", status="completed"):
-    return {"status": status, "usage": {"total_tokens": 100}, "output": [{"type": "function_call", "name": "choose_action",
+    return {"status": status, "model": "gpt-6.1-terra", "usage": {"total_tokens": 100}, "output": [{"type": "function_call", "name": "choose_action",
             "arguments": json.dumps({"action_id": action_id, "reason": "test"})}]}
 
 
 class APITests(unittest.TestCase):
+    def test_requested_terra_default_preserves_function_contract(self):
+        self.assertEqual(DEFAULT_MODEL, "gpt-6.1-terra")
+        payload, _ = request_payload(DEFAULT_MODEL, public_view(state()), action_menu(state()))
+        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["reasoning"], {"effort": "low"})
+        self.assertNotIn("temperature", payload)
     def test_only_current_practice_actions_and_targets(self):
         menu = action_menu(state())
         self.assertIn({"kind": "attack", "source_id": 33, "target_id": 47}, menu.values())
@@ -41,6 +47,13 @@ class APITests(unittest.TestCase):
         encoded = json.dumps(public_view(s))
         self.assertNotIn("private-", encoded)
         self.assertIn("card_definitions", encoded)
+
+    def test_custom_trial_text_is_resolved_per_observed_entity(self):
+        s = state()
+        s["my_hand"][0].update(card_id="CAP_405tb3", effect_card_ids=["CAP_405t4", "CAP_405t9"])
+        view = public_view(s)
+        self.assertEqual(view["my_hand"][0]["custom_text"], "In 4 turns, Draw 3 cards. Summon a Voidlord.")
+        self.assertIn("CAP_405t4", view["card_definitions"])
 
     def test_forced_single_function_and_no_remote_storage(self):
         payload, _ = request_payload("gpt-5.6-terra", public_view(state()), action_menu(state()))
@@ -79,6 +92,20 @@ class APITests(unittest.TestCase):
         with self.assertRaises(AdvisorError):
             advisor.ask(state())
         self.assertEqual(len(calls), 1)
+
+    def test_only_end_turn_needs_no_paid_decision(self):
+        calls = []
+        advisor = OpenAIAdvisor({"api_key": "fake-key-not-a-secret-123"}, lambda p: calls.append(p))
+        s = state(); s["legal_options"] = []
+        with patch("builtins.print"):
+            self.assertEqual(advisor.ask(s), {"kind": "end_turn"})
+        self.assertEqual((calls, advisor.calls, advisor.tokens), ([], 0, 0))
+
+    def test_model_mismatch_does_not_execute_a_fallback(self):
+        wrong = response(); wrong["model"] = "gpt-5.6-terra"
+        advisor = OpenAIAdvisor({"api_key": "fake-key-not-a-secret-123"}, lambda p: wrong)
+        with self.assertRaisesRegex(AdvisorError, "model does not match"):
+            advisor.ask(state())
 
     def test_stale_state_stops_before_any_input(self):
         driver = Driver.__new__(Driver)

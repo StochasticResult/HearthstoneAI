@@ -1,6 +1,8 @@
+import json
 import unittest
+from unittest.mock import patch
 
-from practice_driver import Stop, choice_index, hover_matches, plan_inputs, visual_ready
+from practice_driver import Stop, choice_index, hover_matches, plan_inputs, visual_ready, mirror
 from practice_state import prepare
 from incremental_board import UnsafeState
 
@@ -15,6 +17,16 @@ def sample():
 
 
 class DriverTests(unittest.TestCase):
+    def test_reconnect_log_readiness_does_not_bypass_scene_loading(self):
+        for loaded, transitioning in ((False, True), (True, True), (None, False)):
+            observation = {"game_type": 1, "scene": {"mode": 4, "sceneLoaded": loaded, "transitioning": transitioning}}
+            with patch("practice_driver.run_checked", return_value=json.dumps(observation)):
+                with self.assertRaisesRegex(Stop, "still loading"):
+                    mirror()
+        observation["scene"].update(sceneLoaded=True, transitioning=False)
+        with patch("practice_driver.run_checked", return_value=json.dumps(observation)):
+            self.assertEqual(mirror(), observation)
+
     def test_prepares_only_known_practice_and_public_board(self):
         ready = prepare(sample(), identity_verified=True)
         self.assertEqual(ready["enemy_board"][0]["model_card_id"], "VANILLA")

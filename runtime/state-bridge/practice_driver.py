@@ -14,6 +14,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from input_command import input_command
+
 from capture_practice import Capture, CaptureError, LOG_ROOT
 from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board
 from mirror_identity import practice_identity, mulligan_identity
@@ -43,8 +46,11 @@ def run_checked(args, timeout=4):
 
 def mirror():
     status = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--board"]))
-    if status.get("game_type") != 1 or (status.get("scene") or {}).get("mode") != 4:
+    scene = status.get("scene") or {}
+    if status.get("game_type") != 1 or scene.get("mode") != 4:
         raise Stop("mirror does not confirm a practice game")
+    if scene.get("sceneLoaded") is not True or scene.get("transitioning"):
+        raise Stop("practice scene is still loading")
     return status
 
 
@@ -59,22 +65,22 @@ def watchdog_alive(pid):
 
 
 def checked_geometry():
-    g = json.loads(run_checked([str(ROOT / "quartz-input"), "geometry"]))
+    g = json.loads(run_checked(input_command("geometry")))
     expected = {"x": 0, "y": 33, "width": 1470, "height": 846}
     if any(abs(float(g[k]) - v) > 2 for k, v in expected.items()):
         raise Stop("uncalibrated game window geometry")
 
 
 def click(point):
-    run_checked([str(ROOT / "quartz-input"), "click", str(point[0]), str(point[1])])
+    run_checked(input_command("click", *point))
 
 
 def drag(start, end):
-    run_checked([str(ROOT / "quartz-input"), "drag", str(start[0]), str(start[1]), str(end[0]), str(end[1])])
+    run_checked(input_command("drag", *start, *end))
 
 
 def move(point):
-    run_checked([str(ROOT / "quartz-input"), "move", str(point[0]), str(point[1])])
+    run_checked(input_command("move", *point))
 
 
 def hover():
@@ -367,7 +373,7 @@ class Driver:
                 choice = self.parser.pending_choice(own)
             except (NotReady, UnsafeState) as error:
                 if time.monotonic() >= ready_deadline:
-                    raise Stop("game state did not become ready") from error
+                    raise Stop("game state did not become ready: " + str(error)) from error
                 time.sleep(.5)
                 continue
             ready_deadline = time.monotonic() + 35
@@ -456,6 +462,8 @@ class Driver:
                 else:
                     # End only this practice turn to obtain a fresh list; never
                     # guess missing entity IDs.
+                    if not state.get("end_turn_allowed"):
+                        raise Stop("reconnect options do not confirm end turn")
                     time.sleep(5)
                     checked_geometry()
                     print("reconnect options incomplete; ending one practice turn to refresh", flush=True)
@@ -464,7 +472,7 @@ class Driver:
                         current = self.snapshot(own)
                         if not current["own_turn"]:
                             break
-                        if not visual_ready(current):
+                        if not visual_ready(current) or not current.get("end_turn_allowed"):
                             raise Stop("reconnect turn is no longer actionable")
                         click((1180, 435))
                         try:
@@ -487,7 +495,7 @@ class Driver:
             print(json.dumps({"attempt": advice["kind"], "card": source_card, "source_id": source_id,
                               "from": first, "to": second, "hand_size": len(state["my_hand"])}), flush=True)
             if diagnose_hover and advice["kind"] == "play":
-                run_checked([str(ROOT / "quartz-input"), "move", str(first[0]), str(first[1])])
+                run_checked(input_command("move", *first))
                 time.sleep(.7)
                 observed = json.loads(run_checked([str(ROOT / "mirror-status"), FRAMEWORK, "--hover"]))
                 card = next(c for c in state["my_hand"] if c["id"] == source_id)

@@ -955,7 +955,7 @@ def main():
     if args.new_session:
         previous = {p.name for p in LOG_ROOT.glob("Hearthstone_*")}
         end = time.monotonic() + 180
-        print("waiting for a new practice game", flush=True)
+        print(f"waiting for a new {args.mode} game", flush=True)
         while time.monotonic() < end:
             if not watchdog_alive(args.watchdog_pid):
                 raise Stop("game watchdog is not running")
@@ -971,7 +971,7 @@ def main():
             raise Stop("new game log did not appear")
     else:
         end = time.monotonic() + 120
-        print("waiting for the current practice log", flush=True)
+        print(f"waiting for the current {args.mode} log", flush=True)
         while not path.is_file() and time.monotonic() < end:
             if not watchdog_alive(args.watchdog_pid):
                 raise Stop("game watchdog is not running")

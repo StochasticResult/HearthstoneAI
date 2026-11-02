@@ -5,12 +5,40 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
+from navigation import login_intro_backdrop
 from session import (validate_config, SessionError, lock_session, session_directory,
                      EventLog, emit, guard_event, drain_guards, launch_hearthstone, BATTLENET_EXEC, scene_ready, navigation_click,
                      focus_hearthstone, GAME_EXEC)
 
 
 class SessionTests(unittest.TestCase):
+    def test_authenticated_login_intro_only_clicks_empty_backdrop_before_game(self):
+        status = {'scene': {'mode': 2, 'sceneLoaded': True, 'transitioning': False},
+                  'game_type': 0, 'format': 0, 'popup': True, 'shop_open': False,
+                  'game_menu': False, 'mulligan_waiting': False}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / 'Hearthstone_today'
+            directory.mkdir()
+            log = directory / 'Login.log'
+            logs = ('I 00:31:18 We are now logged in, stopping processing challenges\n'
+                    'I 00:31:27 Initial download done, Waiting Intro popup...\n')
+            log.write_text(logs)
+            self.assertEqual(login_intro_backdrop(status, 0, root), (180,155))
+            self.assertIsNone(login_intro_backdrop(status, log.stat().st_mtime + 30, root))
+            for key, value in (('shop_open', True), ('game_menu', True), ('popup', False),
+                               ('game_type', 7), ('format', 2), ('mulligan_waiting', True),
+                               ('scene', {'mode': 4, 'sceneLoaded': True, 'transitioning': False})):
+                self.assertIsNone(login_intro_backdrop({**status, key: value}, 0, root))
+            (directory / 'Power.log').touch()
+            self.assertIsNone(login_intro_backdrop(status, 0, root))
+            (directory / 'Power.log').unlink()
+            log.write_text(logs.splitlines()[-1])
+            self.assertIsNone(login_intro_backdrop(status, 0, root))
+            log.write_text(logs)
+            (root / 'Hearthstone_ambiguous').mkdir()
+            self.assertIsNone(login_intro_backdrop(status, 0, root))
+
     def test_foreground_request_is_only_for_the_fixed_game_bundle(self):
         with patch('session.subprocess.run') as run:
             focus_hearthstone()

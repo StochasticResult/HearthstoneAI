@@ -15,7 +15,7 @@ from pathlib import Path
 from input_command import input_command
 from deck_observation import save_selected_deck
 from game_watchdog import GAME_EXEC, processes
-from navigation import FRAMEWORK, Stop as SupervisorError, next_navigation, next_ranked_navigation, read_json_line, stop_child
+from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_backdrop, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
 from game_boundary import LogBoundary, result_dismissal
 
@@ -410,7 +410,9 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
         if watchdog.poll() is not None or driver.poll() is not None:
             raise SessionError("启动前资源保护已经停止")
         reuse=bool(client and client.launched)
+        launch_time = None
         if not reuse:
+            launch_time = time.time()
             launch_hearthstone()
             if client:client.launched=True
             emit("已向战网请求启动炉石，正在等待实际游戏进程和主界面")
@@ -454,6 +456,13 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                     # Mirror may attach before Unity has created a window.
                     # Do not attempt foreground/input until a known scene loads.
                     if not scene_ready(status):
+                        if launch_time is not None and login_intro_backdrop(status, launch_time):
+                            focus_hearthstone()
+                            point = login_intro_backdrop(read_status() or {}, launch_time)
+                            if point:
+                                navigation_click(point)
+                                emit('已点按登录展示的空白背景，等待主菜单')
+                            launch_time = None
                         time.sleep(.5)
                         continue
                     if not focused:

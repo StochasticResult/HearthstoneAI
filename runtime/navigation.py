@@ -4,12 +4,42 @@ import os
 import select
 import subprocess
 import time
+from pathlib import Path
 
 FRAMEWORK = "/Applications/HSTracker.app/Contents/Frameworks/HearthMirror.framework/Versions/A/HearthMirror"
 DECK_ID = 3384315883
 
 class Stop(Exception):
     pass
+
+
+def login_intro_backdrop(status, launch_time, log_root=Path('/Applications/Hearthstone/Logs')):
+    """Return an empty backdrop point only for the authenticated startup overlay."""
+    scene = status.get('scene') or {}
+    if (scene.get('mode') != 2 or scene.get('sceneLoaded') is not True
+            or scene.get('transitioning') is not False or status.get('popup') is not True
+            or status.get('game_type') != 0 or status.get('format') != 0
+            or any(status.get(key) is not False for key in ('shop_open','game_menu','mulligan_waiting'))):
+        return None
+    # Check only this launch's Login.log. Older quest and reconnect messages
+    # cannot authorize input. No match or account data is needed here.
+    try:
+        sessions = [p for p in log_root.glob('Hearthstone_*') if not p.is_symlink()
+                    and p.is_dir() and p.stat().st_ctime >= launch_time]
+        if len(sessions) != 1 or (sessions[0] / 'Power.log').exists():
+            return None
+        path = sessions[0] / 'Login.log'
+        if path.is_symlink() or not path.is_file() or path.stat().st_mtime < launch_time:
+            return None
+        with path.open('rb') as stream:
+            lines = stream.read(4097)
+        login = lines.find(b'We are now logged in, stopping processing challenges')
+        if len(lines) > 4096 or login < 0 or b'Initial download done, Waiting Intro popup...' not in lines[login:]:
+            return None
+    except OSError:
+        return None
+    # Outside the task cards and any central modal buttons in the calibrated window.
+    return (180,155)
 
 
 def next_navigation(stage, status):

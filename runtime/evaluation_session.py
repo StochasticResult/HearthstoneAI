@@ -18,6 +18,7 @@ SUITES = {
     'rule-transfer-v1': ('rule-transfer','rule_transfer.py',16,300),
     'tracking-v1': ('tracking-evaluation','tracking_eval.py',4,300),
     'sol-profiles-v1': ('sol-profile-evaluation','sol_profile_eval.py',24,480),
+    'sol-fast-efforts-v1': ('sol-fast-efforts','sol_profile_eval.py',16,320),
 }
 
 
@@ -52,7 +53,7 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child, suite="stra
         dest = data / directory
         dest.mkdir(mode=0o700, parents=True, exist_ok=True)
         emit("固定局面评测 · 最多 %d 次 API 请求" % requests)
-        if parent_pid and suite == 'sol-profiles-v1':
+        if parent_pid and script == 'sol_profile_eval.py':
             from app_awake import AppWake
             if os.getppid() != parent_pid:
                 raise RuntimeError('应用已退出，停止档位评测')
@@ -63,7 +64,8 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child, suite="stra
         guard = subprocess.Popen([sys.executable, str(root / "resource_guard.py"),
             "--log", str(dest / "evaluation.log"), "--timeout", str(seconds), "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", sys.executable,
-            str(root / "state-bridge" / script), str(dest / "results.jsonl")],
+            str(root / "state-bridge" / script), str(dest / "results.jsonl")]
+            + (['--fast-efforts'] if suite=='sol-fast-efforts-v1' else []),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         guard.stdin.write((json.dumps(config) + "\n").encode()); guard.stdin.close()
         config["api_key"] = ""

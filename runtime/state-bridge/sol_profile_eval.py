@@ -41,6 +41,12 @@ def trial(case, view, menu, tier, effort, transport):
     return row
 
 
+def tier_matches(row):
+    requested = row['requested_tier']
+    served = row.get('served_tier')
+    return served in ('fast','priority') if requested=='priority' else served==requested
+
+
 def summarize(rows, effort_tier):
     profiles = []
     for tier, effort in dict.fromkeys((r['requested_tier'],r['effort']) for r in rows):
@@ -50,13 +56,13 @@ def summarize(rows, effort_tier):
                          'completed':len(complete), 'correct':sum(r['passed'] for r in complete),
                          'timeout':sum('timed out' in r.get('error','') for r in attempted),
                          'output_limited':sum(r.get('error')=='output token limit' for r in attempted),
-                         'tier_verified':sum(r.get('served_tier')==tier for r in complete),
+                         'tier_verified':sum(tier_matches(r) for r in complete),
                          'median_ms':statistics.median(r['elapsed_ms'] for r in complete) if complete else None,
                          'reasoning_tokens':sum((r.get('tokens') or {}).get('reasoning') or 0 for r in attempted)})
     pairs = []
     for name in CASES:
         results = {r['requested_tier']:r for r in rows if r['case']==name and r['effort']=='low'
-                   and r.get('served_tier')==r['requested_tier'] and 'action' in r}
+                   and tier_matches(r) and 'action' in r}
         if set(results)=={'default','priority'}:
             pairs.append([results[t]['elapsed_ms'] for t in ('default','priority')])
     return {'model':MODEL, 'attempts':len(rows), 'effort_comparison_tier':effort_tier,
@@ -65,7 +71,7 @@ def summarize(rows, effort_tier):
             'median_paired_ms_saved':statistics.median(standard-fast for standard,fast in pairs) if pairs else None}
 
 
-def evaluate(config, output, transport=None):
+def evaluate(config, output, transport=None, *, fast_efforts_only=False):
     cases = {c['name']:c for c in hard_cases()}
     prepared = [(cases[name], *prepare(cases[name])) for name in CASES]
     advisor = OpenAIAdvisor({**config, 'model':MODEL})
@@ -89,15 +95,14 @@ def evaluate(config, output, transport=None):
                 print(json.dumps({'profile_trial':len(rows),'tier':tier,'effort':effort,
                                   'elapsed_ms':row['elapsed_ms'],'error':error or None}),flush=True)
 
-            for index, case_args in enumerate(prepared):
-                order = ('default','priority') if index%2==0 else ('priority','default')
-                for tier in order:
-                    if not auth_blocked and not (tier=='priority' and blocked_fast):
-                        run(case_args,tier,'low')
+            if not fast_efforts_only:
+                for index, case_args in enumerate(prepared):
+                    order = ('default','priority') if index%2==0 else ('priority','default')
+                    for tier in order:
+                        if not auth_blocked and not (tier=='priority' and blocked_fast):
+                            run(case_args,tier,'low')
             if not auth_blocked:
-                verified_fast = [r for r in rows if r.get('served_tier')=='priority'
-                                 and r['requested_tier']=='priority' and 'action' in r]
-                effort_tier = 'priority' if len(verified_fast)==len(CASES) else 'default'
+                effort_tier = 'priority' if fast_efforts_only else 'default'
                 efforts = EFFORTS[1:]
                 for index, case_args in enumerate(prepared):
                     for effort in efforts[index:]+efforts[:index]:
@@ -114,5 +119,6 @@ def evaluate(config, output, transport=None):
 
 
 if __name__=='__main__':
-    if len(sys.argv)!=2:raise SystemExit('Expected a local result path')
-    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1])
+    if len(sys.argv) not in (2,3) or (len(sys.argv)==3 and sys.argv[2]!='--fast-efforts'):
+        raise SystemExit('Expected a local result path and optional --fast-efforts')
+    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1],fast_efforts_only=len(sys.argv)==3)

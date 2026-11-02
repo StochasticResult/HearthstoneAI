@@ -108,7 +108,8 @@ def summarize(dest):
             action_text += '\n' + tail_path.read_text(errors='replace')
         summary['reconnect_recovery_used'] = any(word in action_text for word in
              ('reconnect options incomplete', 'restored explicitly observed', 'restored previous legal options'))
-        summary['mulligan_confirmed'] = 'mulligan: kept starting hand' in action_text
+        summary['mulligan_confirmed'] = ('mulligan: confirmed;' in action_text
+                                         or 'mulligan: kept starting hand' in action_text)
         summary['started_without_mulligan'] = bool(proposed) and not summary['mulligan_confirmed']
         errors = [line.partition('practice driver stopped: ')[2] for line in action_text.splitlines()
                   if line.startswith('practice driver stopped: ')]

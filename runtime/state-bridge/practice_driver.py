@@ -22,6 +22,7 @@ from game_mode import expected_type
 from capture_practice import Capture, CaptureError, LOG_ROOT
 from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board
 from mirror_identity import practice_identity, mulligan_identity
+import mulligan
 from practice_state import META, prepare
 from reconnect_options import restore_observed_options, restore_zero_hand_costs
 from openai_advisor import AdvisorError, AdvisorTimeout, OpenAIAdvisor, action_menu, signature
@@ -814,6 +815,50 @@ class Driver:
             "input_confirmation_ms": round((time.monotonic()-input_started)*1000)}}), flush=True)
         self.advisor.confirm(advice, state)
 
+    def execute_mulligan(self, own, choice, attempt):
+        game = self.parser.game
+        try:
+            cards = mulligan.opening_cards(self.parser, own, choice)
+        except UnsafeState as error:
+            attempt['reason'] = str(error)
+            return
+        attempt['planned_ids'] = mulligan.replacement_ids(cards, self.advisor.starting_deck)
+
+        def observe():
+            self.poll()
+            if self.parser.game is not game or self.identity_game is not game:
+                raise Stop('game changed during mulligan')
+            entry = self.parser.choices.get(choice['id'], {})
+            if entry.get('sent') or self.game_result():
+                return None
+            try:
+                status = mirror()
+                rows = (status.get('mulligan') or {}).get('mulliganCards') or []
+                attempt['last_actors'] = [[r.get('cardId'), r.get('zonePosition'), r.get('state')]
+                                          for r in rows[:4] if isinstance(r, dict)]
+                return mulligan.actor_states(self.parser, own, choice['id'], cards, status, RUN_MODE)
+            except (UnsafeState, NotReady) as error:
+                attempt['reason'] = str(error)
+                return None
+
+        checked_geometry()
+        attempt.update(mulligan.mark_and_submit(cards, attempt['planned_ids'], observe, move, click,
+                                                check_window=checked_geometry))
+
+    def record_mulligan_receipt(self, attempt):
+        entry = self.parser.choices.get(attempt['choice_id'], {})
+        if not entry.get('confirmed') or entry.get('type') != 'MULLIGAN':
+            return False
+        offered = {card['id'] for card in attempt['offered']}
+        kept = set(entry['chosen_ids'])
+        if not kept <= offered or len(kept) != len(entry['chosen_ids']):
+            return False
+        replaced = sorted(offered - kept)
+        self.advisor.record({'event': 'mulligan_confirmed', 'game_type': self.parser.game['meta']['GameType'],
+                             **attempt, 'kept_ids': sorted(kept), 'replaced_ids': replaced})
+        print(f'mulligan: confirmed; replaced {len(replaced)}/{len(offered)}', flush=True)
+        return True
+
     def run(self, max_seconds, max_actions, diagnose_hover=False, previous=None):
         deadline = time.monotonic() + max_seconds if max_seconds else float('inf')
         actions = 0
@@ -831,8 +876,13 @@ class Driver:
         visual_wait_since = None
         passive_check_at = 0
         passive_unready_since = None
+        opening = None
+        opening_game = None
         while time.monotonic() < deadline and (not max_actions or actions < max_actions):
             self.poll()
+            if opening and self.parser.game is opening_game and self.record_mulligan_receipt(opening):
+                opening = None
+                actions += 1
             outcome = self.game_result()
             if outcome:
                 self.advisor.record({'event': 'game_complete', 'outcome': outcome})
@@ -876,15 +926,22 @@ class Driver:
                 continue
             ready_deadline = time.monotonic() + 35
             if status.get("mulligan_waiting"):
-                if not choice or choice["type"] != "MULLIGAN":
-                    raise Stop("mulligan identity not confirmed")
-                checked_geometry()
-                click((735, 708))
-                self.wait_until(lambda: self.parser.pending_choice(own) is None, 10)
-                self.advisor.record({'event': 'mulligan_confirmed', 'game_type': self.parser.game['meta'].get('GameType')})
-                print("mulligan: kept starting hand", flush=True)
-                actions += 1
-                time.sleep(5)
+                if choice and choice['type'] == 'MULLIGAN' and opening_game is None:
+                    try:
+                        if mulligan_identity(self.parser, status, RUN_MODE) != own:
+                            raise UnsafeState('opening hand owner changed')
+                    except UnsafeState:
+                        time.sleep(.3)
+                        continue
+                    opening_game = self.parser.game
+                    opening = {'choice_id': choice['id'], 'offered': [
+                        {'id': c['id'], 'card_id': c['card_id']} for c in choice['items'] if c['card_id'] != 'GAME_005'],
+                        'planned_ids': [], 'marked_ids': [], 'submitted': False}
+                    self.execute_mulligan(own, choice, opening)
+                    self.advisor.record({'event': 'mulligan_attempt', **opening})
+                # The renderer can still show the opening hand after local submission.
+                # Only EntitiesChosen confirms it. Never click an expired choice again.
+                time.sleep(.3)
                 continue
             if choice and choice["type"] in ("TARGET","GENERAL"):
                 targeted = choice["type"] == "TARGET"

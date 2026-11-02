@@ -32,7 +32,7 @@ cd ~/Projects/HearthstoneAI
 
 同一 `gpt-6.1-terra`、同一 low 推理档位、同一题目比较原提示/发现简略观察与新策略/完整观察，保留 18 秒请求超时、评测题数和单次请求上限，进程组限 200 MiB、总时长 300 秒。`~/Library/Application Support/HearthstoneAI/evaluation/results.jsonl` 与 `evaluation.log` 保存本轮结果；下一轮替换它们。结果中的规则题与策略偏好题要分别审查；固定题单次正确率不能表示实战胜率。不要把假响应测试的得分作为实际模型结果。
 
-`strategy-pack.json` 的 11 类打法是可修改的策略假设，来源说明与日期随包保存。修改后检查卡牌 ID、过期行为、公开证据筛选和上下文预算，再做真实模型对比。新观察、卡牌平衡补丁和实际误判都应转为新的留出案例，而不是只调到现有八题通过。当前策略换牌尚未接入输入，仍需核对 Mirror 选中状态与游戏位置；不能把保留全手牌记为起手策略验收。
+`strategy-pack.json` 的 11 类打法是可修改的策略假设，来源说明与日期随包保存。修改后检查卡牌 ID、过期行为、公开证据筛选和上下文预算，再做真实模型对比。新观察、卡牌平衡补丁和实际误判都应转为新的留出案例。换牌规则在 `runtime/state-bridge/mulligan.py`，只针对已核对的完整动物园术。实战复盘按同一选择的 `mulligan_confirmed.replaced_ids` 统计实际更换，单看 `planned_ids` 或鼠标操作无法确认换牌。
 
 ## 代码入口
 

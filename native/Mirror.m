@@ -12,6 +12,7 @@
 - (id)getDecks;
 - (id)getDeckPickerState;
 - (id)getMulliganState;
+- (id)getMulliganTooltipState;
 - (id)getBoardState:(BOOL)includeOpposing;
 - (id)getBigCardState;
 - (BOOL)isPopupShowing;
@@ -107,6 +108,16 @@ int main(int argc, const char **argv) {
         out[@"mulligan_waiting"] = @([h isMulliganWaitingForUserInput]);
         if (argc == 3 && strcmp(argv[2], "--board") == 0) { // Normal menu polling avoids board reads.
             out[@"mulligan"] = jsonValue([h getMulliganState], 0);
+            if ([out[@"mulligan_waiting"] boolValue] && [h respondsToSelector:@selector(getMulliganTooltipState)]) {
+                @try {
+                    id tooltip = [h getMulliganTooltipState];
+                    if ([NSStringFromClass([tooltip class]) isEqualToString:@"MirrorMulliganTooltipState"]) {
+                        id size = [tooltip valueForKey:@"zoneSize"], position = [tooltip valueForKey:@"zonePosition"];
+                        if ([size isKindOfClass:[NSNumber class]] && [position isKindOfClass:[NSNumber class]])
+                            out[@"mulligan_hover"] = @{@"size": size, @"position": position};
+                    }
+                } @catch (NSException *ignored) { /* Hover is optional. Keep the opening card observation. */ }
+            }
             out[@"board"] = jsonValue([h getBoardState:YES], 0);
         }
         if (argc == 3 && strcmp(argv[2], "--hover") == 0) {

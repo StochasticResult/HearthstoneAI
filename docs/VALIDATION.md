@@ -189,3 +189,9 @@
 本地游戏 `MulliganManager.SetAllMulliganCardsToHold` 和 `Card.DoChoiceHighlight` 用选中标记表示保留。驱动按牌位区分同名卡，排除幸运币，核对悬停和移开后的标记变化。最后使用同一选择的 `DebugPrintEntitiesChosen` 的补集记录实际换牌。离线输入测试覆盖悬停到邻张牌、点击无反馈、错误牌变化、外部预选和界面提前关闭。[HearthSim 起手选中状态实现](https://github.com/HearthSim/Hearthstone-Deck-Tracker/blob/7c0550fe8388bf45e0f3dbc5d2ff25ada2e1a3ae/Hearthstone%20Deck%20Tracker/Controls/Overlay/Constructed/Mulligan/V2/ConstructedMulliganV2SingleCardHeaderViewModel.cs#L235-L246)
 
 本次 250 项离线测试全部通过，守护采样峰值 113.9 MiB。
+
+在 10:29 的美服标准实测中，完整牌表与四张起手实体一致，计划只换第一张 Blasphemy。三个探测点上 Mirror 都返回四个保留状态，驱动没有点击卡牌。服务器回执保留了四张。程序随后正常出牌。
+
+构筑模式的起手牌按窗口高度缩放，四张牌的间距小于原先沿用的发现界面间距。修正后按构筑布局计算候选中心，可用时读取客户端提示对应的牌位。若只有保留标记，在已校准的起手界面对目标中心做一次可撤销的标记，逐张核对完整手牌的状态。错标一张时，仅在能确认同一位置和标记时撤回，再核对原状态。服务端回执决定最终实际换掉哪几张。[HearthSim 构筑换牌布局](https://github.com/HearthSim/Hearthstone-Deck-Tracker/blob/7c0550fe8388bf45e0f3dbc5d2ff25ada2e1a3ae/Hearthstone%20Deck%20Tracker/Controls/Overlay/Constructed/Mulligan/V2/ConstructedMulliganGuideV2.xaml#L33-L45)
+
+10:29 这局最终判负。49 个决策得到确认，过期和未确认均为 0。42 个 Fast medium 回包的中位耗时为 5.04 秒，没有带其他合法动作的整回合空过。炉石与 AI 的采样峰值为 1451.9 和 88.2 MiB，热状态为 0。本版本记录为 0 胜 1 负。历史连续第四负触发了已复盘的三连败暂停条件。已在真实历史上验证新的复盘边界，同一段历史仍记四连败，正式复盘后的下一负单独算第一场，三场新连败会再暂停。254 项离线测试通过，守护采样峰值 110.6 MiB。

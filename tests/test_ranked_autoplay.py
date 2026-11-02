@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ranked_autoplay import run_autoplay, stop_reason, AutoplayCancelled, AfterGameStop, continued_swap_baseline
+from ranked_autoplay import run_autoplay, stop_reason, AutoplayCancelled, AfterGameStop, continued_swap_baseline, reviewed_streak_boundary
 
 
 def completed(name='run-1', outcome='WON', losses=0):
@@ -15,6 +15,32 @@ def completed(name='run-1', outcome='WON', losses=0):
 
 
 class RankedAutoplayTests(unittest.TestCase):
+    def test_only_acknowledging_the_finished_three_loss_review_sets_a_new_boundary(self):
+        prior = dict(autoplay_id='s',status='needs_review',stop_reason='three_consecutive_losses',
+                     runs=['a','b','c'],completed_games=3)
+        ack = dict(autoplay_id='s',completed_games=3)
+        self.assertEqual(reviewed_streak_boundary(prior, ack), 'c')
+        for invalid in ({},dict(ack,autoplay_id='x'),dict(ack,completed_games=2)):
+            self.assertIsNone(reviewed_streak_boundary(prior,invalid))
+        self.assertIsNone(reviewed_streak_boundary(dict(prior,status='running'),ack))
+        self.assertEqual(reviewed_streak_boundary({'reviewed_loss_run':'c'},{}),'c')
+
+    def test_acknowledged_run_is_discounted_once_but_new_three_loss_streak_still_pauses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'history.json'
+            history = [completed(str(n),'LOST',n) for n in range(1,4)]
+            for n in range(4,7):
+                current = completed(str(n),'LOST',n)
+                history.append(current)
+                path.write_text(json.dumps(history))
+                options = dict(reviewed_loss_run='3',history_path=path)
+                self.assertEqual(stop_reason(current,**options), 'three_consecutive_losses' if n == 6 else None)
+                self.assertEqual(stop_reason(dict(current,unconfirmed_decisions=[7]),**options),'unconfirmed_action')
+                self.assertEqual(stop_reason(current,reviewed_loss_run='unrelated',history_path=path),'three_consecutive_losses')
+                self.assertEqual(current['consecutive_losses'],n)
+            path.write_text('[]')
+            self.assertEqual(stop_reason(current,**options),'three_consecutive_losses')
+
     def test_gui_wake_lifetime_follows_user_intent_across_reviews_and_faults(self):
         for reason, expected, release in (('review_update','paused_for_review',False),
                                           ('user_requested_stop','cancelled',True),

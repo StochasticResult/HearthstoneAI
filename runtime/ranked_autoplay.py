@@ -23,7 +23,36 @@ class AfterGameStop(RuntimeError):
     pass
 
 
-def stop_reason(review):
+def reviewed_within_loss_streak(review, boundary, path):
+    if not boundary or not path or not path.is_file() or path.is_symlink():
+        return False
+    try:
+        if path.stat().st_size > 256 * 1024:
+            return False
+        history = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
+        return False
+    if history[-1].get('run') != review.get('run'):
+        return False
+    losses = 0
+    for row in reversed(history):
+        if not isinstance(row, dict) or row.get('game_type') != 'GT_RANKED':
+            break
+        if row.get('outcome') == 'INCOMPLETE':
+            continue
+        if row.get('outcome') != 'LOST':
+            break
+        if row.get('run') == boundary:
+            return True
+        losses += 1
+        if losses == 3:
+            break
+    return False
+
+
+def stop_reason(review, *, reviewed_loss_run=None, history_path=None):
     if not isinstance(review, dict) or review.get('outcome') not in ('WON', 'LOST', 'TIED'):
         return 'incomplete_game'
     if review.get('game_type') != 'GT_RANKED':
@@ -38,20 +67,30 @@ def stop_reason(review):
         return 'unconfirmed_action'
     if review.get('started_without_mulligan') or not review.get('mulligan_confirmed'):
         return 'midgame_start_requires_review'
-    if review.get('consecutive_losses', 0) >= 3:
+    if review.get('consecutive_losses', 0) >= 3 and not reviewed_within_loss_streak(review, reviewed_loss_run, history_path):
         return 'three_consecutive_losses'
     return None
 
 
-def read_small(path):
+def read_small(path, limit=2048):
     if not path.exists():
         return None
-    if path.is_symlink() or path.stat().st_size > 2048:
+    if path.is_symlink() or path.stat().st_size > limit:
         raise RuntimeError('Invalid local review request')
     value = json.loads(path.read_text())
     if not isinstance(value, dict):
         raise RuntimeError('Invalid local review request')
     return value
+
+
+def reviewed_streak_boundary(prior, ack):
+    runs = prior.get('runs') or []
+    if (prior.get('status') == 'needs_review' and prior.get('stop_reason') == 'three_consecutive_losses'
+            and prior.get('autoplay_id') and ack.get('autoplay_id') == prior['autoplay_id']
+            and type(ack.get('completed_games')) is int and 0 < ack['completed_games'] == prior.get('completed_games')
+            and runs and isinstance(runs[-1], str)):
+        return runs[-1]
+    return prior.get('reviewed_loss_run')
 
 
 def continued_swap_baseline(path, current):
@@ -90,13 +129,16 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
     try:
         observed_swap=swap_used()
         swap_baseline=continued_swap_baseline(path,observed_swap)
+        reviewed_loss_run = reviewed_streak_boundary(read_small(path, 16384) or {},
+                                                     read_small(learning / 'review-ack.json') or {})
     except Exception:
         lock.close()
         config['api_key']=''
         raise
     state = {'status': 'running', 'pid': os.getpid(), 'started_at': time.time(),
              'autoplay_id': str(time.time_ns()), 'runs': [], 'completed_games': 0,
-             'last_reviewed_game': 0, 'review_due': False, 'stop_reason': None}
+             'last_reviewed_game': 0, 'review_due': False, 'stop_reason': None,
+             'reviewed_loss_run': reviewed_loss_run}
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     awake = None
     app_wake = None
@@ -212,7 +254,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             if client:state['game_pid']=client.pid
             if review.get('version_stats'):
                 state['version_stats']=review['version_stats']
-            state['stop_reason'] = stop_reason(review)
+            state['stop_reason'] = stop_reason(review, reviewed_loss_run=reviewed_loss_run,
+                                               history_path=learning / 'match-history.json')
             if state['stop_reason']:
                 state['status'] = 'needs_review'
                 persist()

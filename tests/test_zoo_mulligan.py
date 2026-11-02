@@ -22,7 +22,7 @@ CURVE = hand([(45, 'BE_729', 3), (70, 'TLC_603', 1), (42, 'BE_085', 2), (63, 'CA
 class Surface:
     def __init__(self, cards, states=None):
         self.states = list(states or [m.KEEP] * len(cards))
-        self.centers = (400, 735, 1070) if len(cards) == 3 else (300, 590, 880, 1170)
+        self.centers = m.CENTERS[len(cards)]
         self.hover = None
         self.clicks = []
         self.active = True
@@ -39,9 +39,9 @@ class Surface:
         if point != m.CONFIRM:
             self.states[self.hover] = m.REPLACE
 
-    def run(self, cards, planned):
+    def run(self, cards, planned, check_window=None):
         return m.mark_and_submit(cards, planned, self.observe, self.move, self.click,
-                                 clock=lambda: 0, sleep=lambda _: None)
+                                 clock=lambda: 0, sleep=lambda _: None, check_window=check_window)
 
 
 class ZooMulliganTests(unittest.TestCase):
@@ -71,6 +71,8 @@ class ZooMulliganTests(unittest.TestCase):
                       mulligan_waiting=True, mulligan={'waitingForUserInput': True, 'mulliganCards': rows})
         self.assertEqual(m.opening_cards(parser,1,choice), PRIEST)
         self.assertEqual(m.actor_states(parser,1,3,PRIEST,status,'ranked'), (m.KEEP,m.KEEP,m.REPLACE,m.KEEP))
+        tooltip_status = dict(status, mulligan_hover={'position':4,'size':4})
+        self.assertEqual(m.actor_states(parser,1,3,PRIEST,tooltip_status,'ranked'), (m.KEEP,m.KEEP,m.REPLACE,m.HOVER))
         for field, value in [('popup',True), ('format',1)]:
             with self.assertRaises(UnsafeState):
                 m.actor_states(parser,1,3,PRIEST,dict(status,**{field:value}),'ranked')
@@ -85,7 +87,7 @@ class ZooMulliganTests(unittest.TestCase):
         detail = ui.run(PRIEST, [25, 47, 24])
         self.assertTrue(detail['submitted'])
         self.assertEqual(detail['marked_ids'], [25, 47, 24])
-        self.assertEqual(ui.clicks, [(300,450),(590,450),(880,450),m.CONFIRM])
+        self.assertEqual(ui.clicks, [(447,450),(640,450),(834,450),m.CONFIRM])
 
     def test_missing_hover_never_marks_a_card(self):
         ui = Surface(SHAMAN)
@@ -111,7 +113,32 @@ class ZooMulliganTests(unittest.TestCase):
                     ui.states[1] = m.REPLACE
             ui.click = clicked
             self.assertFalse(ui.run(SHAMAN, [26,22])['submitted'])
-            self.assertEqual(ui.clicks, [(400,450)])
+            # On a wrong mark this mock reports hover on our original target,
+            # contradicting a rollback at that position. No second click.
+            self.assertEqual(ui.clicks, [(480,450)])
+
+    def test_observed_keep_only_mac_actors_can_make_one_reversible_center_mark(self):
+        cards = hand([(36,'BE_086',4),(49,'CORE_SCH_713',2),(47,'CORE_UNG_205',1),(61,'TLC_603',1)])
+        ui = Surface(cards)
+        ui.observe = lambda: tuple(ui.states)
+        result = ui.run(cards,[36],check_window=lambda: None)
+        self.assertTrue(result['submitted'])
+        self.assertEqual(result['center_probes'],[36])
+        self.assertEqual(result['marked_ids'],[36])
+        self.assertEqual(ui.clicks,[(447,450),m.CONFIRM])
+
+    def test_reversible_center_probe_restores_single_wrong_mark_without_submitting(self):
+        ui = Surface(PRIEST)
+        ui.observe = lambda: tuple(ui.states)
+        def toggle_wrong(point):
+            ui.clicks.append(point)
+            ui.states[2] = m.KEEP if ui.states[2] == m.REPLACE else m.REPLACE
+        ui.click = toggle_wrong
+        result = ui.run(PRIEST,[25,47],check_window=lambda: None)
+        self.assertFalse(result['submitted'])
+        self.assertTrue(result['restored_original_marks'])
+        self.assertEqual(ui.states,[m.KEEP]*4)
+        self.assertEqual(ui.clicks,[(447,450),(447,450)])
 
     def test_closed_surface_never_receives_a_card_or_confirm_click(self):
         ui = Surface(SHAMAN)

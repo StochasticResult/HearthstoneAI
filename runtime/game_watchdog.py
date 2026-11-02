@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Supervise a single explicitly started local game, with a short hard deadline.
+"""Supervise a single explicitly started local game with resource safeguards.
 
 This is a sampled watchdog, not a GPU throttle or a promise against heat spikes.
 It sends no game input. On exit it closes only the exact process it claimed.
 """
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -15,7 +16,7 @@ import sys
 import tempfile
 import time
 
-from resource_guard import GIB, MIB, battery_status, swap_used, thermal_state, swap_exceeded, memory_free_percentage
+from resource_guard import GIB, MIB, battery_status, swap_used, thermal_state, memory_free_percentage, memory_pressure_level, memory_stop_reason
 
 GAME_EXEC = "/Applications/Hearthstone/Hearthstone.app/Contents/MacOS/Hearthstone"
 LAUNCHER_EXEC = "/Applications/Hearthstone/Hearthstone Beta Launcher.app/Contents/MacOS/Hearthstone Beta Launcher"
@@ -81,9 +82,12 @@ def main():
     parser.add_argument("--temporary-fps", type=int, choices=(30,), help="temporarily set 30 fps and restore afterwards")
     parser.add_argument("--background-policy", action="store_true", help="lower the claimed process scheduling/I/O priority; not a CPU cap")
     parser.add_argument("--parent-pid", type=int, help="stop and restore settings if the session supervisor exits")
+    parser.add_argument("--swap-baseline-mib", type=float)
     args = parser.parse_args()
     if args.run_seconds < 0:
         parser.error("run seconds must be nonnegative")
+    if args.swap_baseline_mib is not None and (not math.isfinite(args.swap_baseline_mib) or args.swap_baseline_mib < 0):
+        parser.error("swap baseline must be finite and nonnegative")
     if args.expected != GAME_EXEC and args.claim_pid is None:
         parser.error("only the game executable may be discovered automatically")
 
@@ -96,7 +100,12 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     initial_ac, initial_pct = battery_status()
     initial_swap = swap_used()
-    if not initial_ac or thermal_state() >= 1 or memory_free_percentage() < 20 or initial_swap > 1024 * MIB or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
+    swap_baseline = initial_swap if args.swap_baseline_mib is None else args.swap_baseline_mib * MIB
+    free_memory_pct = memory_free_percentage()
+    memory_reason = memory_stop_reason(initial_swap, swap_baseline, memory_pressure_level(), free_memory_pct)
+    if memory_reason:
+        raise RuntimeError("preflight safety check failed: " + memory_reason)
+    if not initial_ac or thermal_state() >= 1 or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
         raise RuntimeError("preflight safety check failed")
     if args.claim_pid is None and processes(args.expected):
         raise RuntimeError("game already running; refusing to claim it")
@@ -109,8 +118,7 @@ def main():
     start = time.monotonic()
     game_start = None
     previous_status = start
-    last_memory_check = 0
-    free_memory_pct = None
+    last_memory_check = start
     cpu_over = 0
     cpu_very_high = 0
     max_rss = 0
@@ -151,6 +159,9 @@ def main():
                 if now - last_memory_check >= 5:
                     free_memory_pct = memory_free_percentage()
                     last_memory_check = now
+                current_swap = swap_used()
+                pressure = memory_pressure_level()
+                memory_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct)
                 if thermal_state() >= 1:
                     reason = "thermal state above nominal"
                 elif not ac or pct <= initial_pct - 1:
@@ -163,17 +174,16 @@ def main():
                 elif (now - game_start < 15 and (cpu_over >= 6 or cpu_very_high >= 6)) or \
                      (now - game_start >= 15 and (cpu_over >= 4 or cpu_very_high >= 3)):
                     reason = "sustained game CPU threshold"
-                elif swap_exceeded(swap_used(), initial_swap):
-                    reason = "swap threshold"
-                elif free_memory_pct is not None and free_memory_pct < 20:
-                    reason = "system memory pressure threshold"
+                elif memory_reason:
+                    reason = memory_reason
                 elif shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
                     reason = "disk reserve"
                 elif args.run_seconds and now - game_start >= args.run_seconds:
                     reason = "short test deadline"
                 if now - previous_status >= 10:
                     print(json.dumps({"game_seconds": round(now-game_start, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "thermal_state": thermal_state(), "memory_free_pct": free_memory_pct,
-                                      "swap_mib": round(swap_used()/MIB,1), "initial_swap_mib": round(initial_swap/MIB,1)}), flush=True)
+                                      "swap_mib": round(current_swap/MIB,1), "initial_swap_mib": round(initial_swap/MIB,1),
+                                      "swap_baseline_mib": round(swap_baseline/MIB,1), "memory_pressure_level": pressure}), flush=True)
                     previous_status = now
                 if reason:
                     break

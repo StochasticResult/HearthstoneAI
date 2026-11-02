@@ -8,6 +8,7 @@ unrelated processes also consume resources. It is not a game controller.
 import argparse
 import ctypes
 import json
+import math
 import os
 import re
 import selectors
@@ -67,10 +68,34 @@ def memory_free_percentage():
     return int(match.group(1))
 
 
-def swap_exceeded(current, baseline, maximum=1024*MIB, growth=256*MIB):
-    # Swap can remain allocated after memory pressure has recovered. Bound
-    # both its absolute total and growth during this exact session.
-    return current > maximum or current - baseline > growth
+def memory_pressure_level():
+    """Read macOS dispatch pressure flags, not XNU's internal enum values."""
+    result = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+                            capture_output=True, text=True, timeout=3, check=True)
+    level = int(result.stdout.strip())
+    if level not in (1, 2, 4):
+        raise RuntimeError("unknown system memory pressure")
+    return level  # DISPATCH_MEMORYPRESSURE_NORMAL, WARN, CRITICAL
+
+
+def swap_exceeded(current, baseline, maximum=None, growth=256*MIB):
+    # Historical swap is not current pressure. Keep the growth bound; an
+    # explicit development CLI absolute limit is still respected if provided.
+    return (maximum is not None and current > maximum) or current - baseline > growth
+
+
+def memory_stop_reason(current, baseline, pressure, free_pct, maximum=None, growth=256*MIB):
+    if type(pressure) is not int or pressure not in (1, 2, 4) or type(free_pct) not in (int, float) or not 0 <= free_pct <= 100:
+        return "unknown system memory status"
+    if pressure != 1:
+        return "system memory pressure warning" if pressure == 2 else "critical system memory pressure"
+    if free_pct < 20:
+        return "system memory availability threshold"
+    if current - baseline > growth:
+        return "swap growth threshold"
+    if maximum is not None and current > maximum:
+        return "explicit swap total threshold"
+    return None
 
 
 def group_usage(pgid):
@@ -125,8 +150,9 @@ def main():
     p.add_argument("--timeout", type=float, default=180, help="0 disables the wall-clock quota; resource checks remain active")
     p.add_argument("--max-rss-mib", type=int, default=800)
     p.add_argument("--min-free-gib", type=float, default=10)
-    p.add_argument("--max-swap-mib", type=int, default=1024)
+    p.add_argument("--max-swap-mib", type=int, help="optional explicit total cap; normal operation uses pressure and growth")
     p.add_argument("--max-swap-growth-mib", type=int, default=256)
+    p.add_argument("--swap-baseline-mib", type=float, help="shared baseline across all matches in one autoplay session")
     p.add_argument("--max-cpu", type=float, default=160)
     p.add_argument("--max-output-mib", type=int, default=4)
     p.add_argument("--parent-pid", type=int)
@@ -134,16 +160,25 @@ def main():
     a = p.parse_args()
     if a.timeout < 0:
         p.error("timeout must be nonnegative")
+    if a.swap_baseline_mib is not None and (not math.isfinite(a.swap_baseline_mib) or a.swap_baseline_mib < 0):
+        p.error("swap baseline must be finite and nonnegative")
+    if a.max_swap_growth_mib < 0 or (a.max_swap_mib is not None and a.max_swap_mib < 0):
+        p.error("swap limits must be nonnegative")
     disk_path = "/System/Volumes/Data"
     ac, initial_battery = battery_status()
     initial_swap = swap_used()
+    swap_baseline = initial_swap if a.swap_baseline_mib is None else a.swap_baseline_mib * MIB
+    maximum_swap = None if a.max_swap_mib is None else a.max_swap_mib * MIB
     initial = {"free_gib": round(shutil.disk_usage(disk_path).free / GIB, 2),
                "thermal_state": thermal_state(), "ac": ac,
                "battery_pct": initial_battery, "swap_mib": round(initial_swap / MIB, 1),
-               "memory_free_pct": memory_free_percentage()}
+               "memory_free_pct": memory_free_percentage(), "memory_pressure_level": memory_pressure_level(),
+               "swap_baseline_mib": round(swap_baseline / MIB, 1)}
     print(json.dumps({"preflight": initial}), flush=True)
-    if initial["free_gib"] < a.min_free_gib or initial["thermal_state"] >= 2 or not ac or initial["swap_mib"] > a.max_swap_mib or initial["memory_free_pct"] < 20:
-        print("Preflight failed: insufficient disk, elevated thermal state, no AC, or excessive swap.", file=sys.stderr)
+    memory_reason = memory_stop_reason(initial_swap, swap_baseline, initial['memory_pressure_level'],
+                                      initial['memory_free_pct'], maximum_swap, a.max_swap_growth_mib*MIB)
+    if initial["free_gib"] < a.min_free_gib or initial["thermal_state"] >= 2 or not ac or memory_reason:
+        print("Preflight failed: " + (memory_reason or "insufficient disk, elevated thermal state, or no AC"), file=sys.stderr)
         return 2
     if a.check:
         return 0
@@ -191,15 +226,17 @@ def main():
                     tstate = thermal_state()
                     free = shutil.disk_usage(disk_path).free
                     used_swap = swap_used()
+                    pressure = memory_pressure_level()
+                    free_pct = memory_free_percentage()
+                    memory_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
+                                                       maximum_swap, a.max_swap_growth_mib*MIB)
                     consecutive_high_cpu = consecutive_high_cpu + 1 if cpu > a.max_cpu else 0
                     if rss > a.max_rss_mib * MIB:
                         reason = "process group memory limit"
                     elif free < a.min_free_gib * GIB:
                         reason = "disk reserve"
-                    elif swap_exceeded(used_swap, initial_swap, a.max_swap_mib*MIB, a.max_swap_growth_mib*MIB):
-                        reason = "swap threshold"
-                    elif memory_free_percentage() < 20:
-                        reason = "system memory pressure threshold"
+                    elif memory_reason:
+                        reason = memory_reason
                     elif tstate >= 2:
                         reason = "serious or critical thermal state"
                     elif consecutive_high_cpu >= 3:
@@ -210,7 +247,9 @@ def main():
                             reason = "AC disconnected or battery dropped"
                         battery_at = now + 10
                     if now - last_status >= 10:
-                        print(json.dumps({"elapsed_s": round(now-started, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "members": members, "thermal_state": tstate, "free_gib": round(free/GIB, 2)}), flush=True)
+                        print(json.dumps({"elapsed_s": round(now-started, 1), "rss_mib": round(rss/MIB, 1), "cpu_pct": round(cpu, 1), "members": members, "thermal_state": tstate, "free_gib": round(free/GIB, 2),
+                                          "memory_pressure_level": pressure, "memory_free_pct": free_pct,
+                                          "swap_mib": round(used_swap/MIB,1), "swap_baseline_mib": round(swap_baseline/MIB,1)}), flush=True)
                         last_status = now
                     sample_at = now + 2
                 if a.timeout and now - started > a.timeout:

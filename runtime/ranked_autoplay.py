@@ -5,6 +5,7 @@ import signal
 import time
 
 from match_review import save
+from resource_guard import swap_used, MIB
 
 
 class AutoplayCancelled(RuntimeError):
@@ -71,6 +72,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
         return True
 
     try:
+        swap_baseline = swap_used()
+        state['swap_baseline_mib'] = round(swap_baseline / MIB, 1)
         persist()
         emit('开始自动天梯：持续运行；正常复盘不打断对局，无局数或时间配额')
         while True:
@@ -83,7 +86,9 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep):
             emit('自动天梯：第 %d 局' % state['current_game'], play_status='自动天梯 · 第 %d 局' % state['current_game'])
             # The native parent keeps the key only in memory. Every match
             # receives a copy and owns fresh resource monitors and log files.
-            review = run_one(dict(config), parent_pid, 'ranked')
+            # Keep one baseline across match cleanup: accumulated growth must
+            # not disappear merely because a new game starts.
+            review = run_one(dict(config), parent_pid, 'ranked', swap_baseline=swap_baseline)
             state['runs'] = (state['runs'] + [review['run']])[-16:]
             state['completed_games'] += 1
             state['stop_reason'] = stop_reason(review)

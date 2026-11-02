@@ -206,7 +206,7 @@ def navigation_click(point):
         time.sleep(.15)
 
 
-def run(config, parent_pid, mode="practice"):
+def run(config, parent_pid, mode="practice", swap_baseline=None):
     global _event_log
     expected = expected_type(mode)[1]
     label = "标准天梯" if mode == "ranked" else "人机练习"
@@ -228,9 +228,10 @@ def run(config, parent_pid, mode="practice"):
         emit("本局模式：%s" % label, game_mode=mode)
         emit("正在建立资源保护：不设对局时长、动作次数或累计 API 配额；保留内存、温度与电源检查",
              log_directory=str(dest), limits={"game_seconds": None, "api_requests": None, "api_tokens": None})
+        baseline_args = [] if swap_baseline is None else ['--swap-baseline-mib', str(swap_baseline / (1024**2))]
         watchdog = subprocess.Popen([sys.executable, str(ROOT / "game_watchdog.py"),
             "--startup-seconds", "120", "--run-seconds", "0", "--temporary-fps", "30",
-            "--parent-pid", str(os.getpid())], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            "--parent-pid", str(os.getpid())] + baseline_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         armed = read_json_line(watchdog, 10)
         guard_event(json.dumps(armed).encode(), "游戏守护")
         if armed.get("watchdog") != "armed":
@@ -243,7 +244,7 @@ def run(config, parent_pid, mode="practice"):
                 break
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
             "--log", str(dest / "actions.log"), "--timeout", "0", "--max-rss-mib", "200", "--max-cpu", "130",
-            "--parent-pid", str(os.getpid()), "--", "/usr/bin/nice", "-n", "10", sys.executable,
+            "--parent-pid", str(os.getpid())] + baseline_args + ["--", "/usr/bin/nice", "-n", "10", sys.executable,
             str(ROOT / "state-bridge/practice_driver.py"), "--new-session", "--evidence", str(dest / "Power.log"),
             "--deck-snapshot", str(dest / "selected-deck.json"),
             "--watchdog-pid", str(watchdog.pid), "--seconds", "0", "--max-actions", "0", "--mode", mode, "--openai-config-stdin"] + reconnect_args,
@@ -339,6 +340,12 @@ def run(config, parent_pid, mode="practice"):
             drain_guards(streams, sources)
         if tail:
             tail.close()
+        for child in (driver, watchdog, caffeine):
+            if child:
+                for stream_name in ('stdin', 'stdout', 'stderr'):
+                    stream = getattr(child, stream_name, None)
+                    if stream and not stream.closed:
+                        stream.close()
         if watchdog is not None and processes(GAME_EXEC):
             emit("AI 已停止，但炉石进程仍在运行，关闭尚未确认", stopped=True, game_closed=False, error=True)
         else:

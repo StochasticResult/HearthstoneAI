@@ -67,3 +67,13 @@
 - 21:12:34、21:14:39 两次启动都在主菜单、开始匹配之前停止，0 次 API、0 个对局动作，不算完成或输掉的比赛。补上菜单输入错误详情后，后一次明确为 `Hearthstone is not the frontmost app`；短暂等待仍未恢复。原聚焦 API 返回成功只说明请求已发送，不保证实际激活，这与 [Apple 的激活接口说明](https://developer.apple.com/documentation/appkit/nsrunningapplication/activate(options:)) 一致。现改为在已建立守护且已读到加载完成的场景后，通过 LaunchServices 打开固定的现有炉石应用；仍要求实际前台及窗口几何检查通过才发送输入。
 - 启动聚焦与只重试「尚未发送输入」拒绝的回归检查加入后，143 项测试通过；最近测试采样峰值 81.5 MiB、38.0% CPU，8.32 秒。此轮仅替换 Python runtime，原生签名与密钥授权保持不变。
 - 21:16:12 实际启动通过主菜单点击并进入选牌场景，验证 LaunchServices 聚焦路径确实有效。21:16:32 在点击开始匹配之前，交换空间触发原有保护并自动关闭炉石；0 次 API、0 个对局动作，游戏/AI 峰值 1019.7/78.3 MiB，热状态 0，恢复 60 FPS。随后只读检查为 swap 1039.1 MiB、空闲内存比例 40%、接通电源、80% 电量、热状态 0；未放宽 1024 MiB 交换空间阈值，也未再次启动。见 `run-20261101-211612-review.json`。每 15 分钟的监测会先进行资源检查，恢复后才允许继续；此状态不是完整天梯或连续稳定性验收。
+
+## 修正历史 swap 导致的启动阻塞
+
+用户随后要求定期清理、避免资源不断累积。重新检查时 swap 稳定为 1031.1 MiB，内存可用指标约 49–51%，内核导出的内存压力为 normal，热状态 0。旧 1024 MiB 总量门槛独自阻止启动，不足以证明当前内存不足；应把历史总量与当前压力、运行期间增长分开。Apple 的[活动监视器说明](https://support.apple.com/guide/activity-monitor/view-memory-usage-actmntr1004/mac)同样将可用内存、交换速率等共同用于内存压力判断。
+
+- 用 macOS 实际压力状态取代默认 1 GiB 历史 swap 总量门槛：warning/critical 即停止，未知值拒绝；可用内存指标低于 20% 或本次连续运行 swap 增长超过 256 MiB 仍停止。游戏 1800 MiB、AI 200 MiB、温度、CPU、电源与磁盘边界保持不变。
+- `kern.memorystatus_vm_pressure_level` 导出的是 dispatch 位标志 1/2/4，不能误用内核内部 0/1/3 枚举；核对了 [Apple XNU 的 sysctl 转换实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_memorystatus_notify.c)及本机 SDK `dispatch/source.h`。
+- 连续天梯只在首次开始时记录 swap 基线，所有局的两个独立守护使用同一基线。换局不会隐藏累计增长。开发命令显式传入的总量限制仍会生效。
+- 每局显式关闭子进程管道，既有局间进程回收、五局日志、50 条汇总及 10 个复盘案例的边界继续生效。当前应用数据目录约 15 MiB、游戏日志约 1.1 MiB；这次没有发现磁盘日志持续无界增长。
+- 149 项测试通过，含稳定历史 swap、正常压力下增长超限、无 swap 但系统告警、未知值、共享跨局基线及实际子进程回收。测试约 8.03 秒，采样峰值 88.9 MiB、31.9% CPU。测试只使用一次性子进程和模拟读数，没有向系统施加内存压力。

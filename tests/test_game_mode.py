@@ -65,5 +65,6 @@ class GameModeTests(unittest.TestCase):
     def test_swap_recovery_does_not_disable_growth_guard(self):
         self.assertFalse(swap_exceeded(533*MIB,533*MIB))
         self.assertTrue(swap_exceeded(790*MIB,533*MIB))
-        self.assertTrue(swap_exceeded(1025*MIB,1000*MIB))
+        self.assertFalse(swap_exceeded(1025*MIB,1000*MIB))
+        self.assertTrue(swap_exceeded(1025*MIB,1000*MIB,maximum=1024*MIB))
         self.assertFalse(swap_exceeded(300*MIB,533*MIB))

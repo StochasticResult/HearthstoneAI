@@ -24,7 +24,7 @@ from incremental_board import IncrementalBoard, LogFollower, UnsafeState, board
 from mirror_identity import practice_identity, mulligan_identity
 from practice_state import META, prepare
 from reconnect_options import restore_observed_options, restore_zero_hand_costs
-from openai_advisor import AdvisorError, OpenAIAdvisor, action_menu, signature
+from openai_advisor import AdvisorError, AdvisorTimeout, OpenAIAdvisor, action_menu, signature
 
 ROOT = Path(__file__).resolve().parent.parent
 FRAMEWORK = "/Applications/HSTracker.app/Contents/Frameworks/HearthMirror.framework/Versions/A/HearthMirror"
@@ -310,6 +310,25 @@ class Driver:
     def snapshot(self, own, **_kwargs):
         return self.parser.snapshot(own, allow_practice=True, extended=True)
 
+    def consult(self, own, decide, *args):
+        game = self.parser.game
+        try:
+            return decide(*args)
+        except AdvisorTimeout:
+            if RUN_MODE != 'ranked' or self.owner != own or game is None or self.identity_game is not game:
+                raise
+            self.poll()
+            if self.parser.game is not game or self.identity_game is not game:
+                raise Stop('game changed while awaiting an API decision')
+            if self.game_result() in ('WON','LOST','TIED'):
+                return None
+            if self.advisor.consecutive_timeouts != 1:
+                raise
+            # The live loop checks the new player, menu and choice before asking
+            # again. Never send a second copy of the old payload in transport.
+            print('本次 API 请求超时，重新读取当前局面后决策',flush=True)
+            return None
+
     def recover_observed_zero_cost(self, own):
         paths, self.reconnect_evidence = self.reconnect_evidence, ()
         for path in paths:
@@ -576,6 +595,13 @@ class Driver:
         item = next((i for i in choice['items'] if selected == [i['id']]),None)
         if item is None:
             raise Stop('game confirmed a different choice; no further input was sent')
+        if expected_id is None:
+            # The model timed out before suggesting anything. Keep the public
+            # selection for chained Discover effects without expiring a proposal.
+            self.advisor.remember_choice(choice,item['card_id'])
+            self.advisor.record({'event':'choice_observed_after_timeout','choice_id':choice['id'],
+                                 'observed_card_id':item['card_id'],'game_turn':state.get('game_turn')})
+            return True
         if clicked and observed.get('client_submitted'):
             return self.choice_confirmed(choice['id'], [expected_id])
         # A server receipt can arrive while the API is thinking, even when its
@@ -874,13 +900,19 @@ class Driver:
                 awaiting_fresh_options = True
                 try:
                     if targeted:
-                        advice = self.advisor.target(choice,choice_state)
+                        advice = self.consult(own,self.advisor.target,choice,choice_state)
+                        if advice is None:
+                            continue
                         time.sleep(.4)
                         self.execute_target(own,choice,choice_state,advice)
                         self.advisor.confirm_target(advice)
                         print("confirmed target choice",flush=True)
                     else:
-                        index = self.advisor.choose(choice,choice_state)
+                        index = self.consult(own,self.advisor.choose,choice,choice_state)
+                        if index is None:
+                            if self.parser.choices.get(choice['id'],{}).get('confirmed'):
+                                self.check_choice_receipt(own,choice,choice_state,None,False)
+                            continue
                         self.execute_discover(own,choice,choice_state,index)
                         print("choice resolved",flush=True)
                 except SupersededChoice:
@@ -991,7 +1023,9 @@ class Driver:
                     continue
             decision_started = time.monotonic()
             window = (self.parser.game, board._num(state.get('game_turn')), self.parser.sent_options)
-            advice = self.advisor.ask(state)
+            advice = self.consult(own,self.advisor.ask,state)
+            if advice is None:
+                continue
             self.proposal_window = window
             try:
                 self.execute_main_action(own, state, advice, diagnose_hover, decision_started)

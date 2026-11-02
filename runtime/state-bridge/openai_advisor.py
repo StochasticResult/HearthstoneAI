@@ -26,6 +26,10 @@ class AdvisorError(Exception):
     pass
 
 
+class AdvisorTimeout(AdvisorError):
+    """No decision was returned before this request's network deadline."""
+
+
 def signature(state):
     return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -377,6 +381,7 @@ class OpenAIAdvisor:
                         'mulligan_confirmed': False, 'outcome': 'INCOMPLETE',
                         'diagnostics_capped': False}
         self.decision_seq = 0
+        self.consecutive_timeouts = 0
         if audit_path is not None:
             import os
             path = Path(audit_path)
@@ -411,6 +416,8 @@ class OpenAIAdvisor:
                 count = {'expired_without_submission':'expired_decisions',
                          'superseded_by_client_choice':'external_choices'}.get(kind,'confirmed_decisions')
                 self.summary[count] = self.summary.get(count,0) + 1
+        elif kind == 'api_timeout':
+            self.summary['api_timeouts'] = self.summary.get('api_timeouts', 0) + 1
         elif kind == 'mulligan_confirmed':
             self.summary['mulligan_confirmed'] = True
             self.summary['game_type'] = event.get('game_type', self.summary['game_type'])
@@ -481,7 +488,7 @@ class OpenAIAdvisor:
                 input=json.dumps({"api_key": self.key, "payload": payload}), text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=18, check=False)
         except subprocess.TimeoutExpired:
-            raise AdvisorError("API request timed out after 18 seconds; no action was sent") from None
+            raise AdvisorTimeout("API request timed out after 18 seconds; no action was sent") from None
         if len(run.stdout) > 128 * 1024:
             raise AdvisorError("API response exceeded its size limit")
         try:
@@ -491,7 +498,7 @@ class OpenAIAdvisor:
         if run.returncode:
             code = data.get("http_status")
             if data.get("transport_error") == "timeout":
-                raise AdvisorError("API network timed out; no action was sent")
+                raise AdvisorTimeout("API network timed out; no action was sent")
             raise AdvisorError("API request failed" + (" (HTTP %s)" % code if isinstance(code, int) else ""))
         return data
 
@@ -510,12 +517,20 @@ class OpenAIAdvisor:
         # per-request bounds/timeouts, and the independent resource watchdog.
         self.calls += 1
         started = time.monotonic()
-        response = self.transport(payload)
+        try:
+            response = self.transport(payload)
+        except AdvisorTimeout:
+            self.consecutive_timeouts += 1
+            self.record({'event':'api_timeout', 'game_turn':view.get('game_turn'), 'phase':view.get('phase'),
+                         'elapsed_ms':round((time.monotonic()-started)*1000),
+                         'consecutive_timeouts':self.consecutive_timeouts})
+            raise
         elapsed_ms = round((time.monotonic() - started) * 1000)
         actual_model = response.get("model")
         if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
             raise AdvisorError("API response model does not match the requested model")
         action, reason, tokens = parse_response(response, menu)
+        self.consecutive_timeouts = 0
         self.tokens += tokens
         self.record({"event": "proposed", "observation": view, "actions": menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,

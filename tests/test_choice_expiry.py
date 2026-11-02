@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from held_result import verified_result
 from incremental_board import IncrementalBoard
 from match_review import write_review
+from openai_advisor import AdvisorTimeout
 from practice_driver import Driver, Stop, SupersededChoice
 from ranked_autoplay import stop_reason
 from test_incremental_board import fixture, power
@@ -69,6 +70,40 @@ class ChoiceExpiryTests(unittest.TestCase):
             self.d.execute_discover(1,self.ch,self.s,0)
         click.assert_not_called()
         self.assertEqual(self.d.advisor.record.call_args.args[0]['event'],'superseded_by_client_choice')
+
+    def test_timeout_then_valid_index_zero_performs_only_one_discover_click(self):
+        self.d.advisor.choose.side_effect=[AdvisorTimeout('injected timeout'),0]
+        self.d.advisor.consecutive_timeouts=1
+        self.d.identify=Mock(return_value=1)
+        with patch('practice_driver.RUN_MODE','ranked'),patch('practice_driver.mirror',return_value={}), \
+             patch('practice_driver.checked_geometry'),patch('practice_driver.time.sleep'), \
+             patch('practice_driver.click',side_effect=lambda _:self.resolve(198,True)) as click,patch('builtins.print'):
+            self.d.run(4,1)
+        click.assert_called_once()
+        self.d.advisor.confirm_choice.assert_called_once_with(self.ch,0)
+        self.assertEqual(self.d.advisor.choose.call_count,2)
+
+    def test_timeout_after_server_choice_observes_actual_card_without_proposal(self):
+        def no_reply(*_):
+            self.resolve()
+            self.p.feed((power('TAG_CHANGE Entity=1 tag=TURN value=14')+
+                         power('TAG_CHANGE Entity=2 tag=CURRENT_PLAYER value=0')+
+                         power('TAG_CHANGE Entity=3 tag=CURRENT_PLAYER value=1')).encode())
+            raise AdvisorTimeout('injected timeout')
+        self.d.advisor.choose.side_effect=no_reply
+        self.d.advisor.consecutive_timeouts=1
+        self.d.identify=Mock(return_value=1)
+        def advance(_):
+            if self.d.opponent_turn():
+                self.p.feed(power('TAG_CHANGE Entity=2 tag=PLAYSTATE value=LOST').encode())
+        with patch('practice_driver.RUN_MODE','ranked'),patch('practice_driver.mirror',return_value={}), \
+             patch('practice_driver.time.sleep',side_effect=advance),patch('practice_driver.click') as click,patch('builtins.print'):
+            self.d.run(4,0)
+        click.assert_not_called()
+        self.d.advisor.choose.assert_called_once()
+        self.d.advisor.confirm_choice.assert_not_called()
+        self.d.advisor.remember_choice.assert_called_once_with(self.ch,'TIME_029')
+        self.assertEqual([q.args[0]['event'] for q in self.d.advisor.record.call_args_list],['choice_observed_after_timeout','game_complete'])
 
     def test_own_click_needs_matching_local_and_server_receipts(self):
         with patch('practice_driver.mirror',return_value={}),patch('practice_driver.checked_geometry'), \

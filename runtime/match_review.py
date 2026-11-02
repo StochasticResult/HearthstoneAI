@@ -85,6 +85,7 @@ def summarize(dest):
         if m.get('watchdog_result'):
             stops.append(str(m['watchdog_result'])[:120])
     summary = {'run': dest.name, 'game_type': mode, 'outcome': outcome,
+               'api_timeouts': sum(r.get('event') == 'api_timeout' for r in decisions),
                'requested_mode': next((r['game_mode'] for r in events if r.get('game_mode') in ('practice', 'ranked')), None),
                'first_decision_game_turn': next((r['observation'].get('game_turn') for r in proposed if isinstance(r.get('observation'), dict)), None),
                'models': sorted({r['model'] for r in proposed if isinstance(r.get('model'), str)}),
@@ -120,6 +121,7 @@ def summarize(dest):
         compact = json.loads(compact_path.read_text())
         summary['expired_decisions'] = compact.get('expired_decisions', len(expired))
         summary['external_choices'] = compact.get('external_choices', len(external))
+        summary['api_timeouts'] = compact.get('api_timeouts', summary['api_timeouts'])
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
                     'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):

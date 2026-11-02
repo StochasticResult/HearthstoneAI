@@ -11,12 +11,54 @@ from game_boundary import LogBoundary, result_dismissal
 from incremental_board import IncrementalBoard, LogFollower
 from capture_practice import Capture
 from navigation import Stop, DECK_ID
-from ranked_autoplay import run_autoplay, stop_reason
+from ranked_autoplay import run_autoplay, stop_reason, AfterGameStop
 from strategy import PACK
 from test_incremental_board import fixture, power
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_result_animations_can_exceed_one_minute_and_four_clicks(self):
+        client=session.PersistentClient(None,0);client.pid=444
+        client.previous={'outcome':'WON'};client.boundary=Mock();client.tick=Mock()
+        clock=[0]
+        result={'scene':{'mode':4,'sceneLoaded':True,'transitioning':False}}
+        menu={'scene':{'mode':7,'sceneLoaded':True,'transitioning':False}}
+        def delay(_):clock[0]+=10
+        with patch('ranked_autoplay.read_small',return_value=None), \
+             patch('session.read_status',side_effect=[result]*8+[menu]), \
+             patch('session.next_ranked_navigation',return_value=(1070,735)), \
+             patch('session.time.monotonic',side_effect=lambda:clock[0]),patch('session.time.sleep',side_effect=delay), \
+             patch('session.navigation_click') as click,patch('session.emit'):
+            client.return_to_menu()
+        self.assertEqual(clock[0],80)
+        self.assertEqual(click.call_count,8)
+        self.assertTrue(all(c.args==((735,845),) for c in click.call_args_list))
+        self.assertEqual(client.tick.call_count,9)
+        self.assertEqual(client.boundary.check.call_count,9)
+
+    def test_postgame_stop_prevents_any_further_navigation(self):
+        client=session.PersistentClient(None,0);client.previous={'outcome':'WON'}
+        client.boundary=Mock();client.tick=Mock()
+        with patch('ranked_autoplay.read_small',return_value={'reason':'user_requested_stop'}), \
+             patch('session.navigation_click') as click,patch('session.read_status') as read,patch('session.emit'):
+            with self.assertRaises(AfterGameStop):client.return_to_menu()
+        click.assert_not_called();read.assert_not_called()
+
+    def test_a_stop_in_result_screen_does_not_create_an_incomplete_match(self):
+        client=Mock();client.prepare.side_effect=AfterGameStop()
+        with patch('session.session_directory') as directory,patch('session.emit'):
+            with self.assertRaises(AfterGameStop):session.run({},None,'ranked',client=client)
+        directory.assert_not_called()
+
+    def test_fatal_client_scene_is_still_a_real_failure(self):
+        client=session.PersistentClient(None,0);client.previous={'outcome':'WON'}
+        client.boundary=Mock();client.tick=Mock()
+        with patch('ranked_autoplay.read_small',return_value=None), \
+             patch('session.read_status',return_value={'scene':{'mode':9}}), \
+             patch('session.navigation_click') as click,patch('session.emit'):
+            with self.assertRaisesRegex(session.SessionError,'错误场景'):client.return_to_menu()
+        click.assert_not_called()
+
     def test_new_reader_does_not_replay_previous_match_or_carry_entities(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);path=root/'Power.log'

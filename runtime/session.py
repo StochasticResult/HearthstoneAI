@@ -261,12 +261,17 @@ class PersistentClient:
     def return_to_menu(self):
         if not self.previous or self.previous.get('outcome') not in ('WON','LOST','TIED') or self.boundary is None:
             raise SessionError('上一局未核实结束，不执行结算或排队操作')
-        deadline=time.monotonic()+60
-        last_click=0; clicks=0
-        while time.monotonic()<deadline:
+        from ranked_autoplay import AfterGameStop, read_small
+        last_click=None
+        emit('等待已结束对局的结算；自动点击继续，炉石保持运行',play_status='等待结算 · 自动继续')
+        while True:
             self.tick()
+            if read_small(DATA/'learning/pause-after-game.json'):
+                raise AfterGameStop()
             self.boundary.check()
             status=read_status()
+            if status and (status.get('scene') or {}).get('mode')==9:
+                raise SessionError('炉石客户端在结算时进入错误场景')
             if status and scene_ready(status):
                 mode=status['scene']['mode']
                 if mode==7:
@@ -275,12 +280,11 @@ class PersistentClient:
                         emit('已返回标准选牌；保留原炉石进程', game_pid=self.pid)
                         return
                 point = next_ranked_navigation(0,status) if mode==3 else result_dismissal(status,self.previous['outcome'])
-                if point and clicks<4 and time.monotonic()-last_click>5:
+                if point and (last_click is None or time.monotonic()-last_click>=5):
                     navigation_click(point)
-                    last_click=time.monotonic();clicks+=1
+                    last_click=time.monotonic()
                     emit('正在退出已结束的对局结算',game_pid=self.pid)
-            time.sleep(.5)
-        raise SessionError('未能确认返回标准选牌；停止排队')
+            time.sleep(1)
 
     def driver_log_args(self):
         if not self.launched:
@@ -327,17 +331,26 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
-        if client is None:preflight()
+        if client is None:
+            preflight()
+        else:
+            # Returning from a completed game is not a new match. In
+            # particular, a user's stop during a long result animation must
+            # not create a spurious INCOMPLETE game in the match history.
+            client.prepare()
+            watchdog=client.watchdog
         dest = session_directory()
         _event_log = EventLog(dest / "session-events.jsonl")
+        from build_identity import current_build
+        from match_review import save
+        build=current_build(ROOT)
+        save(dest/'run-version.json',build)
+        emit('本局程序版本：'+build['version_id'],runtime_version=build['version_id'])
         emit("本局模式：%s" % label, game_mode=mode)
         emit("正在建立资源保护：不设对局时长、动作次数或累计 API 配额；保留内存、温度与电源检查",
              log_directory=str(dest), limits={"game_seconds": None, "api_requests": None, "api_tokens": None})
         baseline_args = [] if swap_baseline is None else ['--swap-baseline-mib', str(swap_baseline / (1024**2))]
-        if client:
-            client.prepare()
-            watchdog=client.watchdog
-        else:
+        if client is None:
             watchdog = subprocess.Popen([sys.executable, str(ROOT / "game_watchdog.py"),
             "--startup-seconds", "120", "--run-seconds", "0", "--temporary-fps", "30",
             "--parent-pid", str(os.getpid())] + baseline_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -458,8 +471,8 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
             if not streams:
                 break
             drain_guards(streams, sources, client.observe if client else None)
-        if client:
-            client.streams={s:b for s,b in streams.items() if s is watchdog.stdout} if watchdog else {}
+        if client and watchdog:
+            client.streams={s:b for s,b in streams.items() if s is watchdog.stdout}
         if tail:
             tail.close()
         for child in (driver, None if retained else watchdog, caffeine):
@@ -485,6 +498,9 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                 review_summary = write_review(dest, DATA / "learning", game_closed=game_closed,
                     game_preserved=preserved, match_workers_closed=workers_closed,
                     game_pid=client.pid if client else None)
+                if review_summary.get('version_stats'):
+                    from version_stats import display
+                    emit(('标准天梯 · ' if mode=='ranked' else '人机练习 · ')+display(review_summary['version_stats']))
                 if preserved:client.remember(dest,review_summary)
                 emit("对局复盘已保存：%s；%s" % (review_summary["outcome"],
                      "下次开局前需复盘" if review_summary["review_before_next_game"] else "已记录决策和资源指标"),

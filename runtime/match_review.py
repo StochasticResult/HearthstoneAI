@@ -128,6 +128,10 @@ def save(path, obj):
 
 def write_review(dest, learning, *, game_closed=None, game_preserved=False, match_workers_closed=None, game_pid=None):
     summary, cases = summarize(dest)
+    from build_identity import read_build
+    build=read_build(dest/'run-version.json')
+    summary['runtime_version']=build['version_id']
+    summary['version_identity_verified']=build['identity_verified']
     if game_closed is not None:
         summary['game_closed'] = game_closed
     summary.update(game_preserved=game_preserved,match_workers_closed=match_workers_closed,game_pid=game_pid)
@@ -154,6 +158,8 @@ def write_review(dest, learning, *, game_closed=None, game_preserved=False, matc
         losses += 1
     summary['consecutive_losses'] = losses
     summary['review_before_next_game'] = summary['needs_review'] or losses >= 3
+    from version_stats import record
+    summary['version_stats']=record(learning,summary,history)
     save(dest / 'review.json', summary)
     save(history_path, history)
     save(queue_path, (previous(queue_path, 1024 * 1024) + cases)[-10:])

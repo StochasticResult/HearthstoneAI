@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import time
+import math
 
 from match_review import save
 from resource_guard import swap_used, MIB
@@ -13,6 +14,11 @@ from navigation import stop_child
 
 
 class AutoplayCancelled(RuntimeError):
+    pass
+
+
+class AfterGameStop(RuntimeError):
+    """A deferred stop arrived while an already-finished game was settling."""
     pass
 
 
@@ -45,6 +51,23 @@ def read_small(path):
     return value
 
 
+def continued_swap_baseline(path, current):
+    """A review/update restart must not hide already accumulated swap growth."""
+    if not path.exists():
+        return current
+    if path.is_symlink() or path.stat().st_size>16384:
+        raise RuntimeError('Invalid previous autoplay state')
+    prior=json.loads(path.read_text())
+    if not isinstance(prior,dict):
+        raise RuntimeError('Invalid previous autoplay state')
+    if prior.get('status') not in ('paused_for_review','needs_review','running','maintenance','waiting_for_resources'):
+        return current
+    previous=prior.get('swap_baseline_mib')
+    if type(previous) not in (int,float) or not math.isfinite(previous) or previous<0:
+        raise RuntimeError('Missing previous continuation resource baseline')
+    return min(current,round(previous*MIB))
+
+
 def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, client_factory=None):
     learning = data / 'learning'
     learning.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -59,6 +82,15 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         lock.close()
         config['api_key'] = ''
         raise RuntimeError('已有自动天梯程序在运行或等待资源') from None
+    # Read before persist() replaces the previous run. Explicit user stops
+    # begin a new session; planned review/fault recovery continues its baseline.
+    try:
+        observed_swap=swap_used()
+        swap_baseline=continued_swap_baseline(path,observed_swap)
+    except Exception:
+        lock.close()
+        config['api_key']=''
+        raise
     state = {'status': 'running', 'pid': os.getpid(), 'started_at': time.time(),
              'autoplay_id': str(time.time_ns()), 'runs': [], 'completed_games': 0,
              'last_reviewed_game': 0, 'review_due': False, 'stop_reason': None}
@@ -129,7 +161,12 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         # as a changed system setting or unlocks a locked Mac.
         awake = subprocess.Popen(['/usr/bin/caffeinate', '-dimsu', '-w', str(os.getpid())],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        swap_baseline = swap_used()
+        from build_identity import current_build
+        from version_stats import status as version_status, display
+        build=current_build()
+        state['runtime_version']=build['version_id']
+        state['version_stats']=version_status(learning,build['version_id'])
+        emit('标准天梯 · '+display(state['version_stats']))
         if client_factory:
             client = client_factory(parent_pid, swap_baseline)
             state['persistent_client'] = True
@@ -156,6 +193,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             if review.get('outcome') in ('WON','LOST','TIED'):
                 state['completed_games'] += 1
             if client:state['game_pid']=client.pid
+            if review.get('version_stats'):
+                state['version_stats']=review['version_stats']
             state['stop_reason'] = stop_reason(review)
             if state['stop_reason']:
                 state['status'] = 'needs_review'
@@ -174,6 +213,11 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             # Process/FPS cleanup is complete; a short cooldown is not a
             # session cap, and a user stop remains effective during it.
             pause(2 if client else 10)
+    except AfterGameStop:
+        if not deferred_stop():
+            state.update(status='paused_for_review',stop_reason='postgame_stop')
+            persist()
+        return state
     except Exception as error:
         cancelled = isinstance(error, AutoplayCancelled) or str(error) in ('已收到停止指令', '应用已退出，停止本次运行')
         state.update(status='cancelled' if cancelled else 'needs_review',

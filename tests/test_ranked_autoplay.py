@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ranked_autoplay import run_autoplay, stop_reason, AutoplayCancelled
+from ranked_autoplay import run_autoplay, stop_reason, AutoplayCancelled, AfterGameStop, continued_swap_baseline
 
 
 def completed(name='run-1', outcome='WON', losses=0):
@@ -14,6 +14,27 @@ def completed(name='run-1', outcome='WON', losses=0):
 
 
 class RankedAutoplayTests(unittest.TestCase):
+    def test_planned_resume_preserves_old_baseline_instead_of_hiding_growth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'state.json'
+            for status in ('paused_for_review','needs_review','waiting_for_resources'):
+                p.write_text(json.dumps({'status':status,'swap_baseline_mib':1000}))
+                self.assertEqual(continued_swap_baseline(p,1700*1024**2),1000*1024**2)
+                self.assertEqual(continued_swap_baseline(p,800*1024**2),800*1024**2)
+            p.write_text(json.dumps({'status':'cancelled','swap_baseline_mib':1000}))
+            self.assertEqual(continued_swap_baseline(p,1700*1024**2),1700*1024**2)
+
+    def test_stop_during_result_wait_retains_user_intent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data=Path(tmp)
+            def game(*_,**__):
+                (data/'learning/pause-after-game.json').write_text('{"reason":"user_requested_stop"}')
+                raise AfterGameStop()
+            state=run_autoplay({'api_key':'private-test'},None,data,game,Mock(),Mock())
+            self.assertEqual(state['status'],'cancelled')
+            self.assertEqual(state['stop_reason'],'user_after_game_stop')
+            self.assertEqual(state['completed_games'],0)
+
     def setUp(self):
         self.baseline = 1031 * 1024**2
         mock_swap = patch('ranked_autoplay.swap_used', return_value=self.baseline)

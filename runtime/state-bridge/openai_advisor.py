@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+import attack_plan
 from card_metadata import CATALOG
 DEFAULT_MODEL = "gpt-6.1-sol"
 MAX_OUTPUT = 1536
@@ -28,6 +29,10 @@ class AdvisorError(Exception):
 
 class AdvisorTimeout(AdvisorError):
     """No decision was returned before this request's network deadline."""
+
+
+class ContextTooLarge(AdvisorError):
+    """The complete request exceeds the existing input bound."""
 
 
 def signature(state):
@@ -330,7 +335,7 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
         encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
     if len(encoded) > MAX_INPUT_BYTES:
-        raise AdvisorError("Decision context exceeds the request size limit")
+        raise ContextTooLarge("Decision context exceeds the request size limit")
     return payload, len(encoded)
 
 
@@ -390,6 +395,7 @@ class OpenAIAdvisor:
                         'mulligan_confirmed': False, 'outcome': 'INCOMPLETE',
                         'diagnostics_capped': False}
         self.decision_seq = 0
+        self.pending_attack = None
         self.consecutive_timeouts = 0
         if audit_path is not None:
             import os
@@ -540,6 +546,16 @@ class OpenAIAdvisor:
                     'compare': 'The listed attacks are legal now. If you already intend a necessary trade, weigh taking '
                                'it before optional draw or setup. Re-evaluate after each hit for Reborn, triggers and '
                                'changed targets. Drawing first may be necessary for an immediate out.'}
+            else:
+                hits = sorted(attack_plan.removals(view, menu).values(), key=lambda pair: (-pair[1]['attack'], pair[0]['attack']))
+                if hits:
+                    view['turn_pace'] = {'seconds_since_first_decision': elapsed,
+                        'removals_before_other_effects': [
+                            {'attacker_id':a['id'], 'target_id':t['id'], 'target_attack':t['attack'],
+                             'target_health':t['health']} for a,t in hits[:12]],
+                        'compare': 'When defending, secure a dangerous attacker you can already remove before optional '
+                                   'buffs. Order intended trades by the damage and attack triggers you can prevent even '
+                                   'if the turn ends early. Account for effects and any buff essential to survival.'}
 
     def select(self, view, menu):
         self.decision_seq += 1
@@ -551,8 +567,22 @@ class OpenAIAdvisor:
             self.record({"event": "proposed", "observation": view, "actions": menu,
                          "action": {"kind": "end_turn"}, "reason": "only legal supported action"})
             return {"kind": "end_turn"}
-        payload, size = request_payload(self.model, view, menu, self.instructions,
-                                       service_tier=self.service_tier, effort=self.effort)
+        pairs = attack_plan.options(view, menu)
+        offered = {**menu, **pairs} if pairs else menu
+        instructions = self.instructions
+        if pairs:
+            instructions += (' An attack_plan names two independent attacks in the menu. Choose it only if you intend '
+                             'both in that order. Only the first is sent now. The second requires server confirmation '
+                             'and a fresh board and menu matching the expected first combat. Single actions remain available.')
+        try:
+            payload, size = request_payload(self.model, view, offered, instructions,
+                                           service_tier=self.service_tier, effort=self.effort)
+        except ContextTooLarge:
+            if not pairs:
+                raise
+            offered = menu
+            payload, size = request_payload(self.model, view, menu, self.instructions,
+                                           service_tier=self.service_tier, effort=self.effort)
         for field in ('life_tap', 'turn_pace'):
             if field in view and ('"' + field + '":') not in payload['input']:
                 view = {k: v for k, v in view.items() if k != field}
@@ -572,13 +602,18 @@ class OpenAIAdvisor:
         actual_model = response.get("model")
         if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
             raise AdvisorError("API response model does not match the requested model")
-        action, reason, tokens = parse_response(response, menu)
+        action, reason, tokens = parse_response(response, offered)
+        plan_record = {'offered_attack_pairs':list(pairs)} if offered is not menu else {}
+        if action.get('kind') == 'attack_plan':
+            self.pending_attack = attack_plan.prepare(view, menu, action, self.decision_seq)
+            plan_record['conditional_attack'] = self.pending_attack['second']
+            action = self.pending_attack['first']
         self.consecutive_timeouts = 0
         self.tokens += tokens
         self.record({"event": "proposed", "observation": view, "actions": menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
-                     "reasoning_effort": self.effort})
+                     "reasoning_effort": self.effort, **plan_record})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,
                           "api_elapsed_ms": elapsed_ms, "request_bytes": size,
                           "response_model": actual_model, "served_tier": response.get('service_tier'),
@@ -596,9 +631,21 @@ class OpenAIAdvisor:
             view['life_tap'] = tap
         if gaps:
             view['unavailable_interactions'] = gaps
+        plan, self.pending_attack = self.pending_attack, None
+        followup = None if gaps else attack_plan.checked_action(plan, view, menu, state.get('options_id'), self.decision_seq)
+        if followup:
+            return self.local_action(view, menu, {'rule':'confirmed_attack_plan_v1', 'action':followup,
+                'reason':'按已选计划执行第二次交换。首击已确认，当前公开局面和合法选项与预期相符。',
+                'evidence':{'from_decision':plan['decision_id'], 'first':plan['first'],
+                            'previous_options_id':plan['confirmed_options_id'], 'options_id':state['options_id']}})
         from tactical_checks import forced_face_attack
         proof = None if gaps else forced_face_attack(state, menu)
-        return self.local_action(view, menu, proof) if proof else self.select(view, menu)
+        if proof:
+            return self.local_action(view, menu, proof)
+        action = self.select(view, menu)
+        if self.pending_attack:
+            self.pending_attack['offered_options_id'] = state['options_id']
+        return action
 
     def local_action(self, view, menu, proof):
         self.decision_seq += 1
@@ -667,6 +714,10 @@ class OpenAIAdvisor:
 
     def confirm(self, action, state):
         self.record({"event": "confirmed", "action": action})
+        if (self.pending_attack and self.pending_attack['decision_id'] == self.decision_seq
+                and self.pending_attack.get('offered_options_id') == state.get('options_id')
+                and self.pending_attack['first'] == action and self.pending_attack['turn'] == state.get('game_turn')):
+            self.pending_attack['confirmed_options_id'] = state.get('options_id')
         source = next((x for x in state.get("my_hand", []) + state.get("my_board", []) + state.get('my_locations',[])
                        if x["id"] == action.get("source_id")), {})
         self.confirmed.append({"turn": state.get("game_turn"), "kind": action["kind"],
@@ -682,6 +733,7 @@ class OpenAIAdvisor:
         self.remember_choice(choice, choice["items"][index]["card_id"])
 
     def remember_choice(self, choice, card_id):
+        self.pending_attack = None
         self.choice_history.append({"source_id": choice.get("source"), "card_id": card_id})
         self.choice_history = self.choice_history[-6:]
 

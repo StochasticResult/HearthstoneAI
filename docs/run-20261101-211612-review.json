@@ -1,0 +1,38 @@
+{
+  "run": "run-20261101-211612",
+  "game_type": null,
+  "outcome": "INCOMPLETE",
+  "requested_mode": "ranked",
+  "first_decision_game_turn": null,
+  "models": [],
+  "api_responses": 0,
+  "api_tokens": 0,
+  "median_decision_ms": null,
+  "confirmed_decisions": 0,
+  "unconfirmed_decisions": [],
+  "local_calculations": 0,
+  "resources": {
+    "game": {
+      "peak_sampled_rss_mib": 1019.7,
+      "peak_sampled_cpu_pct": 295.1,
+      "peak_thermal_state": 0
+    },
+    "ai": {
+      "peak_sampled_rss_mib": 78.3,
+      "peak_sampled_cpu_pct": 16.6,
+      "peak_thermal_state": 0
+    }
+  },
+  "guard_stop_reasons": [
+    "swap threshold",
+    "interrupted"
+  ],
+  "game_closed": true,
+  "needs_review": true,
+  "reconnect_recovery_used": false,
+  "mulligan_confirmed": false,
+  "started_without_mulligan": false,
+  "driver_stop_detail": "game watchdog is not running",
+  "consecutive_losses": 0,
+  "review_before_next_game": true
+}

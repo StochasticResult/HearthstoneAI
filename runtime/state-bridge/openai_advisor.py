@@ -89,7 +89,7 @@ def public_view(state):
                    "taunt", "frozen", "exhausted", "divine_shield", "windfury", "stealth",
                    "lifesteal", "poisonous", "reborn", "immune", "dormant", "silenced",
                    'mega_windfury','rush','charge','deathrattle','titan','spell_damage','cooldown',
-                   'cant_be_targeted_by_spells','cant_be_targeted_by_hero_powers',
+                   'cant_be_targeted_by_spells','cant_be_targeted_by_hero_powers','cant_attack','cant_attack_heroes',
                    "attacks_this_turn", "countdown_tag", "quest_progress", "quest_progress_total", "script_data_1", "script_data_2", "count")
     result = {k: state[k] for k in ("game_type", "format", "game_turn", "mana", "phase",
               "mana_cap", "mana_crystals", "mana_spent", "temporary_mana", "overload_locked", "overload_owed",
@@ -308,6 +308,13 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
             'null_means': 'field not present on this action; choose action_id'}
         payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
         encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
+    if len(encoded) > MAX_INPUT_BYTES and ('life_tap' in observation or 'turn_pace' in observation):
+        # Optional coaching must never displace a legal option or break a
+        # previously supported board at the request-size boundary.
+        observation.pop('life_tap', None)
+        observation.pop('turn_pace', None)
+        payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
+        encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
     if len(encoded) > MAX_INPUT_BYTES:
         # Keep current entities, all card texts, all action IDs, known hidden-
         # zone evidence and secret probes. Remove duplicated narrative only.
@@ -363,6 +370,8 @@ class OpenAIAdvisor:
         self.choice_history = []
         self.secret_tests = []
         self.starting_deck = None
+        self.pace_turn = None
+        self.pace_started = 0.0
         try:
             with Path("/Applications/Hearthstone/Hearthstone.app/Contents/Info.plist").open("rb") as handle:
                 self.client_build = plistlib.loads(handle.read(65536)).get("CFBundleVersion")
@@ -502,8 +511,30 @@ class OpenAIAdvisor:
             raise AdvisorError("API request failed" + (" (HTTP %s)" % code if isinstance(code, int) else ""))
         return data
 
+    def note_turn_pace(self, view, menu):
+        turn = view.get('game_turn')
+        if turn is None:
+            return
+        now = time.monotonic()
+        if turn != self.pace_turn:
+            self.pace_turn, self.pace_started = turn, now
+            return
+        elapsed = int(now - self.pace_started)
+        if elapsed < 25 or view.get('phase') != 'main':
+            return
+        enemy = view.get('enemy_hero') or {}
+        attackers = {a.get('source_id') for a in menu.values() if a.get('kind') == 'attack'
+                     and a.get('target_id') == enemy.get('id')}
+        face = [[c['id'], c['attack']] for c in view.get('my_board', []) + [view.get('my_hero') or {}]
+                if c.get('id') in attackers and type(c.get('attack')) is int and c['attack'] > 0]
+        if face:
+            view['turn_pace'] = {'seconds_since_first_decision': elapsed, 'legal_face_attackers_now': face,
+                'compare': 'Time spent, not a rope countdown. Secure valuable attacks before optional draw, Discover or '
+                           'marginal buffs if delay risks losing the attacks. Preserve necessary trades, lethal buffs and secret tests.'}
+
     def select(self, view, menu):
         self.decision_seq += 1
+        self.note_turn_pace(view, menu)
         # With no playable card, attack or power, the observed menu may
         # contain only end turn. There is no model decision to purchase.
         if len(menu) == 1 and next(iter(menu.values())) == {"kind": "end_turn"}:
@@ -513,6 +544,9 @@ class OpenAIAdvisor:
             return {"kind": "end_turn"}
         payload, size = request_payload(self.model, view, menu, self.instructions,
                                        service_tier=self.service_tier, effort=self.effort)
+        for field in ('life_tap', 'turn_pace'):
+            if field in view and ('"' + field + '":') not in payload['input']:
+                view = {k: v for k, v in view.items() if k != field}
         # The user removed cumulative API quotas. Keep actual accounting,
         # per-request bounds/timeouts, and the independent resource watchdog.
         self.calls += 1
@@ -547,6 +581,10 @@ class OpenAIAdvisor:
         view = self.view(state)
         view["recent_confirmed_actions"] = self.confirmed[-4:]
         menu, gaps = action_menu(state, with_gaps=True)
+        from life_tap import life_tap_facts
+        tap = life_tap_facts(view, menu, CATALOG)
+        if tap is not None:
+            view['life_tap'] = tap
         if gaps:
             view['unavailable_interactions'] = gaps
         from tactical_checks import forced_face_attack

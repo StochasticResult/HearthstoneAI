@@ -157,6 +157,9 @@ def summarize(dest):
                     pending = [r for r in pending if r is not row]
                     break
     outcome = summary['outcome']
+    if summary.get('game_type') == 'GT_RANKED' and outcome in ('WON', 'LOST', 'TIED'):
+        from coaching import strategy_sample
+        summary['strategy_sample'] = strategy_sample(decisions, summary.get('diagnostics_capped', False))
     samples = pending[-1:]
     if not samples and outcome == 'LOST' and not summary.get('diagnostics_capped'):
         samples = [r for r in proposed if r.get('decision_id') in confirmed][-1:]
@@ -178,6 +181,7 @@ def save(path, obj):
 
 def write_review(dest, learning, *, game_closed=None, game_preserved=False, match_workers_closed=None, game_pid=None):
     summary, cases = summarize(dest)
+    strategy_sample = summary.pop('strategy_sample', None)
     from build_identity import read_build
     build=read_build(dest/'run-version.json')
     summary['runtime_version']=build['version_id']
@@ -209,7 +213,7 @@ def write_review(dest, learning, *, game_closed=None, game_preserved=False, matc
     summary['consecutive_losses'] = losses
     summary['review_before_next_game'] = summary['needs_review'] or losses >= 3
     from version_stats import record
-    summary['version_stats']=record(learning,summary,history)
+    summary['version_stats']=record(learning,summary,history,strategy_sample=strategy_sample)
     save(dest / 'review.json', summary)
     save(history_path, history)
     save(queue_path, (previous(queue_path, 1024 * 1024) + cases)[-10:])

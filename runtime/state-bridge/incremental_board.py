@@ -497,6 +497,9 @@ class IncrementalBoard:
                             "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED",
                             'DEATHRATTLE','TITAN','CANT_BE_TARGETED_BY_SPELLS','CANT_BE_TARGETED_BY_HERO_POWERS'):
                     result[tag.lower()] = board._tag_int(entity, tag) != 0
+                for tag in ('CANT_ATTACK', 'CANT_ATTACK_HEROES'):
+                    if board._tag_int(entity, tag):
+                        result[tag.lower()] = True
                 result["attacks_this_turn"] = board._tag_int(entity, "NUM_ATTACKS_THIS_TURN")
                 result["modifiers"] = modifiers(entity)
                 result['spell_damage'] = board._tag_int(entity,'SPELLPOWER')

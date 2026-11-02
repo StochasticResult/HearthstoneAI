@@ -1,7 +1,7 @@
 """Durable per-build results. SQLite makes duplicate review writes idempotent.
 
-Detailed logs can be cleaned independently. This small ledger contains only
-run/build/model identifiers and outcome counts, never cards or account data.
+Detailed logs can be cleaned independently. Match totals contain run/build/model
+identifiers and outcomes. A separate capped table retains public decision samples.
 """
 import json
 import os
@@ -88,7 +88,7 @@ def status(learning,version,mode='ranked'):
     finally:connection.close()
 
 
-def record(learning, summary, history=()):
+def record(learning, summary, history=(), *, strategy_sample=None):
     """Import retained legacy evidence, then insert/update this exact run once."""
     connection=connect(learning)
     try:
@@ -98,6 +98,11 @@ def record(learning, summary, history=()):
             row=result_row(summary)
             connection.execute('''INSERT INTO matches VALUES (?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET
                 version=excluded.version,mode=excluded.mode,outcome=excluded.outcome,models=excluded.models''',row)
+            if strategy_sample is not None and (strategy_sample['observed_own_turns'] or 'opening' in strategy_sample):
+                connection.execute('CREATE TABLE IF NOT EXISTS strategy_samples (run TEXT PRIMARY KEY, sample TEXT NOT NULL)')
+                connection.execute('INSERT OR REPLACE INTO strategy_samples VALUES (?,?)',
+                                   (row[0], json.dumps(strategy_sample, ensure_ascii=False, separators=(',', ':'))))
+                connection.execute('DELETE FROM strategy_samples WHERE run NOT IN (SELECT run FROM strategy_samples ORDER BY run DESC LIMIT 64)')
         current=grouped(connection,version=row[1],mode=row[2])[0]
         export_report(connection,learning,current)
         return current

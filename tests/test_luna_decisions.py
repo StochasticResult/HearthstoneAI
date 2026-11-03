@@ -1,6 +1,7 @@
 import copy
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
 from luna_decisions import emergency_clears, parse_choice, parse_scores, prepare_backup, recovery_inputs
@@ -26,6 +27,38 @@ def crisis():
 
 
 class DecisionsTests(unittest.TestCase):
+    def test_ranked_shadow_replays_preserve_tradeoffs_and_spell_costs(self):
+        path = Path(__file__).parent/'fixtures'/'standby-ranked-20261102.json'
+        trades, tax = json.loads(path.read_text())
+
+        def packet(row, **overrides):
+            view = {**row['observation'], **overrides}
+            menu = row['actions']
+            sol,_ = request_payload('gpt-6.1-sol',view,menu,service_tier='priority',effort='medium')
+            _,wire = recovery_inputs(sol,view,menu)
+            return json.loads(wire['input'])
+
+        def action_id(row, key):
+            return next(aid for aid,a in row['actions'].items() if a==row[key])
+
+        v = packet(trades)
+        actual, unused = trades['confirmed_sol_action'], trades['unused_luna_action']
+        self.assertEqual(actual['target_id'],unused['target_id'])
+        face = dict(v['legal_face_attackers_now'])
+        self.assertNotIn(actual['source_id'],face)
+        self.assertEqual(face[unused['source_id']],9)
+        for key,hp in [('confirmed_sol_action',0),('unused_luna_action',2)]:
+            hit = v['one_step_arithmetic'][action_id(trades,key)]
+            self.assertEqual((hit['defender_hp_after_hit'],hit['attacker_hp_after_counter']),(0,hp))
+
+        aid = action_id(tax,'unused_luna_action')
+        costs = packet(tax)['one_step_arithmetic'][aid]
+        self.assertEqual(costs['mana_left_after_play'],2)
+        self.assertEqual({(s['id'],s['cost_now'],s['cost_after_tax']) for s in costs['spells_priced_out_if_tax_played_first']},
+                         {(55,2,3),(59,2,3)})
+        self.assertNotIn('spells_priced_out_if_tax_played_first',
+                         packet(tax,mana=5)['one_step_arithmetic'].get(aid,{}))
+
     def test_double_clear_gate_uses_observed_stats_and_legal_actions(self):
         s=crisis()
         def allowed(st):return emergency_clears(public_view(st),action_menu(st))

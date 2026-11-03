@@ -26,6 +26,12 @@ from resource_guard import GIB, MIB, battery_status, swap_used, thermal_state, m
 GAME_EXEC = "/Applications/Hearthstone/Hearthstone.app/Contents/MacOS/Hearthstone"
 LAUNCHER_EXEC = "/Applications/Hearthstone/Hearthstone Beta Launcher.app/Contents/MacOS/Hearthstone Beta Launcher"
 OPTIONS = os.path.expanduser("~/Library/Preferences/Blizzard/Hearthstone/options.txt")
+GAME_RSS_LIMIT_MIB = 1800
+GAME_RSS_BOUNDARY_MIB = GAME_RSS_LIMIT_MIB * 95 // 100
+BOUNDARY_RECYCLE = 'postgame memory recycle'
+RECOVERABLE_GAME_STOPS = {BOUNDARY_RECYCLE, 'game memory threshold', 'critical system memory pressure',
+    'system memory availability threshold', 'unknown system memory status', 'serious or critical thermal state',
+    'power or battery threshold', 'disk reserve'}
 
 
 def change_fps(path, expected, replacement):
@@ -122,11 +128,18 @@ def main():
     swap_baseline = initial_swap if args.swap_baseline_mib is None else args.swap_baseline_mib * MIB
     free_memory_pct = memory_free_percentage()
     previous_pressure = memory_pressure_level()
-    memory_reason = memory_stop_reason(initial_swap, swap_baseline, previous_pressure, free_memory_pct, growth=None)
-    if memory_reason:
-        raise RuntimeError("preflight safety check failed: " + memory_reason)
-    if not initial_ac or thermal_state() >= 1 or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
-        raise RuntimeError("preflight safety check failed")
+    preflight_reason = memory_stop_reason(initial_swap, swap_baseline, previous_pressure, free_memory_pct, growth=None)
+    if not initial_ac:
+        preflight_reason = 'waiting for AC power'
+    elif thermal_state() >= 1:
+        preflight_reason = 'waiting for nominal thermal state'
+    elif shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
+        preflight_reason = 'disk reserve'
+    if preflight_reason:
+        if args.native_owner_pid:
+            print(json.dumps({'watchdog':'waiting_for_resources','reason':preflight_reason}), flush=True)
+            return 2
+        raise RuntimeError("preflight safety check failed: " + preflight_reason)
     if args.native_owner_pid and args.expected == GAME_EXEC:
         guard_lock = (Path.home()/'Library/Application Support/HearthstoneAI/game-guard.lock').open('a+')
         fcntl.flock(guard_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -143,9 +156,13 @@ def main():
     owner_exit = None
     detached = False
     release_requested = False
+    recycle_requested = False
     def release(_signum,_frame):
         nonlocal release_requested
         release_requested = True
+    def recycle(_signum,_frame):
+        nonlocal recycle_requested
+        recycle_requested = True
     def detach(_signum=None, _frame=None):
         nonlocal detached
         detached = True
@@ -170,9 +187,12 @@ def main():
                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)],0,0)
         signal.signal(signal.SIGUSR1, detach)
         signal.signal(signal.SIGUSR2, release)
+        signal.signal(signal.SIGHUP, recycle)
     previous_fps = change_fps(OPTIONS, None, args.temporary_fps) if args.temporary_fps else None
     report({"watchdog": "armed", "pid": os.getpid(), "max_game_seconds": args.run_seconds})
     claimed = None
+    claimed_start = None
+    recycle_reported = False
     start = time.monotonic()
     game_start = None
     previous_status = start
@@ -207,6 +227,8 @@ def main():
                     break
                 if matches:
                     claimed = matches[0][0]
+                    if args.native_owner_pid:
+                        claimed_start = process_started(claimed)
                     game_start = now
                     if args.background_policy:
                         subprocess.run(["/usr/sbin/taskpolicy", "-b", "-p", str(claimed)], timeout=3, check=True, capture_output=True)
@@ -244,6 +266,9 @@ def main():
                     maintenance_reason = 'sustained game CPU load'
                 if not maintenance_reason and free_disk < 10*GIB:
                     maintenance_reason = 'disk reserve'
+                if args.native_owner_pid and rss > GAME_RSS_LIMIT_MIB*MIB and not recycle_reported:
+                    report({'recycle_after_game':True, 'game_pid':claimed, 'rss_mib':round(rss/MIB,1)})
+                    recycle_reported = True
                 if pressure != previous_pressure:
                     report({'memory_pressure_level': pressure, 'pressure_transition': True,
                             'swap_mib': round(current_swap/MIB,1)})
@@ -252,7 +277,7 @@ def main():
                     reason = "serious or critical thermal state"
                 elif not ac or pct <= initial_pct - 1:
                     reason = "power or battery threshold"
-                elif rss > 1800 * MIB:
+                elif not args.native_owner_pid and rss > GAME_RSS_LIMIT_MIB*MIB:
                     reason = "game memory threshold"
                 elif memory_reason:
                     reason = memory_reason
@@ -270,6 +295,10 @@ def main():
                     break
             if release_requested:
                 reason='released to user'
+                break
+            if recycle_requested:
+                reason = (BOUNDARY_RECYCLE if claimed_start and process_started(claimed)==claimed_start
+                          else 'retained game identity changed')
                 break
             time.sleep(1)
     finally:
@@ -300,7 +329,7 @@ def main():
         report({"watchdog_result": reason or "interrupted", "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1)})
         if owner_exit is not None:
             owner_exit.close()
-    return 0 if reason in ("game exited", "short test deadline", "released to user", "native application exited") else 2
+    return 0 if reason in ("game exited", "short test deadline", "released to user", "native application exited", BOUNDARY_RECYCLE) else 2
 
 
 if __name__ == "__main__":

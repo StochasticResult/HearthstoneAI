@@ -15,7 +15,8 @@ from pathlib import Path
 from input_command import input_command
 from deck_observation import save_selected_deck
 from opponent_decks import start_refresh
-from game_watchdog import GAME_EXEC, processes, process_started
+from game_watchdog import GAME_EXEC, GAME_RSS_BOUNDARY_MIB, RECOVERABLE_GAME_STOPS, processes, process_started
+from resource_guard import MIB
 from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
 from game_boundary import FaultedMatchEnd, LogBoundary, idle_log_start, result_dismissal
@@ -79,6 +80,8 @@ def guard_event(line, source):
         message = "AI 守护结束：%s（退出码 %s）" % (result.get("reason") or "子进程退出", result.get("exit_code"))
     elif "restored_target_fps" in event:
         message = "已恢复原帧率：%s FPS" % event["restored_target_fps"]
+    elif event.get("recycle_after_game"):
+        message = "炉石占用达到局后回收线，继续当前对局"
     elif "claimed_pid" in event:
         message = "已确认炉石进程启动"
     elif "rss_mib" in event:
@@ -255,6 +258,8 @@ class PersistentClient:
         self.covered_point = None
         self.idle_log = None
         self.initial_stage = 1
+        self.recycle_pending = False
+        self.guard_reason = None
 
     def foreground_ready(self):
         if self.focus is None:
@@ -301,10 +306,64 @@ class PersistentClient:
         return False
 
     def observe(self, event, source):
-        if source == '游戏守护' and type(event.get('claimed_pid')) is int:
+        if source != '游戏守护':
+            return
+        if type(event.get('claimed_pid')) is int:
             if self.pid is not None and self.pid != event['claimed_pid']:
                 raise SessionError('游戏进程身份改变')
             self.pid = event['claimed_pid']
+        if event.get('recycle_after_game') and self.pid and event.get('game_pid') == self.pid:
+            self.recycle_pending = True
+        if 'watchdog_result' in event:
+            self.guard_reason = event['watchdog_result']
+
+    def recycle_at_boundary(self):
+        if (not self.parent_pid or self.match_at_risk or not self.pid or not self.watchdog or not self.boundary
+                or not self.previous or self.previous.get('outcome') not in ('WON','LOST','TIED')
+                or self.previous.get('game_pid') != self.pid or self.previous.get('match_workers_closed') is not True):
+            return
+        active = processes(GAME_EXEC)
+        if len(active) != 1 or active[0][0] != self.pid:
+            raise SessionError('局间炉石进程身份改变，保留现状')
+        rss_mib = active[0][1] / MIB
+        if not self.recycle_pending and rss_mib < GAME_RSS_BOUNDARY_MIB:
+            return
+        from ranked_autoplay import AfterGameStop, read_small
+        if read_small(DATA/'learning/pause-after-game.json'):
+            raise AfterGameStop()
+        self.boundary.check()
+        emit('已核实上一局结算，回收炉石内存后自动续排', game_pid=self.pid,
+             boundary_rss_mib=round(rss_mib,1), crossed_in_game=self.recycle_pending)
+        self.watchdog.send_signal(signal.SIGHUP)
+        self.watchdog.wait(timeout=12)
+        raise SessionError('局间回收已结束，重新检查资源')
+
+    def recover_closed_guard(self):
+        """Reset match state only after our guard reports why its client closed."""
+        if not self.pid or not self.watchdog:
+            return None
+        if self.guard_reason in RECOVERABLE_GAME_STOPS and self.watchdog.poll() is None:
+            self.watchdog.wait(timeout=5)
+        if self.watchdog.poll() is None:
+            return None
+        for _ in range(8):
+            if not self.streams:
+                break
+            drain_guards(self.streams, self.sources, self.observe)
+        if self.guard_reason not in RECOVERABLE_GAME_STOPS or processes(GAME_EXEC):
+            return None
+        reason = self.guard_reason
+        self.reset_guard()
+        return reason
+
+    def reset_guard(self):
+        self.close()
+        self.watchdog = self.pid = self.previous = self.boundary = self.idle_log = None
+        self.launched = self.match_at_risk = self.recycle_pending = False
+        self.guard_reason = self.covered_point = self.last_focus_state = None
+        self.initial_stage = 1
+        if self.focus:
+            self.focus.bind(0)
 
     def adopt_existing(self, pid):
         started = process_started(pid)
@@ -349,6 +408,11 @@ class PersistentClient:
                 stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             armed=read_json_line(self.watchdog,10)
             guard_event(json.dumps(armed).encode(),'游戏守护')
+            if armed.get('watchdog') == 'waiting_for_resources':
+                from ranked_autoplay import PreflightResourceWait
+                self.watchdog.wait(timeout=5)
+                self.reset_guard()
+                raise PreflightResourceWait(armed['reason'])
             if armed.get('watchdog') != 'armed':
                 raise SessionError('游戏资源保护启动失败')
             self.streams={self.watchdog.stdout:getattr(self.watchdog,'_pending_line_bytes',b'')}
@@ -357,6 +421,7 @@ class PersistentClient:
                 self.return_to_menu()
         else:
             self.return_to_menu()
+        self.recycle_at_boundary()
 
     def tick(self):
         if self.parent_pid and os.getppid() != self.parent_pid:

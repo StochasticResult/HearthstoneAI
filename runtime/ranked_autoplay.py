@@ -42,6 +42,10 @@ def stop_reason(review):
     return None
 
 
+class PreflightResourceWait(RuntimeError):
+    """A ranked guard declined to arm before any launch or game input."""
+
+
 def read_small(path, limit=2048):
     if not path.exists():
         return None
@@ -154,7 +158,9 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             check_parent()
             if deferred_stop():
                 return False
-            if client:client.tick()
+            if client:
+                client.tick()
+                client.recycle_at_boundary()
             sample = readiness(baseline, previous=previous_sample)
             previous_sample = sample
             state['resources'] = sample
@@ -234,20 +240,35 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             check_parent()
             if deferred_stop():
                 return state
-            if not maintain(swap_baseline):
-                return state
-            if refresh_decks:
-                refresh_decks(learning)
-            state['current_game'] = state['completed_games'] + 1
-            persist()
-            emit('自动天梯：第 %d 局' % state['current_game'], play_status='自动天梯 · 第 %d 局' % state['current_game'])
-            # The native parent keeps the key only in memory. Every match
-            # receives a copy and owns fresh resource monitors and log files.
-            # Keep one baseline across match cleanup: accumulated growth must
-            # not disappear merely because a new game starts.
-            kwargs={'swap_baseline':swap_baseline}
-            if client:kwargs['client']=client
-            review = run_one(dict(config), parent_pid, 'ranked', **kwargs)
+            try:
+                if not maintain(swap_baseline):
+                    return state
+                if refresh_decks:
+                    refresh_decks(learning)
+                state['current_game'] = state['completed_games'] + 1
+                persist()
+                emit('自动天梯：第 %d 局' % state['current_game'], play_status='自动天梯 · 第 %d 局' % state['current_game'])
+                kwargs={'swap_baseline':swap_baseline}
+                if client:kwargs['client']=client
+                review = run_one(dict(config), parent_pid, 'ranked', **kwargs)
+            except (AfterGameStop, AutoplayCancelled):
+                raise
+            except Exception as error:
+                if not client or str(error) in ('已收到停止指令','应用已退出，停止本次运行'):
+                    raise
+                check_parent()
+                if deferred_stop():
+                    return state
+                old_pid = client.pid
+                reason = str(error) if isinstance(error, PreflightResourceWait) else client.recover_closed_guard()
+                if reason is None:
+                    raise
+                state.update(status='waiting_for_resources', stop_reason=None, current_game=None, game_pid=None,
+                             last_client_recovery={'reason':reason,'pid':old_pid,'at':time.time()})
+                persist()
+                emit('等待资源复核，满足条件后自动续排', client_recovery=reason, previous_game_pid=old_pid)
+                pause(RESOURCE_CHECK_SECONDS)
+                continue
             state['runs'] = (state['runs'] + [review['run']])[-16:]
             if review.get('outcome') in ('WON','LOST','TIED'):
                 state['completed_games'] += 1

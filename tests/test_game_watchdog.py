@@ -6,7 +6,7 @@ import json
 import os
 import signal
 from pathlib import Path
-from game_watchdog import change_fps, memory_free_percentage
+from game_watchdog import BOUNDARY_RECYCLE, change_fps, memory_free_percentage
 
 with tempfile.TemporaryDirectory() as directory:
     options = Path(directory) / "options.txt"
@@ -39,9 +39,8 @@ finally:
         child.terminate()
         child.wait(timeout=3)
 
-# Exercise both ranked release paths with disposable processes. The claimed
-# process must survive the guard with its original PID in each case.
-for departure in ('released to user', 'native application exited'):
+# Check normal handback and an authorized between-game recycle with disposable processes.
+for departure in ('released to user', 'native application exited', BOUNDARY_RECYCLE):
     child = subprocess.Popen(['/bin/sleep', '25'])
     owner = subprocess.Popen(['/bin/sleep', '25'])
     guard_proc = None
@@ -54,14 +53,16 @@ for departure in ('released to user', 'native application exited'):
         assert json.loads(guard_proc.stdout.readline())['claimed_pid'] == child.pid
         if departure == 'released to user':
             guard_proc.send_signal(signal.SIGUSR2)
+        elif departure == BOUNDARY_RECYCLE:
+            guard_proc.send_signal(signal.SIGHUP)
         else:
             owner.terminate()
             owner.wait(timeout=3)
         out, err = guard_proc.communicate(timeout=8)
         assert guard_proc.returncode == 0, err
         assert json.loads(out.strip().splitlines()[-1])['watchdog_result'] == departure
-        assert child.poll() is None
-        print('PASS retained game survives ' + departure)
+        assert (child.poll() is not None) == (departure == BOUNDARY_RECYCLE)
+        print('PASS ranked guard ' + departure)
     finally:
         for proc in (guard_proc, owner, child):
             if proc and proc.poll() is None:

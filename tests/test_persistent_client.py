@@ -3,6 +3,7 @@ import io
 import json
 import datetime
 import os
+import signal
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,53 @@ from test_incremental_board import fixture, power
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_recycle_requires_confirmed_end_same_pid_and_no_new_match(self):
+        client = session.PersistentClient(os.getppid(),0)
+        client.pid = 777
+        client.watchdog = Mock()
+        client.boundary = Mock()
+        client.previous = {'outcome':'WON','game_pid':777,'match_workers_closed':True}
+        with patch('session.processes',return_value=[(777,1356*session.MIB,0)]) as processes, \
+             patch('ranked_autoplay.read_small',return_value=None) as request,patch('session.emit'):
+            client.recycle_at_boundary()
+            client.watchdog.send_signal.assert_not_called()
+            client.observe({'game_pid':777,'recycle_after_game':True},'游戏守护')
+            client.match_at_risk = True
+            client.recycle_at_boundary()
+            client.watchdog.send_signal.assert_not_called()
+            client.match_at_risk = False
+            client.boundary.check.side_effect = Stop('a new game')
+            with self.assertRaises(Stop):client.recycle_at_boundary()
+            client.watchdog.send_signal.assert_not_called()
+            client.boundary.check.side_effect = None
+            request.return_value = {'reason':'user_requested_stop'}
+            with self.assertRaises(AfterGameStop):client.recycle_at_boundary()
+            client.watchdog.send_signal.assert_not_called()
+            request.return_value = None
+            with self.assertRaisesRegex(session.SessionError,'局间回收'):client.recycle_at_boundary()
+            client.watchdog.send_signal.assert_called_once_with(signal.SIGHUP)
+            client.recycle_pending=False
+            processes.return_value=[(777,1774*session.MIB,0)]
+            with self.assertRaisesRegex(session.SessionError,'局间回收'):client.recycle_at_boundary()
+            processes.return_value=[(778,1811*session.MIB,0)]
+            with self.assertRaisesRegex(session.SessionError,'身份改变'):client.recycle_at_boundary()
+            self.assertEqual(client.watchdog.send_signal.call_count,2)
+
+    def test_only_a_verified_closed_resource_guard_can_reset_the_client(self):
+        client = session.PersistentClient(os.getppid(),0)
+        watch=Mock();watch.stdout=None;client.watchdog=watch;client.pid=777
+        client.match_at_risk=True;client.launched=True;client.guard_reason='disk reserve'
+        with patch('session.processes',return_value=[(777,0,0)]) as processes,patch('session.stop_child'):
+            watch.poll.return_value=2
+            self.assertIsNone(client.recover_closed_guard())
+            processes.return_value=[]
+            client.guard_reason='game exited'
+            self.assertIsNone(client.recover_closed_guard())
+            client.guard_reason='disk reserve'
+            self.assertEqual(client.recover_closed_guard(),'disk reserve')
+            self.assertIsNone(client.pid);self.assertIsNone(client.watchdog)
+            self.assertFalse(client.match_at_risk or client.launched)
+
     def test_existing_lobby_starts_at_current_end_without_launching_again(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

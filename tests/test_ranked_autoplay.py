@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ranked_autoplay import run_autoplay, stop_reason, AutoplayCancelled, AfterGameStop, continued_swap_baseline, reviewed_streak_boundary
+from ranked_autoplay import run_autoplay, stop_reason, AutoplayCancelled, AfterGameStop, PreflightResourceWait, continued_swap_baseline, reviewed_streak_boundary
 
 
 def completed(name='run-1', outcome='WON', losses=0):
@@ -15,6 +15,28 @@ def completed(name='run-1', outcome='WON', losses=0):
 
 
 class RankedAutoplayTests(unittest.TestCase):
+    def test_resource_recovery_rechecks_readiness_then_queues_without_resetting_the_session(self):
+        for refusal in (False,True):
+            with self.subTest(preflight=refusal), tempfile.TemporaryDirectory() as tmp:
+                data=Path(tmp);client=Mock();client.pid=777;client.recover_closed_guard.return_value='disk reserve'
+                attempts=[]
+                def game(config, parent, mode, *, swap_baseline, client):
+                    self.assertEqual((mode,swap_baseline),('ranked',self.baseline))
+                    attempts.append(client.pid)
+                    if len(attempts)==1:return completed('run-1')
+                    if len(attempts)==2:
+                        if refusal:raise PreflightResourceWait('disk reserve')
+                        raise RuntimeError('guard ended')
+                    client.pid=888
+                    (data/'learning/pause-after-game.json').write_text('{"reason":"user_requested_stop"}')
+                    return completed('run-3')
+                ready={'ready':True,'reasons':[]};wait={'ready':False,'reasons':['disk reserve']}
+                with patch('ranked_autoplay.readiness',side_effect=[ready,ready,wait,ready]):
+                    state=run_autoplay({'api_key':'offline-test'},None,data,game,Mock(),Mock(),client_factory=lambda *_:client)
+                self.assertEqual((state['status'],state['completed_games'],state['runs']),('cancelled',2,['run-1','run-3']))
+                self.assertEqual(state['game_pid'],888)
+                self.assertEqual(client.recover_closed_guard.call_count,int(not refusal))
+
     def test_only_acknowledging_the_finished_three_loss_review_sets_a_new_boundary(self):
         prior = dict(autoplay_id='s',status='needs_review',stop_reason='three_consecutive_losses',
                      runs=['a','b','c'],completed_games=3)

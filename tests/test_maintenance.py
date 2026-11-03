@@ -2,6 +2,7 @@ import contextlib
 import io
 import itertools
 import json
+import os
 import signal
 import tempfile
 import unittest
@@ -172,6 +173,38 @@ class MaintenanceTests(unittest.TestCase):
                 self.assertEqual(summary['expired_decisions'],1)
                 self.assertEqual(summary['unconfirmed_decisions'],[3])
                 self.assertEqual(summary['api_responses'],3)
+
+    def test_ranked_game_rss_spike_waits_for_the_boundary_but_critical_pressure_still_stops(self):
+        import game_watchdog as guard
+        signals = (signal.SIGTERM,signal.SIGINT,signal.SIGHUP,signal.SIGUSR1,signal.SIGUSR2)
+        old_handlers = {s:signal.getsignal(s) for s in signals}
+        try:
+            for critical in (False, True):
+                pressure = iter([1, 4 if critical else 1, 1])
+                # Model the recorded 1811 MiB spike. Only an explicit handback ends the healthy guard.
+                argv = ['watchdog','--expected','/bin/sleep','--claim-pid','42424','--run-seconds','0',
+                        '--parent-pid',str(os.getppid()),'--native-owner-pid',str(os.getppid())]
+                def release(_):
+                    signal.getsignal(signal.SIGUSR2)(signal.SIGUSR2,None)
+                with self.subTest(critical=critical), patch('sys.argv',argv), \
+                     patch.object(guard,'battery_status',return_value=(True,80)), \
+                     patch.object(guard,'swap_used',return_value=900*MIB), \
+                     patch.object(guard,'memory_pressure_level',side_effect=lambda:next(pressure,1)), \
+                     patch.object(guard,'memory_free_percentage',return_value=47), \
+                     patch.object(guard,'thermal_state',return_value=0), \
+                     patch.object(guard.shutil,'disk_usage',return_value=SimpleNamespace(free=11*GIB)), \
+                     patch.object(guard,'process_started',return_value=1), \
+                     patch.object(guard,'processes',return_value=[(42424,1811*MIB,90)]), \
+                     patch.object(guard.time,'sleep',side_effect=release), patch.object(guard,'stop_exact') as close, \
+                     contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(guard.main(), 2 if critical else 0)
+                records = [json.loads(l) for l in out.getvalue().splitlines()]
+                self.assertEqual(sum(r.get('recycle_after_game') is True for r in records), 1)
+                self.assertEqual(records[-1]['watchdog_result'], 'critical system memory pressure' if critical else 'released to user')
+                self.assertEqual(close.call_count, int(critical))
+        finally:
+            for sig, handler in old_handlers.items():
+                signal.signal(sig,handler)
 
     def test_multicore_startup_does_not_end_game_when_memory_and_heat_are_normal(self):
         import game_watchdog as guard

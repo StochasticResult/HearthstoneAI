@@ -8,6 +8,16 @@ def _one_less_health(modifier, catalog):
     return card.get('type') == 'ENCHANTMENT' and card.get('text') == '-1 Health.'
 
 
+def _only_ectoplasm_markers(effects, catalog):
+    if effects == []:
+        return True
+    marker = catalog.get('CAP_805e', {})
+    resummon = ' '.join((catalog.get('CAP_805t', {}).get('text') or '').split())
+    return (isinstance(effects, list) and all(effect == {'card_id':'CAP_805e'} for effect in effects)
+            and marker.get('type') == 'ENCHANTMENT' and not marker.get('text')
+            and resummon == 'Resummon all friendly minions that were slimed.')
+
+
 def life_tap_facts(view, menu, catalog):
     power = view.get('my_hero_power') or {}
     definition = catalog.get(power.get('card_id'), {})
@@ -101,7 +111,7 @@ def life_tap_facts(view, menu, catalog):
         if (known < deck and draws == 1 and len(hand) < 10 and hero.get('immune') is False
                 and isinstance(modifiers, list) and all(_one_less_health(m, catalog) for m in modifiers)
                 and not hero.get('unknown_modifier_count') and not hero.get('divine_shield')
-                and view.get('my_player_effects') == []
+                and _only_ectoplasm_markers(view.get('my_player_effects'), catalog)
                 and all(c.get('spell_damage') == 0 for c in friendly if not c.get('dormant') and not c.get('silenced'))
                 and text == 'Casts When Drawn Deal $3 damage to your hero.'):
             health = budget - hit - 3

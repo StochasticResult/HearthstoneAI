@@ -28,6 +28,26 @@ def priest():
 
 
 class TapTests(unittest.TestCase):
+    def test_ectoplasm_marker_keeps_the_shred_draw_estimate(self):
+        view, _ = priest()
+        effect = {'card_id':'CAP_805e'}
+        view.update(my_hero={'health':7,'armor':0,'immune':False,'modifiers':[]}, my_board=[],
+                    enemy_board=[body(156,20,16),body(54,4,5)], my_deck_count=14,
+                    own_known_deck=[{'id':90,'card_id':'TIME_025t'}])
+        menu = {'tap':TAP,'end':END}
+        def facts(effects, catalog=CATALOG):
+            return life_tap_facts(dict(view,my_player_effects=effects), menu, catalog)
+        for effects in ([], [effect], [effect,effect]):
+            result = facts(effects)
+            self.assertEqual(result['effective_health_tap_before_other_effects'], 5)
+            branch = result['if_one_shred_at_printed_damage']
+            self.assertEqual((branch['effective_health'],branch['margin_after_example_trades']), (2,-22))
+        for effects in ([effect,{'card_id':'UNKNOWN'}], [{'card_id':'TIME_064e'}]):
+            self.assertNotIn('if_one_shred_at_printed_damage', facts(effects))
+        for changed in (dict(CATALOG, CAP_805e={'type':'ENCHANTMENT','text':'Your spells deal double damage.'}),
+                        dict(CATALOG, CAP_805t={'text':'Resummon all friendly minions. Restore 3 Health.'})):
+            self.assertNotIn('if_one_shred_at_printed_damage', facts([effect],changed))
+
     def test_ghuun_health_penalty_is_already_in_the_observed_health(self):
         view, _ = priest()
         hero = {'id':68,'health':2,'armor':0,'immune':False,'modifiers':[{'card_id':'BE_287e2'}]}

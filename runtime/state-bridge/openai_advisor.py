@@ -497,12 +497,12 @@ class OpenAIAdvisor:
                 'instruction': 'Consider secret triggers before each play or attack. Probe records are observations, not proof of exclusion.'}
         return view
 
-    def _transport(self, payload):
+    def _transport(self, payload, *, endpoint='responses'):
         # A separate short-lived worker gives a hard wall-clock network timeout.
         # No key in argv, environment, disk, logs, exception bodies or API errors.
         try:
             run = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker"],
-                input=json.dumps({"api_key": self.key, "payload": payload}), text=True,
+                input=json.dumps({"api_key": self.key, "payload": payload, "endpoint": endpoint}), text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=18, check=False)
         except subprocess.TimeoutExpired:
             raise AdvisorTimeout("API request timed out after 18 seconds; no action was sent") from None
@@ -759,9 +759,10 @@ def worker():
     request = json.loads(wire)
     key = request["api_key"]
     payload = json.dumps(request["payload"], separators=(",", ":")).encode()
+    path = {'responses': '/v1/responses', 'decisions': '/v1/decisions'}[request.get('endpoint', 'responses')]
     conn = http.client.HTTPSConnection("api.openai.com", timeout=16, context=ssl.create_default_context())
     try:
-        conn.request("POST", "/v1/responses", body=payload,
+        conn.request("POST", path, body=payload,
                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
         response = conn.getresponse()
         if response.status != 200:

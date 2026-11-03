@@ -19,6 +19,7 @@ SUITES = {
     'tracking-v1': ('tracking-evaluation','tracking_eval.py',4,300),
     'sol-profiles-v1': ('sol-profile-evaluation','sol_profile_eval.py',24,480),
     'sol-fast-efforts-v1': ('sol-fast-efforts','sol_profile_eval.py',16,320),
+    'luna-decisions-v1': ('decisions-sol-evaluation','luna_decisions_eval.py',32,620),
 }
 
 

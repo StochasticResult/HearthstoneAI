@@ -1,5 +1,6 @@
 import json
 import subprocess
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -35,8 +36,9 @@ class TimeoutRecoveryTests(unittest.TestCase):
         s['legal_options'][0]['id'] = self.source
         return s
 
-    def run_with(self, fn):
-        advisor = self.d.advisor = OpenAIAdvisor({'api_key':'fake-key-not-a-secret-123'},fn)
+    def run_with(self, fn, backup=None):
+        advisor = self.d.advisor = OpenAIAdvisor({'api_key':'fake-key-not-a-secret-123'},fn,decisions_transport=backup)
+        self.addCleanup(advisor.close)
         with patch('practice_driver.RUN_MODE','ranked'),patch('practice_driver.mirror',return_value={}), \
              patch('practice_driver.time.sleep'),patch('builtins.print'):
             self.d.run(4,1)
@@ -67,6 +69,76 @@ class TimeoutRecoveryTests(unittest.TestCase):
         self.d.execute_main_action.assert_not_called()
         self.assertEqual(self.d.advisor.summary['unconfirmed_decisions'],[])
         self.assertEqual(self.d.advisor.summary['api_timeouts'],2)
+
+    def backup_for_original_window(self):
+        def score(wire):
+            evidence = json.loads(wire['input'])
+            self.assertEqual(evidence['candidate_moves']['a0']['action']['source_id'],14)
+            return {'model':'gpt-6-luna','usage':{'total_tokens':17},'answers':[
+                {'name':q['name'],'type':'score','score':3 if q['name']=='a0' else 0}
+                for q in wire['questions']]}
+        return Mock(side_effect=score)
+
+    def test_backup_uses_original_window_then_returns_to_sol(self):
+        backup = self.backup_for_original_window()
+        advisor = self.run_with(Mock(side_effect=AdvisorTimeout('timeout')),backup)
+        self.assertEqual((backup.call_count,advisor.consecutive_timeouts,advisor.summary['api_timeouts']),(1,0,1))
+        self.d.execute_main_action.assert_called_once()
+        self.assertEqual(self.d.execute_main_action.call_args.args[2]['source_id'],14)
+        advisor.transport = Mock(return_value=response('a0'))
+        with patch('builtins.print'):
+            advisor.ask(self.snapshot(1))
+        self.assertEqual(backup.call_count,1)
+        advisor.transport.assert_called_once()
+
+    def test_changed_option_discards_prepared_decision_and_only_plays_fresh_sol(self):
+        backup = self.backup_for_original_window()
+        def changed(payload):
+            if self.source == 14:
+                self.source = 41
+                self.p.options_id = 41
+                raise AdvisorTimeout('timeout')
+            return response('a0')
+        advisor = self.run_with(changed,backup)
+        self.assertEqual((advisor.summary['expired_decisions'],backup.call_count),(1,1))
+        self.d.execute_main_action.assert_called_once()
+        self.assertEqual(self.d.execute_main_action.call_args.args[2]['source_id'],41)
+
+    def test_sol_wins_even_if_standby_result_is_already_ready(self):
+        backup_done = threading.Event()
+        score = self.backup_for_original_window()
+        def standby(packet):
+            result = score(packet)
+            backup_done.set()
+            return result
+        def primary(_):
+            self.assertTrue(backup_done.wait(2))
+            return response('a1')
+        advisor = OpenAIAdvisor({'api_key':'fake-key-not-a-secret-123'},primary,decisions_transport=standby)
+        self.addCleanup(advisor.close)
+        advisor.standby.delay = 0
+        with patch('builtins.print'):
+            action = advisor.ask(self.snapshot(1))
+        advisor.close()
+        self.assertEqual(action,{'kind':'attack','source_id':33,'target_id':47})
+        self.assertIsNone(advisor.last_backup_id)
+        self.assertEqual((advisor.summary['decisions_shadow'],advisor.summary['unconfirmed_decisions']),(1,[1]))
+        self.assertEqual(score.call_count,1)
+
+    def test_early_sol_reply_cancels_backup_before_network_dispatch(self):
+        backup = self.backup_for_original_window()
+        advisor = self.run_with(Mock(return_value=response('a0')),backup)
+        advisor.close()
+        backup.assert_not_called()
+        self.assertEqual(advisor.summary.get('decisions_shadow',0),0)
+
+    def test_failed_backup_rechecks_once_before_remaining_sol_retry(self):
+        sol=Mock(side_effect=[AdvisorTimeout('timeout'),response('a0')])
+        backup=Mock(return_value={'model':'wrong-model','answers':[]})
+        a=self.run_with(sol,backup)
+        self.assertEqual((sol.call_count,backup.call_count,a.summary['decisions_declined']),(2,1,1))
+        self.assertGreaterEqual(self.d.identify.call_count,2)
+        self.d.execute_main_action.assert_called_once()
 
     def test_fatal_api_error_is_not_retried(self):
         fn=Mock(side_effect=AdvisorError('HTTP 401'))

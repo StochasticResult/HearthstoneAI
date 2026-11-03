@@ -339,8 +339,9 @@ class Driver:
 
     def consult(self, own, decide, *args):
         game = self.parser.game
+        window = (self.parser.options_id,self.parser.sent_options)
         try:
-            return decide(*args)
+            answer = decide(*args)
         except AdvisorTimeout:
             if RUN_MODE != 'ranked' or self.owner != own or game is None or self.identity_game is not game:
                 raise
@@ -353,8 +354,24 @@ class Driver:
                 raise
             # The live loop checks the new player, menu and choice before asking
             # again. Never send a second copy of the old payload in transport.
-            print('本次 API 请求超时，重新读取当前局面后决策',flush=True)
+            print('API 超时且无可用备用动作，重新核对局面再请求 Sol',flush=True)
             return None
+        backup_id = getattr(self.advisor,'last_backup_id',None)
+        if type(backup_id) is int and backup_id==self.advisor.decision_seq:
+            self.poll()  # Catch up the incremental log; never ask a model again just to validate.
+            if self.parser.game is not game or self.identity_game is not game or self.owner!=own:
+                raise Stop('game changed while awaiting a standby decision')
+            state = args[-1]
+            current = board._game_entity(game)
+            turn = (current or {}).get('tags',{}).get('TURN')
+            ended = self.game_result() in ('WON','LOST','TIED')
+            changed = (window!=(self.parser.options_id,self.parser.sent_options) or
+                       (turn is not None and str(turn)!=str(state.get('game_turn'))))
+            if ended or changed:
+                self.advisor.record({'event':'expired_without_submission','game_turn':state.get('game_turn'),
+                                     'reason':'game ended before standby handoff' if ended else 'standby action window changed'})
+                return None
+        return answer
 
     def recover_observed_zero_cost(self, own):
         paths, self.reconnect_evidence = self.reconnect_evidence, ()

@@ -1,10 +1,110 @@
 """One typed choice from the same public evidence used by the Sol advisor."""
 import json
 import math
+import time
 
 from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES
 
 MODEL = 'gpt-6-luna'
+
+def prepare_backup(sol, view, menu, transport):
+    """Prepare from this exact window now; the returned call can be dispatched later."""
+    if len(menu)==1:
+        return lambda: {'action':next(iter(menu.values())),'mode':'forced','sent':False}
+    clears = emergency_clears(view,menu)
+    allowed = clears or list(menu.values())
+    tap_hp = (view.get('life_tap') or {}).get('effective_health_tap_before_other_effects')
+    if type(tap_hp) is int and tap_hp<=0:
+        allowed = [a for a in allowed if a.get('kind')!='hero_power']
+    try:
+        _,packet = recovery_inputs(sol,view,menu)
+        if len(json.dumps(packet,separators=(',', ':')).encode())>MAX_INPUT_BYTES:
+            raise ContextTooLarge('Score request exceeds the existing limit')
+        mode = 'score'
+    except ContextTooLarge:
+        try:
+            packet = tactical_payload(view,menu)
+        except ContextTooLarge:
+            packet = decision_payload(sol,menu)
+        mode = 'choice'
+    def send():
+        started = time.monotonic()
+        info = {'sent':True,'mode':mode,'restricted_menu':len(allowed)!=len(menu)}
+        try:
+            reply = transport(packet)
+            if mode=='score':
+                action,scores,tokens = parse_scores(reply,menu)
+                eligible = [aid for aid in scores if menu[aid] in allowed]
+                if eligible:
+                    best = max(scores[aid] for aid in eligible)
+                    leaders = [menu[aid] for aid in eligible if scores[aid]==best]
+                    # With equivalent double-clear copies either move has a
+                    # checked effect. An unresolved tie elsewhere has no basis.
+                    action = leaders[0] if len(leaders)==1 or clears else None
+                info['candidate_scores'] = scores
+            else:
+                action,_,tokens = parse_choice(reply,menu)
+            info.update(model=reply['model'],tokens=tokens)
+            if action in allowed:
+                info['action'] = action
+            else:
+                info['error'] = 'no unique eligible recommendation' if action is None else 'selected move outside checked alternatives'
+        except AdvisorError as error:
+            info['error'] = str(error)[:160]
+        info['elapsed_ms'] = round(1000*(time.monotonic()-started))
+        return info
+    return send
+
+def emergency_clears(view, menu):
+    """Identify double clears that remove two independently lethal attackers."""
+    if (view.get('game_type')!='GT_RANKED' or view.get('format')!='FT_STANDARD' or view.get('phase')!='main'
+            or view.get('enemy_secret_count')!=0 or view.get('unavailable_interactions') or
+            any(view.get(k) for k in ('enemy_locations','my_locations','enemy_objectives','enemy_active_rituals',
+                                      'my_player_effects','enemy_player_effects','my_secrets','my_weapon','enemy_weapon'))
+            or any(x.get('card_id') not in ('BE_085','BE_726','BE_090t1','BE_090t2','BE_090t3')
+                   for x in view.get('my_objectives',[]))):
+        return []
+    hero, enemy = view.get('my_hero') or {}, view.get('enemy_hero') or {}
+    if any(type(h.get(k)) is not int or h[k]<0 for h in (hero,enemy) for k in ('health','armor')):
+        return []
+    if any(h.get('immune') is not False or h.get('modifiers')!=[] for h in (hero,enemy)):
+        return []
+    friendly, foes = view.get('my_board',[]),view.get('enemy_board',[])
+    if (not foes or len(friendly)>1 or any(x.get('taunt') is not False or x.get('lifesteal')
+           or x.get('windfury') or x.get('mega_windfury') for x in friendly)):
+        return []
+    harmless = {'CORE_UNG_205','CORE_SCH_713','BE_728','BE_729','BE_090','CAP_405','TIME_025',
+                'TIME_029','EDR_856','CATA_210t','BE_085t'}
+    for x in [*friendly,*foes]:
+        egg = x.get('card_id')=='CATA_210'
+        if (x.get('card_id') not in harmless and not egg
+                or any(x.get(k) is not False for k in ('immune','divine_shield','reborn','dormant'))
+                or (x.get('deathrattle') is not False and not egg)
+                or (egg and (type(x.get('script_data_1')) is not int or type(x.get('script_data_2')) is not int))
+                or type(x.get('attack')) is not int or type(x.get('health')) is not int
+                or x.get('unknown_modifier_count') or any(m.get('card_id') not in
+                    ('TIME_026e','BE_094e','CAP_405t5e','BE_013t2e1') for m in x.get('modifiers',[]))):
+            return []
+    ready = {a['source_id'] for a in menu.values() if a.get('kind')=='attack' and a.get('target_id')==enemy.get('id')}
+    if sum(x['attack'] for x in friendly if x['id'] in ready)>=enemy['health']+enemy['armor']:
+        return []
+    life = hero['health']+hero['armor']
+    hand = view.get('my_hand',[])
+    # A different hand or power can offer a better answer, including lethal.
+    if not hand or any(type(x.get('cost')) is not int or x.get('card_id') not in ('BE_086','BE_728') for x in hand):
+        return []
+    if any(a.get('kind')=='hero_power' for a in menu.values()):
+        power = view.get('my_hero_power') or {}
+        if (view.get('card_definitions') or {}).get(power.get('card_id'),{}).get('name')!='Life Tap':
+            return []
+    highest = max(x['cost'] for x in hand)
+    ids = {x['id'] for x in hand if x.get('card_id')=='BE_086' and x['cost']==highest
+           and type(view.get('mana')) is int and 0<=x['cost']<=view['mana']}
+    clean_lethal = [x for x in foes if x.get('frozen') is False and not x.get('cant_attack')
+                    and not x.get('cant_attack_heroes') and x.get('deathrattle') is False
+                    and x['attack']>=life>0 and 0<x['health']<=4]
+    return [a for a in menu.values() if len(clean_lethal)>=2 and a.get('kind')=='play'
+            and a.get('target_id') is None and a.get('source_id') in ids]
 
 def _hitpoints(unit, damage, poisonous=False):
     if unit.get('dormant') or unit.get('immune') or damage <= 0 or unit.get('divine_shield'):
@@ -20,8 +120,26 @@ def _previews(view, menu):
     costs = [x.get('cost') for x in hand.values()]
     hero = view.get('enemy_hero') or {}
     result = {}
+    playable = {a.get('source_id') for a in menu.values() if a.get('kind')=='play'}
+    mana = view.get('mana')
     for aid,a in menu.items():
         source,target = a.get('source_id'),a.get('target_id')
+        played = hand.get(source,{}) if a.get('kind')=='play' else {}
+        if played.get('card_id') in ('BE_729','BE_728') and type(mana) is int and type(played.get('cost')) is int:
+            # Both cards raise the cost of spells in hand by one. The figures
+            # isolate this effect; other triggers may create other lines.
+            budget = mana-played['cost']
+            spells = [{'id':s['id'],'cost_now':s['cost'],'cost_after_tax':s['cost']+1}
+                      for s in hand.values() if s['id'] in playable and s.get('card_type')=='SPELL'
+                      and type(s.get('cost')) is int and s['cost']<=budget<s['cost']+1]
+            if spells:
+                result[aid] = {'mana_left_after_play':budget,'spells_priced_out_if_tax_played_first':spells}
+        if played.get('card_id')=='CORE_UNG_205':
+            victim = hero if target==hero.get('id') else enemies.get(target,{})
+            if type(victim.get('attack')) is int and not any(victim.get(k) for k in ('dormant','frozen','cant_attack')):
+                result[aid] = {'freeze_target_id':target,'attack_now':victim['attack'],
+                               'has_lifesteal':bool(victim.get('lifesteal')),
+                               'can_normally_hit_face':not victim.get('cant_attack_heroes')}
         if a.get('kind')=='attack' and source in friendly:
             unit,other = friendly[source],enemies.get(target)
             if type(unit.get('attack')) is not int:
@@ -80,6 +198,8 @@ def recovery_inputs(sol, view, menu):
 
 
 def parse_scores(reply, menu):
+    if not isinstance(reply,dict):
+        raise AdvisorError('Invalid Decisions score response')
     model = reply.get('model','')
     if not isinstance(model,str) or not (model==MODEL or model.startswith(MODEL+'-')):
         raise AdvisorError('Unexpected Decisions scoring model')
@@ -94,7 +214,8 @@ def parse_scores(reply, menu):
         if type(name) is not str or name not in menu or name in scores or type(score) not in (int,float) or not 0<=score<=3:
             raise AdvisorError('Invalid or duplicate candidate score')
         scores[name] = score
-    tokens = (reply.get('usage') or {}).get('total_tokens')
+    usage = reply.get('usage')
+    tokens = usage.get('total_tokens') if isinstance(usage,dict) else None
     if type(tokens) is not int or tokens<0:
         raise AdvisorError('Missing Decisions usage')
     best = max(scores,key=scores.get)
@@ -203,6 +324,8 @@ def decision_payload(responses_payload, menu, labels=None):
 
 
 def parse_choice(reply, menu):
+    if not isinstance(reply,dict):
+        raise AdvisorError('Invalid Decisions choice response')
     model = reply.get('model')
     if not isinstance(model, str) or not (model == MODEL or model.startswith(MODEL+'-')):
         raise AdvisorError('Decisions returned an unexpected model')

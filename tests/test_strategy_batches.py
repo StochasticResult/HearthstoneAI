@@ -11,6 +11,21 @@ from coaching import strategy_sample
 
 
 class StrategyBatchTests(unittest.TestCase):
+    def test_standby_samples_keep_unused_suggestions_separate_from_confirmed_moves(self):
+        played = {'kind':'play','source_id':42}
+        passed = {'kind':'end_turn'}
+        proposal = {'event':'proposed','observation':{'game_turn':'7','mana':3},
+                    'actions':{'a0':played,'a1':passed},'action':played}
+        log = [{**proposal,'decision_id':1},{'event':'confirmed','decision_id':1},
+               {**proposal,'decision_id':3,'policy':'sol_timeout_backup_v1'},
+               {'event':'expired_without_submission','decision_id':3},
+               {'event':'decision_assist_shadow','decision_id':3,'for_decision':1,'action':passed}]
+        sample = strategy_sample(log)
+        shadow = sample['cases']['decisions_shadow']
+        self.assertEqual((shadow['decision_id'],shadow['action'],shadow['unused_suggestion']),(1,played,passed))
+        self.assertEqual(sample['cases']['decisions_backup']['status'],'expired_without_submission')
+        self.assertEqual(sample['whole_turn_pass_with_options'],[])
+
     def test_groups_only_settled_ranked_runs_across_versions_and_rechecks_corrections(self):
         with tempfile.TemporaryDirectory() as tmp:
             data=Path(tmp);learning=data/'learning'

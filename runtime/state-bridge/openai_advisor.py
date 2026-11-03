@@ -14,9 +14,11 @@ import statistics
 import subprocess
 import sys
 import time
+from functools import partial
 from pathlib import Path
 
 import attack_plan
+from decision_standby import DecisionStandby
 from card_metadata import CATALOG
 DEFAULT_MODEL = "gpt-6.1-sol"
 MAX_OUTPUT = 1536
@@ -360,7 +362,7 @@ def parse_response(response, menu):
 
 
 class OpenAIAdvisor:
-    def __init__(self, config, transport=None, audit_path=None):
+    def __init__(self, config, transport=None, audit_path=None, *, decisions_transport=None):
         self.key = config.get("api_key", "")
         self.model = config.get("model", DEFAULT_MODEL)
         self.service_tier = config.get('service_tier')
@@ -370,6 +372,9 @@ class OpenAIAdvisor:
         self.calls = 0
         self.tokens = 0
         self.transport = transport or self._transport
+        self.decisions_transport = decisions_transport
+        if decisions_transport is None and transport is None:
+            self.decisions_transport = partial(self._transport,endpoint='decisions',quick=True)
         self.instructions = INSTRUCTIONS
         self.confirmed = []
         self.choice_history = []
@@ -397,6 +402,8 @@ class OpenAIAdvisor:
         self.decision_seq = 0
         self.pending_attack = None
         self.consecutive_timeouts = 0
+        self.standby = DecisionStandby(self.record_unused_backup) if self.decisions_transport else None
+        self.last_backup_id = None
         if audit_path is not None:
             import os
             path = Path(audit_path)
@@ -421,6 +428,8 @@ class OpenAIAdvisor:
                 self.latencies = (self.latencies + [event['elapsed_ms']])[-256:]
             if event.get('local_rule'):
                 self.summary['local_calculations'] += 1
+            if event.get('policy') == 'sol_timeout_backup_v1':
+                self.summary['decisions_proposed'] = self.summary.get('decisions_proposed',0) + 1
             model = event.get('model')
             if isinstance(model, str) and model[:160] not in self.summary['models']:
                 self.summary['models'] = (self.summary['models'] + [model[:160]])[-4:]
@@ -435,6 +444,10 @@ class OpenAIAdvisor:
                 self.summary[count] = self.summary.get(count,0) + 1
         elif kind == 'api_timeout':
             self.summary['api_timeouts'] = self.summary.get('api_timeouts', 0) + 1
+        elif kind in ('decision_assist_declined','decision_assist_shadow'):
+            key = 'decisions_declined' if kind=='decision_assist_declined' else 'decisions_shadow'
+            self.summary[key] = self.summary.get(key,0)+1
+            self.summary['api_tokens'] += event.get('tokens',0)
         elif kind == 'mulligan_confirmed':
             self.summary['mulligan_confirmed'] = True
             self.summary['game_type'] = event.get('game_type', self.summary['game_type'])
@@ -497,21 +510,23 @@ class OpenAIAdvisor:
                 'instruction': 'Consider secret triggers before each play or attack. Probe records are observations, not proof of exclusion.'}
         return view
 
-    def _transport(self, payload, *, endpoint='responses'):
+    def _transport(self, payload, *, endpoint='responses', quick=False):
         # A separate short-lived worker gives a hard wall-clock network timeout.
         # No key in argv, environment, disk, logs, exception bodies or API errors.
         try:
             run = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker"],
-                input=json.dumps({"api_key": self.key, "payload": payload, "endpoint": endpoint}), text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=18, check=False)
+                input=json.dumps({"api_key": self.key, "payload": payload, "endpoint": endpoint, "quick":quick}), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6 if quick and endpoint=='decisions' else 18, check=False)
         except subprocess.TimeoutExpired:
-            raise AdvisorTimeout("API request timed out after 18 seconds; no action was sent") from None
+            raise AdvisorTimeout("API worker timed out; no action was sent") from None
         if len(run.stdout) > 128 * 1024:
             raise AdvisorError("API response exceeded its size limit")
         try:
             data = json.loads(run.stdout)
         except ValueError:
             raise AdvisorError("API transport failed; no action was sent") from None
+        if not isinstance(data,dict):
+            raise AdvisorError("API response was not an object; no action was sent")
         if run.returncode:
             code = data.get("http_status")
             if data.get("transport_error") == "timeout":
@@ -592,6 +607,16 @@ class OpenAIAdvisor:
         # The user removed cumulative API quotas. Keep actual accounting,
         # per-request bounds/timeouts, and the independent resource watchdog.
         self.calls += 1
+        self.last_backup_id = None
+        standby_job = None
+        if (self.standby and self.consecutive_timeouts==0 and self.model=='gpt-6.1-sol' and view.get('game_type')=='GT_RANKED'
+                and view.get('format')=='FT_STANDARD' and not view.get('unavailable_interactions')):
+            from luna_decisions import prepare_backup
+            # Both decisions own the same immutable public evidence. The
+            # standby has no access to the driver or any game input.
+            backup_view, backup_menu = copy.deepcopy((view,menu))
+            standby_job = self.standby.start(self.decision_seq,lambda:prepare_backup(
+                payload,backup_view,backup_menu,self.decisions_transport))
         started = time.monotonic()
         try:
             response = self.transport(payload)
@@ -600,7 +625,18 @@ class OpenAIAdvisor:
             self.record({'event':'api_timeout', 'game_turn':view.get('game_turn'), 'phase':view.get('phase'),
                          'elapsed_ms':round((time.monotonic()-started)*1000),
                          'consecutive_timeouts':self.consecutive_timeouts})
+            backup = self.standby.take(standby_job) if standby_job else None
+            if backup and backup.get('action') in menu.values():
+                return self.accept_backup(view,menu,backup)
+            if backup is not None:
+                self.record_unused_backup(self.decision_seq,backup,None)
             raise
+        except BaseException:
+            if standby_job:
+                self.standby.discard(standby_job)
+            raise
+        if standby_job:
+            self.standby.discard(standby_job)
         elapsed_ms = round((time.monotonic() - started) * 1000)
         actual_model = response.get("model")
         if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
@@ -612,6 +648,8 @@ class OpenAIAdvisor:
             plan_record['conditional_attack'] = self.pending_attack['second']
             action = self.pending_attack['first']
         self.consecutive_timeouts = 0
+        if standby_job:
+            standby_job['primary_action'] = dict(action)
         self.tokens += tokens
         self.record({"event": "proposed", "observation": view, "actions": menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
@@ -648,6 +686,32 @@ class OpenAIAdvisor:
         action = self.select(view, menu)
         if self.pending_attack:
             self.pending_attack['offered_options_id'] = state['options_id']
+        return action
+
+    def record_unused_backup(self, origin, backup, primary_action):
+        if not backup.get('sent') and not backup.get('error'):
+            return
+        self.calls += int(backup.get('sent',False))
+        self.tokens += backup.get('tokens',0)
+        event = 'decision_assist_shadow' if primary_action is not None else 'decision_assist_declined'
+        self.record({'event':event,'for_decision':origin,'sol_action':primary_action,**backup})
+
+    def accept_backup(self, view, menu, backup):
+        action = backup['action']
+        if backup['mode']=='forced':
+            chosen = self.local_action(view,menu,{'action':action,'rule':'only_action_after_timeout',
+                'reason':'Sol 超时，当前窗口只有一个合法动作。','evidence':{'legal_count':1}})
+            self.last_backup_id = self.decision_seq
+            return chosen
+        self.calls += 1
+        self.tokens += backup['tokens']
+        self.consecutive_timeouts = 0
+        self.decision_seq += 1
+        self.last_backup_id = self.decision_seq
+        self.record({'event':'proposed','observation':view,'actions':menu,'endpoint':'/v1/decisions',
+                     'policy':'sol_timeout_backup_v1','reason':'Sol 超时，使用同一局面预备的 Decisions 动作。',
+                     **backup})
+        print(json.dumps({'decision_assist':backup['model'],'elapsed_ms':backup['elapsed_ms'],'action':action}),flush=True)
         return action
 
     def local_action(self, view, menu, proof):
@@ -741,6 +805,9 @@ class OpenAIAdvisor:
         self.choice_history = self.choice_history[-6:]
 
     def close(self):
+        if self.standby:
+            self.standby.close()
+            self.standby = None
         self.key = ""
         if self.audit:
             self.audit.close()
@@ -761,7 +828,8 @@ def worker():
     key = request["api_key"]
     payload = json.dumps(request["payload"], separators=(",", ":")).encode()
     path = {'responses': '/v1/responses', 'decisions': '/v1/decisions'}[request.get('endpoint', 'responses')]
-    conn = http.client.HTTPSConnection("api.openai.com", timeout=16, context=ssl.create_default_context())
+    timeout = 4 if path=='/v1/decisions' and request.get('quick') is True else 16
+    conn = http.client.HTTPSConnection("api.openai.com", timeout=timeout, context=ssl.create_default_context())
     try:
         conn.request("POST", path, body=payload,
                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})

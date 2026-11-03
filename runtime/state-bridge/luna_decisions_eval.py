@@ -12,9 +12,9 @@ import time
 from hard_cases import hard_cases, prepare as prepare_hard
 from incremental_board import IncrementalBoard
 from life_tap import life_tap_facts
-from luna_decisions import decision_payload, parse_choice, parse_scores, recovery_inputs, tactical_payload
+from luna_decisions import decision_payload, emergency_clears, parse_choice, parse_scores, prepare_backup, recovery_inputs, tactical_payload
 from model_comparison import comparison_cases, prepare
-from openai_advisor import (AdvisorError, CATALOG, OpenAIAdvisor, action_menu,
+from openai_advisor import (AdvisorError, AdvisorTimeout, CATALOG, OpenAIAdvisor, action_menu,
                             enrich, parse_response, public_view, request_payload)
 
 SOL = 'gpt-6.1-sol'
@@ -107,6 +107,12 @@ def cases_for(output, *, holdout=False, recovery=False):
     return cases
 
 
+def blind_menu(name, menu):
+    actions = list(menu.values())
+    random.Random('zoo-pair-v1/'+name).shuffle(actions)
+    return {'m%d'%i:a for i,a in enumerate(actions)}
+
+
 def evaluate(config, output, *, holdout=False, recovery=False):
     output = Path(output)
     cases = cases_for(output, holdout=holdout,recovery=recovery)
@@ -130,9 +136,7 @@ def evaluate(config, output, *, holdout=False, recovery=False):
             for index,(name,group,view,menu,expected) in enumerate(cases):
                 # Identical neutral IDs and evidence for both APIs. No scores,
                 # past answer, case title or future events are sent.
-                actions = list(menu.values())
-                random.Random('zoo-pair-v1/'+name).shuffle(actions)
-                menu = {'m%d'%i:a for i,a in enumerate(actions)}
+                menu = blind_menu(name,menu)
                 sol,_ = request_payload(SOL,view,menu,service_tier='priority',effort='medium')
                 original = decision_payload(sol,menu)
                 luna = tactical_payload(view,menu) if holdout else original
@@ -191,6 +195,50 @@ def evaluate(config, output, *, holdout=False, recovery=False):
         advisor.close()
 
 
+def verify_rescue(config, output):
+    output = Path(output)
+    cases = cases_for(output,recovery=True)
+    name,_,view,menu,expected = next(c for c in cases if c[0]=='real_double_timeout')
+    menu = blind_menu(name,menu)
+    eligible = emergency_clears(view,menu)
+    if not eligible or not all(a in expected for a in eligible):
+        raise ValueError('Archived board does not pass the independent defense check')
+    advisor = OpenAIAdvisor({**config,'model':SOL},audit_path=output.with_name('decision.jsonl'))
+    config['api_key'] = ''
+    try:
+        def simulated_deadline(_):
+            time.sleep(16)
+            raise AdvisorTimeout('injected Sol deadline in no-input replay')
+        advisor.transport = simulated_deadline
+        started = time.monotonic()
+        try:
+            action = advisor.select(view,menu)
+        except AdvisorError:
+            action = None
+        elapsed = round(1000*(time.monotonic()-started))
+        summary = {'mode':'no-input replay','simulated_sol_deadline_ms':16000,'action':action,'eligible':eligible,
+                   'selected_verified_defense':action is not None and action in eligible,
+                   'elapsed_ms':elapsed,'handoff_over_deadline_ms':elapsed-16000}
+        with output.open('w') as report:
+            correct = int(action in expected)
+            for case,_,v,m,gold in cases:
+                if case==name:
+                    continue
+                m = blind_menu(case,m)
+                sol,_ = request_payload(SOL,v,m,service_tier='priority',effort='medium')
+                result = prepare_backup(sol,v,m,advisor.decisions_transport)()
+                passed = result.get('action') in gold
+                correct += int(passed)
+                report.write(json.dumps({'case':case,'correct':passed,**result})+'\n')
+            summary.update(retest_correct=correct,retest_cases=len(cases))
+            report.write(json.dumps({'summary':summary})+'\n')
+    finally:
+        advisor.close()
+
+
 if __name__ == '__main__':
-    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1],holdout=sys.argv[2:]==['--holdout'],
-             recovery=sys.argv[2:]==['--recovery'])
+    config = json.loads(sys.stdin.readline(4097))
+    if sys.argv[2:]==['--verify-rescue']:
+        verify_rescue(config,sys.argv[1])
+    else:
+        evaluate(config,sys.argv[1],holdout=sys.argv[2:]==['--holdout'],recovery=sys.argv[2:]==['--recovery'])

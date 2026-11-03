@@ -87,6 +87,9 @@ def summarize(dest):
             stops.append(str(m['watchdog_result'])[:120])
     summary = {'run': dest.name, 'game_type': mode, 'outcome': outcome,
                'api_timeouts': sum(r.get('event') == 'api_timeout' for r in decisions),
+               'decisions_proposed': sum(r.get('policy') == 'sol_timeout_backup_v1' for r in proposed),
+               'decisions_shadow': sum(r.get('event') == 'decision_assist_shadow' for r in decisions),
+               'decisions_declined': sum(r.get('event') == 'decision_assist_declined' for r in decisions),
                'requested_mode': next((r['game_mode'] for r in events if r.get('game_mode') in ('practice', 'ranked')), None),
                'first_decision_game_turn': next((r['observation'].get('game_turn') for r in proposed if isinstance(r.get('observation'), dict)), None),
                'models': sorted({r['model'] for r in proposed if isinstance(r.get('model'), str)}),
@@ -125,6 +128,8 @@ def summarize(dest):
         summary['external_choices'] = compact.get('external_choices', len(external))
         summary['withdrawn_decisions'] = compact.get('withdrawn_decisions', len(withdrawn))
         summary['api_timeouts'] = compact.get('api_timeouts', summary['api_timeouts'])
+        for key in ('decisions_proposed','decisions_shadow','decisions_declined'):
+            summary[key] = compact.get(key,summary[key])
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
                     'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):

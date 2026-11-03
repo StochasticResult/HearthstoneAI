@@ -5,6 +5,8 @@ def strategy_sample(events, capped=False):
     confirmed = {e.get('decision_id') for e in events
                  if e.get('event') in ('confirmed', 'confirmed_choice', 'confirmed_target')}
     expired = {e.get('decision_id') for e in events if e.get('event') == 'expired_without_submission'}
+    shadows = {e.get('for_decision'):e['action'] for e in events
+               if e.get('event')=='decision_assist_shadow' and isinstance(e.get('action'),dict)}
     sample = {'partial_log': bool(capped), 'whole_turn_pass_with_options': [], 'cases': {}}
     ranks, turns = {}, {}
     for event in events:
@@ -36,6 +38,7 @@ def strategy_sample(events, capped=False):
                                                      'health_before': [hp, enemy.get('health')]}
             played, other = turns.get(turn, (False, False))
             turns[turn] = (played or kind != 'end_turn', other or any(a.get('kind') != 'end_turn' for a in menu))
+        label = None
         if did in expired:
             label, rank = 'expired', 0
         elif (kind == 'hero_power' and type(hp) is int and (hp <= 18 or ob.get('life_tap'))
@@ -48,14 +51,17 @@ def strategy_sample(events, capped=False):
                 and a.get('target_id') == enemy.get('id') for a in menu):
             label, rank = 'trade_or_face', next((c.get('attack') or 0 for c in ob.get('my_board', [])
                                                  if c['id'] == selected.get('source_id')), 0)
-        else:
+        labels = [(label,rank)] if label else []
+        if event.get('policy')=='sol_timeout_backup_v1':
+            labels.append(('decisions_backup',int(did in expired)))
+        if did in shadows:
+            labels.append(('decisions_shadow',int(shadows[did]!=selected)))
+        labels = [(name,priority) for name,priority in labels if name not in ranks or priority>ranks[name]]
+        if not labels:
             continue
-        if label in ranks and rank <= ranks[label]:
-            continue
-        ranks[label] = rank
         def board(side):
             return [[c.get('id'), c.get('card_id'), c.get('attack'), c.get('health')] for c in ob.get(side, [])[:7]]
-        sample['cases'][label] = {
+        detail = {
             'turn': turn, 'decision_id': did, 'status': 'expired_without_submission' if did in expired else 'confirmed',
             'mana': ob.get('mana'), 'my_health_armor': [hp, hero.get('armor')],
             'enemy_health_armor': [enemy.get('health'), enemy.get('armor')],
@@ -63,8 +69,13 @@ def strategy_sample(events, capped=False):
             'hand': [[c.get('id'), c.get('card_id'), c.get('cost')] for c in ob.get('my_hand', [])[:10]],
             'action': selected, 'alternatives': [a for a in menu if a != selected][:8],
             'legal_count': len(menu), 'reason': str(event.get('reason', ''))[:180]}
-        if label == 'life_tap' and ob.get('life_tap'):
-            sample['cases'][label]['life_tap'] = ob['life_tap']
+        for name,priority in labels:
+            ranks[name] = priority
+            sample['cases'][name] = dict(detail)
+            if name=='life_tap' and ob.get('life_tap'):
+                sample['cases'][name]['life_tap'] = ob['life_tap']
+            if name=='decisions_shadow':
+                sample['cases'][name]['unused_suggestion'] = shadows[did]
     sample['observed_own_turns'] = len(turns)
     sample['whole_turn_pass_with_options'] = [t for t, (played, other) in turns.items() if not played and other][:20]
     return sample

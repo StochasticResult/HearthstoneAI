@@ -22,6 +22,7 @@ SUITES = {
     'luna-decisions-v1': ('decisions-sol-evaluation','luna_decisions_eval.py',32,620),
     'luna-decisions-holdout-v1': ('decisions-sol-holdout','luna_decisions_eval.py',36,690),
     'luna-decisions-recovery-v1': ('decisions-sol-recovery','luna_decisions_eval.py',25,480),
+    'luna-rescue-replay-v1': ('decisions-rescue-replay','luna_decisions_eval.py',8,80),
 }
 
 
@@ -69,7 +70,8 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child, suite="stra
             "--parent-pid", str(os.getpid()), "--", sys.executable,
             str(root / "state-bridge" / script), str(dest / "results.jsonl")]
             + {'sol-fast-efforts-v1':['--fast-efforts'], 'luna-decisions-holdout-v1':['--holdout'],
-               'luna-decisions-recovery-v1':['--recovery']}.get(suite, []),
+               'luna-decisions-recovery-v1':['--recovery'],
+               'luna-rescue-replay-v1':['--verify-rescue']}.get(suite, []),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         guard.stdin.write((json.dumps(config) + "\n").encode()); guard.stdin.close()
         config["api_key"] = ""

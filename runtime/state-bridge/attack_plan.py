@@ -69,6 +69,18 @@ def menu_key(menu):
     return frozenset(json.dumps(a,sort_keys=True,separators=(',',':')) for a in menu.values())
 
 
+def predicted_fingerprint(expected, next_menu):
+    # The main advisor recomputes both fields at every decision. A spent
+    # attacker, for example, can no longer make Life Tap's example trade.
+    for key,facts in (('resource_calculations',resource_facts(expected,CATALOG)),
+                      ('life_tap',life_tap_facts(expected,next_menu,CATALOG))):
+        if facts is None:
+            expected.pop(key,None)
+        else:
+            expected[key]=facts
+    return fingerprint(expected)
+
+
 def coin_options(view,menu):
     """Predict a zero-cost Coin window, including a newly affordable Zoo minion.
 
@@ -109,16 +121,11 @@ def coin_options(view,menu):
     expected = dict(view,mana=gain['mana_after'],temporary_mana=view['temporary_mana']+1)
     expected['my_hand'] = [dict(c,position=c['position']-int(c['position']>coin['position']))
                            for c in hand if c['id']!=coin['id']]
-    for key,facts in [('resource_calculations',resource_facts(expected,CATALOG)),('life_tap',life_tap_facts(expected,after,CATALOG))]:
-        if facts is None:
-            expected.pop(key,None)
-        else:
-            expected[key]=facts
     candidates = [c for c in hand if c['card_id'] in minions and
                   {'kind':'play','source_id':c['id']} in after.values()]
     if not candidates:
         return {}
-    predicted = {'expected':fingerprint(expected),'menu':menu_key(after),'corpses':view.get('enemy_corpses'),
+    predicted = {'expected':predicted_fingerprint(expected,after),'menu':menu_key(after),'corpses':view.get('enemy_corpses'),
                  'turn':view.get('game_turn'),'allow_corpse_increment':False,'confirmed_options_id':None,'remaining':[]}
     return {first+'>'+str(c['id']):({'kind':'coin_plan','first':first,
             'then_if_affordable':{'kind':'play','source_id':c['id']}},predicted) for c in candidates}
@@ -179,7 +186,7 @@ def continuation(view, menu, first, tail, decision_id, origin):
                                 if c['id']==source else c for c in view['my_board']]
         next_menu = {key:a for key,a in menu.items() if a.get('source_id')!=source}
         p = {'first':first,'second':tail[0],'decision_id':decision_id,'turn':view['game_turn'],
-             'expected':fingerprint(expected),'menu':menu_key(next_menu),'corpses':view.get('enemy_corpses'),
+             'expected':predicted_fingerprint(expected,next_menu),'menu':menu_key(next_menu),'corpses':view.get('enemy_corpses'),
              'confirmed_options_id':None}
     if json.dumps(tail[0],sort_keys=True,separators=(',',':')) not in p['menu']:
         return None
@@ -202,18 +209,28 @@ def prepare(view, menu, plan, decision_id):
     expected['enemy_board_slots_used'] = len(expected['enemy_board'])
     next_menu = {k:a for k,a in menu.items() if a.get('source_id') != source and a.get('target_id') != target}
     return {'first':first, 'second':second, 'decision_id':decision_id, 'turn':view['game_turn'],
-            'expected':fingerprint(expected), 'menu':menu_key(next_menu), 'corpses':view.get('enemy_corpses'),
+            'expected':predicted_fingerprint(expected,next_menu), 'menu':menu_key(next_menu), 'corpses':view.get('enemy_corpses'),
             'confirmed_options_id':None}
 
 
-def checked_action(plan, view, menu, options_id, decision_id):
-    if (not plan or plan['confirmed_options_id'] is None or options_id is None
-            or plan['confirmed_options_id'] == options_id or plan['decision_id'] != decision_id
-            or plan['turn'] != view.get('game_turn') or plan['menu'] != menu_key(menu)):
-        return None
+def mismatch_reason(plan, view, menu, options_id, decision_id):
+    if not plan or plan['confirmed_options_id'] is None or plan['decision_id']!=decision_id:
+        return 'missing_matching_receipt'
+    if options_id is None or plan['confirmed_options_id']==options_id:
+        return 'no_new_option_group'
+    if plan['turn']!=view.get('game_turn'):
+        return 'turn_changed'
+    if plan['menu']!=menu_key(menu) or plan['second'] not in menu.values():
+        return 'legal_menu_changed'
     corpses, before = view.get('enemy_corpses'), plan['corpses']
     if corpses != before and not (plan.get('allow_corpse_increment',True) and type(before) is int and corpses == before+1):
-        return None
-    if fingerprint(view) == plan['expected'] and plan['second'] in menu.values():
+        return 'unexpected_corpse_count'
+    if fingerprint(view)!=plan['expected']:
+        return 'public_state_changed'
+    return None
+
+
+def checked_action(plan, view, menu, options_id, decision_id):
+    if mismatch_reason(plan,view,menu,options_id,decision_id) is None:
         return plan['second']
     return None

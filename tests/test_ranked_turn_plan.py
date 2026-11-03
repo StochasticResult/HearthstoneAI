@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import attack_plan
 from luna_decisions_eval import replay_state
 from openai_advisor import OpenAIAdvisor, parse_response
 from test_openai_advisor import response
@@ -77,6 +78,22 @@ class RankedTurnPlanTests(unittest.TestCase):
             msg['output'][0]['arguments']=json.dumps({'reason':'test','action_id':first,'follow_up_ids':invalid})
             action,_,_,tail=parse_response(msg,menu,with_plan=True)
             self.assertEqual((action,tail),(menu[first],[]))
+
+    def test_live_risk_recalculation_matches_but_newly_observed_corpses_still_require_a_decision(self):
+        path=Path(__file__).parent/'fixtures'/'turn-plan-risk-20261102.json'
+        for (first,second),expected in zip(json.loads(path.read_text())['cases'],('unexpected_corpse_count',None)):
+            view,menu=second['observation'],second['actions']
+            turn=first['decision_id']
+            plan=attack_plan.continuation(first['observation'],first['actions'],first['confirmed_action'],
+                                          [second['confirmed_action']],turn,turn)
+            plan['confirmed_options_id']=first['options_id']
+            self.assertEqual(attack_plan.mismatch_reason(plan,view,menu,second['options_id'],turn),expected)
+            if expected is None:
+                self.assertNotEqual(first['observation']['life_tap']['margin_tap'],view['life_tap']['margin_tap'])
+                self.assertEqual(attack_plan.checked_action(plan,view,menu,second['options_id'],turn),second['confirmed_action'])
+                damaged=copy.deepcopy(view)
+                damaged['my_hero']['health']-=1
+                self.assertEqual(attack_plan.mismatch_reason(plan,damaged,menu,second['options_id'],turn),'public_state_changed')
 
     @patch('builtins.print')
     def test_coin_into_previously_unaffordable_minion_rechecks_every_resource_and_option(self,_):

@@ -754,7 +754,9 @@ class OpenAIAdvisor:
         if gaps:
             view['unavailable_interactions'] = gaps
         plan, self.pending_attack = self.pending_attack, None
-        followup = None if gaps else attack_plan.checked_action(plan, view, menu, state.get('options_id'), self.decision_seq)
+        mismatch = ('unavailable_interaction' if gaps else
+                    attack_plan.mismatch_reason(plan,view,menu,state.get('options_id'),self.decision_seq))
+        followup = plan['second'] if not mismatch else None
         if followup:
             sequence = 'origin' in plan
             chosen = self.local_action(view,menu,{'rule':'verified_turn_plan_v1' if sequence else 'confirmed_attack_plan_v1',
@@ -770,7 +772,7 @@ class OpenAIAdvisor:
             return chosen
         if plan and 'origin' in plan:
             self.record({'event':'turn_plan_discarded','origin':plan['origin'],'from_decision':plan['decision_id'],
-                         'game_turn':view.get('game_turn'),'reason':'receipt, public state or legal window did not match'})
+                         'game_turn':view.get('game_turn'),'reason':mismatch})
         from tactical_checks import forced_face_attack
         proof = None if gaps else forced_face_attack(state, menu)
         if proof:

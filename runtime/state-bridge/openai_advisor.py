@@ -254,10 +254,14 @@ REASON_TAGS = {'lethal':'当回合斩杀', 'survive':'避免致死', 'trade':'�
 
 
 def usage_parts(response):
-    usage = response.get('usage') or {}
+    usage = response.get('usage') if isinstance(response,dict) else None
+    if not isinstance(usage,dict):
+        return {}
+    out_detail=usage.get('output_tokens_details')
+    in_detail=usage.get('input_tokens_details')
     fields = {'input_tokens':usage.get('input_tokens'), 'output_tokens':usage.get('output_tokens'),
-              'reasoning_tokens':(usage.get('output_tokens_details') or {}).get('reasoning_tokens'),
-              'cached_input_tokens':(usage.get('input_tokens_details') or {}).get('cached_tokens')}
+              'reasoning_tokens':out_detail.get('reasoning_tokens') if isinstance(out_detail,dict) else None,
+              'cached_input_tokens':in_detail.get('cached_tokens') if isinstance(in_detail,dict) else None}
     return {k:v for k,v in fields.items() if type(v) is int and v>=0}
 
 
@@ -271,6 +275,7 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
     # stable prompt prefix for provider caching, without relying on remote
     # conversation storage. The input remains bounded and self-contained.
     body = {}
+    full_instructions = instructions
     observation = copy.deepcopy(view)
     orders = buff_before_tax(view,menu) if orders is None else orders
     if orders:
@@ -391,6 +396,9 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
         encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
     if len(encoded) > MAX_INPUT_BYTES:
+        if compact_output:
+            return request_payload(model,view,menu,full_instructions,service_tier=service_tier,effort=effort,
+                                   orders=orders,plan_prefixes=plan_prefixes,compact_output=False)
         raise ContextTooLarge("Decision context exceeds the request size limit")
     pressure = blasphemy_pressure(view,menu)
     if pressure:
@@ -778,11 +786,13 @@ class OpenAIAdvisor:
         if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
             raise AdvisorError("API response model does not match the requested model")
         tail = []
+        properties = payload['tools'][0]['parameters']['properties']
+        used_tags = 'enum' in properties['reason']
         try:
-            if 'follow_up_ids' in payload['tools'][0]['parameters']['properties']:
-                action,reason,tokens,tail = parse_response(response,offered,with_plan=True,compact_output=self.compact_output)
+            if 'follow_up_ids' in properties:
+                action,reason,tokens,tail = parse_response(response,offered,with_plan=True,compact_output=used_tags)
             else:
-                action,reason,tokens = parse_response(response,offered,compact_output=self.compact_output)
+                action,reason,tokens = parse_response(response,offered,compact_output=used_tags)
         except AdvisorError:
             self.record({'event':'api_reply_rejected','model':actual_model,'usage_parts':usage_parts(response)})
             raise
@@ -814,7 +824,7 @@ class OpenAIAdvisor:
         self.tokens += tokens
         self.record({"event": "proposed", "observation": view, "actions": observed_menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
-                     "usage_parts":usage_parts(response),"output_style":'tag' if self.compact_output else 'prose',
+                     "usage_parts":usage_parts(response),"output_style":'tag' if used_tags else 'prose',
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
                      "reasoning_effort": self.effort, **plan_record})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,

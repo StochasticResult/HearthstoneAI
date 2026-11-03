@@ -46,3 +46,5 @@ class CompactGameOutputTests(unittest.TestCase):
         self.assertEqual(totals['reasoning_tokens'],58)
         self.assertNotIn('cached_input_tokens',totals)
         self.assertEqual(usage_parts({'usage':{'total_tokens':123}}),{})
+        self.assertEqual(usage_parts({'usage':{'output_tokens':23,'output_tokens_details':[]}}),{'output_tokens':23})
+        self.assertEqual(usage_parts(None),{})

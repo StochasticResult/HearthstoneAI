@@ -40,7 +40,7 @@ def prepare_backup(sol, view, menu, transport, *, orders=None):
         try:
             reply = transport(packet)
             info.update(usage_parts=usage_parts(reply))
-            if reply.get('model')==MODEL or str(reply.get('model','')).startswith(MODEL+'-'):
+            if isinstance(reply,dict) and (reply.get('model')==MODEL or str(reply.get('model','')).startswith(MODEL+'-')):
                 info['model'] = reply['model'][:160]
             scores = {}
             if mode=='score':

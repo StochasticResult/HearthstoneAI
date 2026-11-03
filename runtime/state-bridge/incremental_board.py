@@ -399,8 +399,8 @@ class IncrementalBoard:
         if ((victim == target and previous is None)
                 or (paired and events[-2].get('first_corpse_attack') == self.last_targeted_option)):
             death['first_corpse_attack'] = self.last_targeted_option
-            if paired:
-                death['mutual_corpse_attack'] = self.last_targeted_option
+        if paired:
+            death['mutual_corpse_attack'] = self.last_targeted_option
 
     def _remember_departing_objective(self, match):
         # HIDE_ENTITY can erase the card ID before moving a resolved spell to

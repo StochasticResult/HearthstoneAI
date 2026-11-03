@@ -193,6 +193,14 @@ class RankedTurnPlanTests(unittest.TestCase):
                 self.assertEqual(state.get('mutual_corpse_attack'), expected)
                 if expected:
                     self.assertEqual(state.get('first_corpse_attack'), expected)
+        for order in (ours+theirs, theirs+ours):
+            parser = IncrementalBoard()
+            already_counted = tags(['TAG_CHANGE Entity=3 tag=CORPSES value=3'])
+            packets = order.replace(b'Entity=3 tag=CORPSES value=1', b'Entity=3 tag=CORPSES value=4')
+            parser.feed(setup_log()+already_counted+SEND+attack+deaths+packets+close+next_group)
+            state = parser.snapshot(1, extended=True)
+            self.assertEqual(state.get('mutual_corpse_attack'), receipt)
+            self.assertIsNone(state.get('first_corpse_attack'))
 
     def test_recorded_mutual_trade_reuses_only_when_the_full_next_state_matches(self):
         path = Path(__file__).parent/'fixtures'/'mutual-corpse-20261103.json'
@@ -213,13 +221,24 @@ class RankedTurnPlanTests(unittest.TestCase):
                     self.assertEqual(mismatch(after,proof,None), 'public_state_changed')
                     self.assertEqual(mismatch(dict(after,my_corpses=2),proof,proof), 'public_state_changed')
                     self.assertEqual(mismatch(dict(after,mana=0),proof,proof), 'public_state_changed')
+                    # In 023542 the friendly player received its first corpse when the opponent went from 3 to 4.
+                    plan = attack_plan.continuation(dict(before,enemy_corpses=3),case['menus'][0],first,[second],decision,decision)
+                    plan['confirmed_options_id'] = case['options'][0]
+                    counted = dict(after,enemy_corpses=4)
+                    self.assertIsNone(mismatch(counted,None,proof))
+                    for invalid in (None, (next_group,first['source_id'],first['target_id']),
+                                    (proof[0],first['target_id'],first['source_id'])):
+                        self.assertEqual(mismatch(counted,None,invalid),'public_state_changed')
+                    self.assertEqual(mismatch(dict(counted,enemy_corpses=3),None,proof),'public_state_changed')
+                    self.assertEqual(mismatch(dict(counted,enemy_corpses=5),None,proof),'unexpected_corpse_count')
+                    self.assertEqual(mismatch(dict(counted,mana=0),None,proof),'public_state_changed')
 
     @patch('builtins.print')
     def test_coin_into_previously_unaffordable_minion_rechecks_every_resource_and_option(self,_):
         original,after = [replay_state(r) for r in self.coins]
         next_minion=self.coins[1]['confirmed_action']
         self.assertNotIn(next_minion,self.coins[0]['actions'].values())
-        for variant in ('matched','mana','unexpected_option','new_card','no_receipt'):
+        for variant in ('matched','refunded','double_credit','mana','unexpected_option','new_card','no_receipt'):
             with self.subTest(variant=variant):
                 self.calls=0
                 def choose(payload):
@@ -228,13 +247,18 @@ class RankedTurnPlanTests(unittest.TestCase):
                     key=next((k for k,a in offered.items() if a.get('then_if_affordable')==next_minion),None)
                     return response(key or next(k for k,a in offered.items() if a['kind']=='end_turn'))
                 self.ai.transport=choose
-                first=self.ai.ask(original)
-                self.assertEqual(first,self.coins[0]['confirmed_action'])
-                if variant!='no_receipt':self.ai.confirm(first,original)
+                before=copy.deepcopy(original)
                 fresh=copy.deepcopy(after)
+                if variant in ('refunded','double_credit'):
+                    before.update(mana_crystals=2,mana_spent=1)
+                    fresh.update(mana_crystals=2,mana_spent=0,temporary_mana=int(variant=='double_credit'))
+                first=self.ai.ask(before)
+                self.assertEqual(first,self.coins[0]['confirmed_action'])
+                if variant!='no_receipt':self.ai.confirm(first,before)
                 if variant=='mana':fresh['mana']-=1
                 if variant=='unexpected_option':fresh['legal_options']=fresh['legal_options'][:-1]
                 if variant=='new_card':fresh['enemy_hand_count']+=1
                 second=self.ai.ask(fresh)
-                self.assertEqual(second,next_minion if variant=='matched' else {'kind':'end_turn'})
-                self.assertEqual(self.calls,1 if variant=='matched' else 2)
+                reuse=variant in ('matched','refunded')
+                self.assertEqual(second,next_minion if reuse else {'kind':'end_turn'})
+                self.assertEqual(self.calls,1 if reuse else 2)

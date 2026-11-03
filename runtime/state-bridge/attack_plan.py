@@ -171,6 +171,12 @@ def coin_options(view,menu):
         return {}
     predicted = {'expected':predicted_fingerprint(expected,after),'menu':menu_key(after),'corpses':view.get('enemy_corpses'),
                  'turn':view.get('game_turn'),'allow_corpse_increment':False,'confirmed_options_id':None,'remaining':[]}
+    spent, crystals, locked = (view.get(k) for k in ('mana_spent','mana_crystals','overload_locked'))
+    if (all(type(x) is int for x in (spent,crystals,locked)) and 0 < spent <= crystals-locked
+            and mana == crystals-locked-spent+view['temporary_mana']):
+        # The Coin can restore one spent crystal instead of increasing TEMP_RESOURCES.
+        refunded = dict(expected,mana_spent=spent-1,temporary_mana=view['temporary_mana'])
+        predicted['expected_with_coin_refund'] = predicted_fingerprint(refunded,after)
     return {first+'>'+str(c['id']):({'kind':'coin_plan','first':first,
             'then_if_affordable':{'kind':'play','source_id':c['id']}},predicted) for c in candidates}
 
@@ -283,7 +289,7 @@ def prepare(view, menu, plan, decision_id):
               'corpses':view.get('enemy_corpses'),'allow_corpse_increment':target in dead,'confirmed_options_id':None}
     if source in dead and type(view.get('my_corpses')) is int:
         result['expected_with_own_corpse'] = predicted_fingerprint(dict(expected,my_corpses=view['my_corpses']+1),next_menu)
-    elif source in dead and target in dead and view.get('my_corpses') is None and view.get('enemy_corpses') is None:
+    elif source in dead and target in dead and view.get('my_corpses') is None:
         result['expected_first_mutual_corpses'] = predicted_fingerprint(dict(expected,my_corpses=1),next_menu)
     return result
 
@@ -306,10 +312,11 @@ def mismatch_reason(plan, view, menu, options_id, decision_id, first_corpse_atta
                 or not (newly_observed or (type(before) is int and corpses == before+1))):
             return 'unexpected_corpse_count'
     current = fingerprint(view)
-    if current in (plan['expected'],plan.get('expected_with_own_corpse')):
+    if current in (plan['expected'],plan.get('expected_with_own_corpse'),plan.get('expected_with_coin_refund')):
         return None
-    if (current == plan.get('expected_first_mutual_corpses') and before is None and corpses == 1
-            and first_corpse_attack == mutual_corpse_attack and first_corpse_attack is not None):
+    if (current == plan.get('expected_first_mutual_corpses') and type(corpses) is int
+            and ((before is None and corpses == 1) or (type(before) is int and corpses == before+1))
+            and mutual_corpse_attack == (plan['confirmed_options_id'],plan['first']['source_id'],plan['first']['target_id'])):
         return None
     return 'public_state_changed'
 

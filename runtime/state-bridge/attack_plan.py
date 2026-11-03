@@ -4,7 +4,7 @@ import hashlib
 import json
 from card_metadata import CATALOG
 from life_tap import life_tap_facts
-from resource_facts import coin_result, resource_facts
+from resource_facts import coin_result, health_only_hero_modifiers, resource_facts
 
 
 def removals(view, menu):
@@ -188,6 +188,7 @@ def predictable_attacks(view, menu):
         return {}
     friends = {c['id']:c for c in view.get('my_board',[])}
     hero = view.get('enemy_hero') or {}
+    plain_face_damage = health_only_hero_modifiers(hero, CATALOG)
     foes = {c['id']:c for c in view.get('enemy_board',[])}
     result = {}
     for aid,a in menu.items():
@@ -200,7 +201,7 @@ def predictable_attacks(view, menu):
                                                               'lifesteal','poisonous','dormant','stealth'))):
             continue
         if a.get('target_id')==hero.get('id'):
-            if (hero.get('immune') is False and hero.get('modifiers')==[] and not hero.get('divine_shield')
+            if (hero.get('immune') is False and plain_face_damage and not hero.get('divine_shield')
                     and all(type(hero.get(k)) is int for k in ('health','armor')) and hero['armor']>=0
                     and attacker['attack']<hero['health']+hero['armor']):
                 result[aid]='face'

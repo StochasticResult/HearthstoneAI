@@ -4,6 +4,30 @@ Only Coin's immediate mana effect is calculated. Mawman-removal rows explicitly
 assume no other effect changes; these are arithmetic aids, not playable plans.
 """
 
+def health_only_hero_modifiers(hero, catalog):
+    """These effects are already reflected in Health and leave incoming damage unchanged."""
+    modifiers = hero.get('modifiers')
+    if not isinstance(modifiers, list) or hero.get('unknown_modifier_count'):
+        return False
+    for modifier in modifiers:
+        card_id = modifier.get('card_id') if isinstance(modifier, dict) else None
+        card = catalog.get(card_id, {}) if isinstance(card_id, str) else {}
+        if card.get('type') != 'ENCHANTMENT':
+            return False
+        text = card.get('text')
+        if text == '-1 Health.':
+            continue
+        if (modifier == {'card_id':'TLC_835e','script_data_1':40} and text == 'Increased Health.'
+                and hero.get('max_health') == 40
+                and ' '.join((catalog.get('TLC_835', {}).get('text') or '').split()) == "Set your hero's Health to 40."):
+            continue
+        if (modifier == {'card_id':'EDR_810e','script_data_1':1} and text == 'Reduced Health.'
+                and ' '.join((catalog.get('EDR_810t', {}).get('text') or '').split())
+                == 'At the end of your turn, your hero steals 1 Health from the lowest Health enemy.'):
+            continue
+        return False
+    return True
+
 
 def coin_result(mana, cost, cap):
     if not all(type(x) is int for x in (mana, cost, cap)) or not 0 <= cost <= mana <= cap <= 100:

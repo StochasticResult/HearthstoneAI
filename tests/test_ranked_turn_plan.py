@@ -44,6 +44,25 @@ class RankedTurnPlanTests(unittest.TestCase):
         self.assertIsNone(self.ai.pending_attack)
 
     @patch('builtins.print')
+    def test_confirmed_face_sequence_preserves_amara_health_modifier(self,_):
+        modifier = {'card_id':'TLC_835e','script_data_1':40}
+        for state,row in zip(self.states,self.rows):
+            state['enemy_hero'].update(max_health=40,modifiers=[modifier])
+            chosen = self.ai.ask(state)
+            self.assertEqual(chosen,row['confirmed_action'])
+            self.ai.confirm(chosen,state)
+        self.assertEqual((self.calls,self.ai.summary['turn_plan_steps']),(1,2))
+        view = dict(self.rows[0]['observation'])
+        menu = self.rows[0]['actions']
+        first = self.rows[0]['confirmed_action']
+        for flags in ({'modifiers':[modifier,{'card_id':'UNKNOWN'}]}, {'max_health':39},
+                      {'unknown_modifier_count':1}, {'divine_shield':True}, {'health':4}):
+            hero = dict(view['enemy_hero'],max_health=40,modifiers=[modifier])
+            hero.update(flags)
+            prefixes = attack_plan.predictable_attacks(dict(view,enemy_hero=hero),menu)
+            self.assertNotIn(first,[menu[k] for k in prefixes])
+
+    @patch('builtins.print')
     def test_changed_state_after_second_receipt_cannot_trigger_the_third_move(self,_):
         for s in self.states[:2]:
             act = self.ai.ask(s)

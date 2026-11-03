@@ -28,6 +28,23 @@ def priest():
 
 
 class TapTests(unittest.TestCase):
+    def test_leech_health_loss_is_already_in_the_displayed_health(self):
+        v,_ = priest()
+        modifier = {'card_id':'EDR_810e','script_data_1':1}
+        v.update(my_board=[],enemy_board=[body(11,16,6)],my_deck_count=13,my_player_effects=[],
+                 strategy={'deck':{'reconciled_remaining_counts':{'TIME_025t':2}}})
+        hero = {'health':10,'max_health':29,'armor':0,'immune':False,'modifiers':[modifier]}
+        def facts(h,catalog=CATALOG):
+            return life_tap_facts(dict(v,my_hero=h),{'tap':TAP,'end':END},catalog)
+        result = facts(hero)
+        self.assertEqual(result['effective_health_tap_before_other_effects'],8)
+        self.assertEqual(result.get('if_one_shred_at_printed_damage',{}).get('effective_health'),5)
+        for change in ({'unknown_modifier_count':1},{'modifiers':[modifier,{'card_id':'UNKNOWN'}]},
+                       {'modifiers':[dict(modifier,script_data_1=2)]}):
+            self.assertNotIn('if_one_shred_at_printed_damage',facts(dict(hero,**change)))
+        changed = dict(CATALOG,EDR_810e=dict(CATALOG['EDR_810e'],text='Prevent incoming damage.'))
+        self.assertNotIn('if_one_shred_at_printed_damage',facts(hero,changed))
+
     def test_stacked_spell_tax_does_not_change_shred_damage(self):
         view, _ = priest()
         tax = {'card_id':'SCH_713e','script_data_1':1,'count':2}

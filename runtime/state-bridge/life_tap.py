@@ -1,6 +1,13 @@
 """Small counterfactual for a currently legal Life Tap, using only public cards."""
 from resource_facts import known_shred_count
 
+
+def _one_less_health(modifier, catalog):
+    card_id = modifier.get('card_id') if isinstance(modifier, dict) else None
+    card = catalog.get(card_id, {}) if isinstance(card_id, str) else {}
+    return card.get('type') == 'ENCHANTMENT' and card.get('text') == '-1 Health.'
+
+
 def life_tap_facts(view, menu, catalog):
     power = view.get('my_hero_power') or {}
     definition = catalog.get(power.get('card_id'), {})
@@ -89,8 +96,11 @@ def life_tap_facts(view, menu, catalog):
     if 0 < known <= deck:
         costs['known_shreds_at_least'] = known
         text = ' '.join((catalog.get('TIME_025t', {}).get('text') or '').split())
+        # The observed hero Health already includes a plain -1 Health enchantment.
+        modifiers = hero.get('modifiers')
         if (known < deck and draws == 1 and len(hand) < 10 and hero.get('immune') is False
-                and hero.get('modifiers') == [] and not hero.get('unknown_modifier_count') and not hero.get('divine_shield')
+                and isinstance(modifiers, list) and all(_one_less_health(m, catalog) for m in modifiers)
+                and not hero.get('unknown_modifier_count') and not hero.get('divine_shield')
                 and view.get('my_player_effects') == []
                 and all(c.get('spell_damage') == 0 for c in friendly if not c.get('dormant') and not c.get('silenced'))
                 and text == 'Casts When Drawn Deal $3 damage to your hero.'):

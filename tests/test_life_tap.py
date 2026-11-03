@@ -28,6 +28,25 @@ def priest():
 
 
 class TapTests(unittest.TestCase):
+    def test_ghuun_health_penalty_is_already_in_the_observed_health(self):
+        view, _ = priest()
+        hero = {'id':68,'health':2,'armor':0,'immune':False,'modifiers':[{'card_id':'BE_287e2'}]}
+        view.update(my_hero=hero, my_board=[], my_player_effects=[], my_deck_count=12,
+                    strategy={'deck':{'reconciled_remaining_counts':{'TIME_025t':2}}})
+        menu = {'tap':TAP,'end':END}
+        def facts(current, catalog=CATALOG):
+            return life_tap_facts(dict(view,my_hero=current), menu, catalog)
+        for health, armor, base, single in ((2,0,0,-3), (7,0,5,2), (2,4,4,1)):
+            with self.subTest(health=health,armor=armor):
+                result = facts(dict(hero,health=health,armor=armor))
+                self.assertEqual(result['effective_health_tap_before_other_effects'], base)
+                self.assertEqual(result['if_one_shred_at_printed_damage']['effective_health'], single)
+        for change in ({'modifiers':None}, {'modifiers':[{'card_id':'BE_287e2'},{'card_id':'UNKNOWN'}]},
+                       {'unknown_modifier_count':1}, {'divine_shield':True}):
+            self.assertNotIn('if_one_shred_at_printed_damage', facts(dict(hero,**change)))
+        changed = dict(CATALOG, BE_287e2={'type':'ENCHANTMENT','text':'Your hero takes 1 less damage.'})
+        self.assertNotIn('if_one_shred_at_printed_damage', facts(hero,changed))
+
     def test_real_priest_trade_margin_and_legal_payload(self):
         v,m=priest();facts=life_tap_facts(v,m,CATALOG)
         self.assertEqual((facts['unblocked_board_and_weapon_attack'],facts['unblocked_attack_after_example']), (21,11))

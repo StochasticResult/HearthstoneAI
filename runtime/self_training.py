@@ -4,13 +4,13 @@ import fcntl
 import http.client
 import json
 import os
-import re
 import signal
 import sys
 import time
 from pathlib import Path
 
 from coach_evidence import recent, sources
+from coach_delivery import TrainingError, begin, fetch, finish, ledger, restore
 from coach_policy import PHASES, ZONES, atomic, card_present, card_rules, read_json, revision, settings
 
 DATA = Path.home()/'Library/Application Support/HearthstoneAI'
@@ -22,14 +22,15 @@ Entity IDs and option labels are local to a position. Card definitions may inclu
 use only what was public at that decision. Match a proposal's decision_id with its later receipt.
 An expired/withdrawn proposal or a shadow Luna suggestion is NOT a played move. terminal_receipts record attacks
 submitted as the turn ended without observed combat. Infer no hidden hand or RNG.
-Return a concise Chinese review for each supplied run, giving key turn/decision numbers, alternative lines and
+Give each run a brief Chinese review (at most 100 characters), naming key turns, alternative lines and
 uncertainty. For transferable gameplay advice, give only high-confidence, conditional, falsifiable lessons.
 Cite a confirmed decision with a materially better option explicitly offered in its actions dictionary.
 Use a second, distinct confirmed decision with this same visible card as a control; explain when the advice would not apply.
 Scope to one visible card ID and its zone in the cited decision. Advice must be usable by both Sol and Luna and
 future models. Local legal actions and deterministic safety checks always take precedence. Do not encode historical
 entity/option IDs in the advice. No executable code or instructions about files, UI or APIs. If no such finding
-exists, use an empty findings array. A loss or model disagreement alone is not evidence of a mistake."""
+exists, use an empty findings array. Give at most two lessons, with short advice and exceptions.
+A loss or model disagreement alone is not evidence of a mistake."""
 
 def obj(props):
     return {'type':'object','properties':props,'required':list(props),'additionalProperties':False}
@@ -46,42 +47,9 @@ SCHEMA = obj({'reviews':{'type':'array','items':obj({'run':STR,'review':STR})},
 
 def response_payload(prefs, games, lessons):
     return {'model':prefs['coach_model'], 'reasoning':{'effort':prefs['coach_effort']},
-            'store':False, 'max_output_tokens':16384, 'instructions':INSTRUCTIONS,
+            'store':False, 'background':True, 'service_tier':'default', 'max_output_tokens':16384, 'instructions':INSTRUCTIONS,
             'text':{'format':{'type':'json_schema','name':'match_review','strict':True,'schema':SCHEMA}},
             'input':json.dumps({'prior_lessons':lessons,'games':games}, ensure_ascii=False,separators=(',',':'))}
-
-
-class TrainingError(Exception):
-    pass
-
-
-def request(key, payload):
-    connection = http.client.HTTPSConnection('api.openai.com', timeout=240)
-    try:
-        body = json.dumps(payload, ensure_ascii=False, separators=(',',':')).encode()
-        connection.request('POST','/v1/responses',body,{'Authorization':'Bearer '+key,'Content-Type':'application/json'})
-        response = connection.getresponse()
-        raw = response.read(512*1024 + 1)
-        if response.status != 200:
-            try:
-                code = json.loads(raw)['error']['code']
-            except (ValueError,TypeError,KeyError):
-                code = None
-            label = code if isinstance(code,str) and re.fullmatch(r'[\w.-]{1,80}',code) else 'request_failed'
-            raise TrainingError(f'API HTTP {response.status} ({label})')
-        if len(raw)>512*1024:
-            raise TrainingError('API 回包超过上限')
-        reply = json.loads(raw)
-        model = reply.get('model','')
-        if reply.get('status')!='completed' or not (model == payload['model'] or model.startswith(payload['model']+'-')):
-            raise TrainingError('模型不匹配或评审未完整返回')
-        content = [c['text'] for m in reply.get('output',[]) if m.get('type')=='message'
-                   for c in m.get('content',[]) if c.get('type')=='output_text']
-        if len(content)!=1:
-            raise TrainingError('未收到完整结构化评审')
-        return json.loads(content[0]), model
-    finally:
-        connection.close()
 
 
 def positions(games):
@@ -143,7 +111,7 @@ def validated(result, games):
     return reviews, accepted, len(findings)-len(accepted)
 
 
-def train(learning, prefs, state, games, skipped, key, transport=request):
+def train(learning, prefs, state, games, skipped, key, transport=None, job=None):
     # Segment only at whole-game boundaries. No sampled decisions or truncated turns.
     groups, size = [[]],0
     for g in games:
@@ -155,9 +123,17 @@ def train(learning, prefs, state, games, skipped, key, transport=request):
         size+=n
     lessons = list(state.get('lessons',[]))
     reports, additions, rejected, models = [],[],0,[]
-    for group in groups:
-        result, model = transport(key, response_payload(prefs,group,lessons))
-        reviews, valid, refused = validated(result, group)
+    if transport is None and job is None:
+        job=begin(learning,prefs,games,skipped)
+    for index,group in enumerate(groups):
+        payload=response_payload(prefs,group,lessons)
+        result,model=(transport(key,payload) if transport else fetch(learning,job,index,key,payload))
+        try:
+            reviews, valid, refused = validated(result, group)
+        except (ValueError, KeyError, TypeError, TrainingError):
+            if job:
+                finish(learning,job,'invalid_review')
+            raise
         reports.extend(reviews)
         additions.extend(valid)
         rejected += refused
@@ -170,11 +146,15 @@ def train(learning, prefs, state, games, skipped, key, transport=request):
               'games':len(games),'actions':sum(g['actions'] for g in games), 'reviews':reports,
               'added':len(additions),'rejected':rejected,'skipped':skipped,'revision':revision(lessons),
               'findings':additions, 'calls':len(groups)}
+    if job:
+        report['api_usage']=[p.get('usage',{}) for p in job['parts'].values()]
     updated = {'last_run':games[-1]['run'],'lessons':lessons,'revision':report['revision'],
                'reports':(state.get('reports',[])+[report])[-8:]}
     if len(json.dumps(updated,ensure_ascii=False).encode())>380*1024:
         updated['reports'] = updated['reports'][-2:]
     atomic(learning/'coach-state.json',updated)
+    if job:
+        finish(learning,job,'complete')
     return report
 
 
@@ -227,26 +207,37 @@ def main():
         try:
             state = read_json(learning/'coach-state.json',384*1024,{})
             after = state.get('last_run','')
+            previous = ledger(learning)
+            job = previous if previous.get('status')=='open' and previous['through']>after else None
+            after = max(after,previous.get('through',''))
             archived,runs = sources(DATA)
-            if not any(name>after for name in archived.keys() | runs.keys()):
+            if not job and not any(name>after for name in archived.keys() | runs.keys()):
                 status('没有新的完整标准天梯记录可训练');return
             if not wait_for_resources(learning,args.trigger,status):
                 return
-            prefs = settings(learning)
-            games, skipped = recent(DATA,after,prefs['games'])
+            if job:
+                prefs,games,skipped = restore(learning,job)
+            else:
+                prefs = settings(learning)
+                games, skipped = recent(DATA,after,prefs['games'])
             if not games:
                 status('没有新的完整标准天梯记录可训练');return
-            status(f"正在复盘 {len(games)} 局，共 {sum(g['actions'] for g in games)} 个决策")
+            status(f"准备复盘 {len(games)} 局、{sum(g['actions'] for g in games)} 个决策，等待读取应用密钥")
             message('NEED_KEY')
             key = sys.stdin.readline(515).strip()
             if not 20<=len(key)<=512 or any(c.isspace() for c in key):
                 raise TrainingError('请在应用内允许读取钥匙串后重试')
+            status(f"正在复盘 {len(games)} 局，共 {sum(g['actions'] for g in games)} 个决策")
             def deadline(signum, frame):
                 raise TrainingError('本次离线评审超时，可稍后重试')
             signal.signal(signal.SIGALRM,deadline)
-            signal.alarm(300*len(games))
-            report = train(learning,prefs,state,games,skipped,key)
-            status(f"已复盘 {report['games']} 局、{report['actions']} 步，采纳 {report['added']} 条经验")
+            signal.alarm(600*len(games))
+            report = train(learning,prefs,state,games,skipped,key,**({'job':job} if job else {}))
+            message_text = f"已复盘 {report['games']} 局、{report['actions']} 步，采纳 {report['added']} 条经验"
+            usage = report.get('api_usage',[])
+            if usage and all('output_tokens' in entry for entry in usage):
+                message_text += f"，评审输出 {sum(entry['output_tokens'] for entry in usage)} tokens"
+            status(message_text)
         except (OSError, ValueError, TypeError, KeyError, http.client.HTTPException, TrainingError) as exc:
             status('训练失败 · '+(str(exc) if isinstance(exc,TrainingError) else type(exc).__name__))
             return 1

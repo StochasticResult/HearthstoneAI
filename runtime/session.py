@@ -513,13 +513,14 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
         from match_review import save
         from coach_policy import snapshot
         build=current_build(ROOT)
+        config['compact_output'] = True
         policy = snapshot(DATA/'learning')
         save(dest/'run-policy.json',policy)
         build['coach_revision'] = policy['revision']
         build['play_settings'] = {k:policy[k] for k in ('multi_step','standby','standby_delay')}
         build['inference'] = {'model':config.get('model','gpt-6.1-sol'),
                               'tier':config.get('service_tier','auto'),
-                              'effort':config.get('reasoning_effort','low')}
+                              'effort':config.get('reasoning_effort','low'), 'output_style':'tag'}
         save(dest/'run-version.json',build)
         emit('本局程序版本：'+build['version_id'],runtime_version=build['version_id'])
         emit('推理设置 · %s · %s · %s' % (build['inference']['model'],build['inference']['tier'],build['inference']['effort']))
@@ -748,6 +749,12 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
                 if review_summary.get('version_stats'):
                     from version_stats import display
                     emit(('标准天梯 · ' if mode=='ranked' else '人机练习 · ')+display(review_summary['version_stats']))
+                for model,usage in review_summary.get('model_token_usage',{}).items():
+                    if 'output_tokens' in usage:
+                        text = f"{model} · {usage['output_tokens_reports']} 份用量回执共 {usage['output_tokens']} 个输出 token"
+                        if usage.get('reasoning_tokens_reports')==usage['output_tokens_reports']:
+                            text += f"，其中推理 {usage['reasoning_tokens']}"
+                        emit(text)
                 if preserved:client.remember(dest,review_summary)
                 emit("对局复盘已保存：%s；%s" % (review_summary["outcome"],
                      "下次开局前需复盘" if review_summary["review_before_next_game"] else "已记录决策和资源指标"),

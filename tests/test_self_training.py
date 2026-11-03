@@ -133,7 +133,7 @@ class SelfTrainingTests(unittest.TestCase):
     def test_timer_and_manual_preflight_skip_without_key_or_model_calls(self):
         from self_training import main
         import io
-        with patch('self_training.DATA',self.data), patch('os.nice'), patch('self_training.request') as api, patch('sys.stdin',io.StringIO()) as stream:
+        with patch('self_training.DATA',self.data), patch('os.nice'), patch('self_training.fetch') as api, patch('sys.stdin',io.StringIO()) as stream:
             with patch('sys.argv',['coach','--trigger','scheduled']):
                 self.assertIsNone(main())
                 atomic(self.learning/'coach-settings.json',dict(DEFAULTS,scheduled=True))
@@ -195,3 +195,56 @@ class SelfTrainingTests(unittest.TestCase):
         self.assertEqual(len(hints({'lessons':[rule]},view)),1)
         view['card_definitions']['TEST']['cost']=4
         self.assertEqual(hints({'lessons':[rule]},view),[])
+
+    def test_background_resume_polls_the_original_job_without_a_second_generation(self):
+        from coach_delivery import begin,fetch,ledger,restore,finish
+        from unittest.mock import Mock
+        prefs=DEFAULTS.copy()
+        job=begin(self.learning,prefs,[self.game],[])
+        payload=response_payload(prefs,[self.game],[])
+        self.assertTrue(payload['background'])
+        self.assertFalse(payload['store'])
+        self.assertEqual(payload['service_tier'],'default')
+        service=Mock(side_effect=[{'id':'resp_one','status':'queued'},TimeoutError('read')])
+        with self.assertRaises(TimeoutError):
+            fetch(self.learning,job,0,'fake',payload,send=service,pause=lambda _:None)
+        saved=ledger(self.learning)
+        self.assertEqual([call.args[1] for call in service.call_args_list],['POST','GET'])
+        self.assertEqual(restore(self.learning,saved),( [prefs,[self.game],[]] ))
+        done={'id':'resp_one','status':'completed','model':'gpt-6-astra',
+              'output':[{'type':'message','content':[{'type':'output_text','text':json.dumps(self.reply)}]}],
+              'usage':{'input_tokens':854,'output_tokens':280,'output_tokens_details':{'reasoning_tokens':190}}}
+        lookup=Mock(return_value=done)
+        self.assertEqual(fetch(self.learning,saved,0,'fake',payload,send=lookup,pause=lambda _:None),(self.reply,'gpt-6-astra'))
+        self.assertEqual(lookup.call_args.args[1:3],('GET','/v1/responses/resp_one'))
+        self.assertEqual(fetch(self.learning,ledger(self.learning),0,'fake',payload,send=lookup,pause=lambda _:None),(self.reply,'gpt-6-astra'))
+        lookup.assert_called_once()
+        self.assertEqual(ledger(self.learning)['parts']['0']['usage']['reasoning_tokens'],190)
+        finish(self.learning,saved,'complete')
+        self.assertFalse((self.learning/'coach-pending.gz').exists())
+
+    def test_unknown_post_is_quarantined_but_an_explicit_rejection_can_be_corrected(self):
+        from coach_delivery import begin,fetch,ledger,HTTPFailure
+        from unittest.mock import Mock
+        payload=response_payload(DEFAULTS,[self.game],[])
+        job=begin(self.learning,DEFAULTS,[self.game],[])
+        with self.assertRaises(HTTPFailure):
+            fetch(self.learning,job,0,'fake',payload,send=Mock(side_effect=HTTPFailure(401,'invalid_key')))
+        self.assertEqual((ledger(self.learning)['status'],ledger(self.learning)['through']),('rejected',''))
+        job=begin(self.learning,DEFAULTS,[self.game],[])
+        with self.assertRaisesRegex(TrainingError,'不自动重发'):
+            fetch(self.learning,job,0,'fake',payload,send=Mock(side_effect=TimeoutError('post')))
+        self.assertEqual((ledger(self.learning)['status'],ledger(self.learning)['through']),('unknown',self.name))
+
+    def test_interrupted_post_without_id_is_never_issued_again(self):
+        from coach_delivery import begin,fetch,ledger
+        from unittest.mock import Mock
+        payload=response_payload(DEFAULTS,[self.game],[])
+        job=begin(self.learning,DEFAULTS,[self.game],[])
+        with self.assertRaises(KeyboardInterrupt):
+            fetch(self.learning,job,0,'fake',payload,send=Mock(side_effect=KeyboardInterrupt()))
+        send=Mock()
+        with self.assertRaisesRegex(TrainingError,'不自动重发'):
+            fetch(self.learning,ledger(self.learning),0,'fake',payload,send=send)
+        send.assert_not_called()
+        self.assertEqual(ledger(self.learning)['through'],self.name)

@@ -138,6 +138,8 @@ def summarize(dest):
                     'turn_plans_chosen','turn_plan_steps','turn_plans_discarded'):
             summary[key] = compact.get(key,summary[key])
         summary['lesson_corrections'] = compact.get('lesson_corrections',summary['lesson_corrections'])
+        if 'model_token_usage' in compact:
+            summary['model_token_usage'] = compact['model_token_usage']
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
                     'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):

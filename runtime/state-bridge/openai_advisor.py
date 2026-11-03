@@ -248,10 +248,21 @@ Never claim a guaranteed win from an uncertain line.
 
 
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+REASON_TAGS = {'lethal':'当回合斩杀', 'survive':'避免致死', 'trade':'有利交换', 'face':'压低英雄血量',
+               'tempo':'争夺场面', 'draw':'补充手牌', 'setup':'准备后续动作', 'probe':'试探奥秘',
+               'pass':'结束回合', 'other':'其他战术选择'}
+
+
+def usage_parts(response):
+    usage = response.get('usage') or {}
+    fields = {'input_tokens':usage.get('input_tokens'), 'output_tokens':usage.get('output_tokens'),
+              'reasoning_tokens':(usage.get('output_tokens_details') or {}).get('reasoning_tokens'),
+              'cached_input_tokens':(usage.get('input_tokens_details') or {}).get('cached_tokens')}
+    return {k:v for k,v in fields.items() if type(v) is int and v>=0}
 
 
 def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tier=None, effort='low', orders=None,
-                    plan_prefixes=()):
+                    plan_prefixes=(), compact_output=False):
     if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise AdvisorError("Invalid model ID")
     if service_tier not in (None, 'default', 'priority') or effort not in EFFORTS:
@@ -301,6 +312,10 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         observation["strategy"] = strategy
         observation["card_definitions"] = definitions
     body.update(observation=observation, actions=menu)
+    if compact_output:
+        instructions = instructions.replace('Give a concise Chinese reason naming the decisive fact and\n'
+            'purpose (not a long thought process), then an action_id matching that final assessment.',
+            'Compare the lines as usual. Return one tactical reason tag, then the chosen action_id.')
     payload = {
         "model": model, "store": False, "instructions": instructions,
         "input": json.dumps(body, ensure_ascii=True, separators=(",", ":")),
@@ -313,6 +328,8 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
     }
     if service_tier:
         payload['service_tier'] = service_tier
+    if compact_output:
+        payload['tools'][0]['parameters']['properties']['reason']['enum'] = list(REASON_TAGS)
     if model.startswith(("gpt-5", "gpt-6", "o3", "o4")):
         payload["reasoning"] = {"effort": effort}
     if plan_prefixes:
@@ -385,7 +402,7 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
     return payload, len(encoded)
 
 
-def parse_response(response, menu, *, with_plan=False):
+def parse_response(response, menu, *, with_plan=False, compact_output=False):
     if response.get("status") != "completed" or response.get("error"):
         raise AdvisorError("The API response did not complete; no action was sent")
     calls = [item for item in response.get("output", []) if item.get("type") == "function_call"]
@@ -406,6 +423,8 @@ def parse_response(response, menu, *, with_plan=False):
                         break
         if set(args) != {"action_id", "reason"} or not isinstance(args["reason"], str):
             raise ValueError()
+        if compact_output:
+            args['reason'] = REASON_TAGS[args['reason']]
         action = menu[args["action_id"]]
     except (KeyError, ValueError, TypeError):
         raise AdvisorError("The API returned an action outside the current menu") from None
@@ -423,6 +442,7 @@ class OpenAIAdvisor:
         self.model = config.get("model", DEFAULT_MODEL)
         self.service_tier = config.get('service_tier')
         self.effort = config.get('reasoning_effort', 'low')
+        self.compact_output = config.get('compact_output') is True
         if not isinstance(self.key, str) or not 20 <= len(self.key) <= 512 or any(c.isspace() for c in self.key):
             raise AdvisorError("Enter an OpenAI API key in the application")
         self.calls = 0
@@ -472,6 +492,12 @@ class OpenAIAdvisor:
 
     def record(self, event):
         kind = event.get('event')
+        if event.get('usage_parts') and event.get('model'):
+            totals = self.summary.setdefault('model_token_usage',{}).setdefault(event['model'],{})
+            for name,value in event['usage_parts'].items():
+                totals[name] = totals.get(name,0)+value
+                count=name+'_reports'
+                totals[count] = totals.get(count,0)+1
         if event.get('tactical_lesson'):
             role = lesson_role(event)
             if role:
@@ -672,6 +698,12 @@ class OpenAIAdvisor:
         if not menu:
             raise AdvisorError('No supported action survives the observed self-damage check')
         self.note_turn_pace(view, menu)
+        if (self.compact_output and len(observed_menu)==len(menu)==1 and not view.get('unavailable_interactions')
+                and next(iter(menu.values())).get('kind')!='end_turn'):
+            action = dict(next(iter(menu.values())))
+            self.record({'event':'proposed','observation':view,'actions':observed_menu,'action':action,
+                         'local_rule':'only_legal_action_v1','reason':'当前唯一合法动作'})
+            return action
         # With no playable card, attack or power, the observed menu may
         # contain only end turn. There is no model decision to purchase.
         if len(menu) == 1 and next(iter(menu.values())) == {"kind": "end_turn"}:
@@ -696,13 +728,15 @@ class OpenAIAdvisor:
                              'is sent first. The minion requires the exact predicted state and new legal server menu.')
         try:
             payload, size = request_payload(self.model, view, offered, instructions,
-                                           service_tier=self.service_tier, effort=self.effort,orders=orders,plan_prefixes=prefixes)
+                                           service_tier=self.service_tier, effort=self.effort,orders=orders,plan_prefixes=prefixes,
+                                           compact_output=self.compact_output)
         except ContextTooLarge:
             if not pairs and not coins:
                 raise
             offered = menu
             payload, size = request_payload(self.model, view, menu, self.instructions,
-                                           service_tier=self.service_tier, effort=self.effort,orders=orders)
+                                           service_tier=self.service_tier, effort=self.effort,orders=orders,
+                                           compact_output=self.compact_output)
         for field in ('life_tap', 'turn_pace', 'learned_matchup_notes'):
             if field in view and ('"' + field + '":') not in payload['input']:
                 view = {k: v for k, v in view.items() if k != field}
@@ -744,10 +778,14 @@ class OpenAIAdvisor:
         if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
             raise AdvisorError("API response model does not match the requested model")
         tail = []
-        if 'follow_up_ids' in payload['tools'][0]['parameters']['properties']:
-            action,reason,tokens,tail = parse_response(response,offered,with_plan=True)
-        else:
-            action,reason,tokens = parse_response(response,offered)
+        try:
+            if 'follow_up_ids' in payload['tools'][0]['parameters']['properties']:
+                action,reason,tokens,tail = parse_response(response,offered,with_plan=True,compact_output=self.compact_output)
+            else:
+                action,reason,tokens = parse_response(response,offered,compact_output=self.compact_output)
+        except AdvisorError:
+            self.record({'event':'api_reply_rejected','model':actual_model,'usage_parts':usage_parts(response)})
+            raise
         plan_record = {'offered_attack_pairs':list(pairs)} if offered is not menu else {}
         if action.get('kind') == 'attack_plan':
             self.pending_attack = attack_plan.prepare(view, menu, action, self.decision_seq)
@@ -776,6 +814,7 @@ class OpenAIAdvisor:
         self.tokens += tokens
         self.record({"event": "proposed", "observation": view, "actions": observed_menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
+                     "usage_parts":usage_parts(response),"output_style":'tag' if self.compact_output else 'prose',
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
                      "reasoning_effort": self.effort, **plan_record})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,

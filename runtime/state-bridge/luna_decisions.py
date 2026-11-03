@@ -3,7 +3,7 @@ import json
 import math
 import time
 
-from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES
+from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES, usage_parts
 from spell_order import buff_before_tax, review_action
 from card_metadata import CATALOG
 from resource_facts import blasphemy_damage, blasphemy_pressure, shred_battlecry_menu
@@ -39,6 +39,9 @@ def prepare_backup(sol, view, menu, transport, *, orders=None):
         info = {'sent':True,'mode':mode,'restricted_menu':len(allowed)!=len(menu)}
         try:
             reply = transport(packet)
+            info.update(usage_parts=usage_parts(reply))
+            if reply.get('model')==MODEL or str(reply.get('model','')).startswith(MODEL+'-'):
+                info['model'] = reply['model'][:160]
             scores = {}
             if mode=='score':
                 action,scores,tokens = parse_scores(reply,menu)

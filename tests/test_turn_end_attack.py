@@ -101,6 +101,53 @@ class TurnEndAttackTests(unittest.TestCase):
         (self.dest/'log-cursor.json').write_text('{"verified_owner":1,"start_offset":0,"offset":1000000}')
         self.assertEqual(verify(self.dest,'WON',[self.case]),[])
 
+    def test_opponent_concedes_immediately_after_a_face_attack_submission(self):
+        action = dict(ATTACK, target_id=11)
+        opening = setup_log().replace(b'target 0 entity=208', b'target 0 entity=11')
+        sent = SEND.replace(b'selectedTarget=208', b'selectedTarget=11')
+        concession = tags(['TAG_CHANGE Entity=3 tag=PLAYSTATE value=CONCEDED'])
+        parser = IncrementalBoard()
+        parser.feed(opening)
+        state = parser.snapshot(1, extended=True)
+        case = dict(self.case, target=11, signature=board_signature(public_view(state), action))
+        data = opening + sent + HEADER + concession + TERMINAL
+        self.save_log(data)
+        proof = dict(decision_id=48, game_turn=18, options_id=76, source_id=52, target_id=11,
+                     reason='opponent_conceded')
+        self.assertEqual(verify(self.dest, 'WON', [case]), [proof])
+        events = [dict(event='proposed', decision_id=48, action=action, observation=public_view(state),
+                       actions=action_menu(state), server_options_id=76),
+                  dict(event='resumed_after_uncertain_input', decision_id=48, action=action,
+                       game_turn='18', options_id=76, sent_before=0),
+                  dict(event='game_complete', decision_id=48, outcome='WON')]
+        (self.dest/'decisions.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+        (self.dest/'actions.log').write_text('mulligan: confirmed; replaced 1/3\n{"game_result":"WON"}\n')
+        summary, queue = summarize(self.dest)
+        self.assertEqual(summary['concession_attacks'], [proof])
+        self.assertEqual(summary['strategy_sample']['concession_attacks'], [proof])
+        self.assertEqual((summary['confirmed_decisions'], summary['expired_decisions'],
+                          summary['unconfirmed_decisions'], queue), (0, 0, [], []))
+        self.assertIsNone(stop_reason(dict(summary, game_closed=True)))
+
+        combat = tags(['BLOCK_START BlockType=ATTACK Entity=52 EffectCardId= EffectIndex=0 Target=11 SubOption=-1',
+                       'BLOCK_END'])
+        for label, invalid in {
+            'no concession': data.replace(concession, b''),
+            'own concession': data.replace(concession, concession.replace(b'Entity=3', b'Entity=2')),
+            'combat first': data.replace(concession, combat + concession),
+            'damage after concession': data.replace(concession, concession + tags(['TAG_CHANGE Entity=11 tag=DAMAGE value=5'])),
+            'wrong submission target': data.replace(sent, SEND),
+            'second submission': data.replace(concession, sent + concession),
+            'incomplete terminal': data[:-1],
+        }.items():
+            with self.subTest(label=label):
+                self.save_log(invalid)
+                self.assertEqual(verify(self.dest, 'WON', [case]), [])
+        self.save_log(data)
+        for key, value in (('options_id', 75), ('options_id', None), ('sent_before', None), ('sent_before', 1)):
+            with self.subTest(key=key, value=value):
+                self.assertEqual(verify(self.dest, 'WON', [dict(case, **{key:value})]), [])
+
     def test_game_result_alone_does_not_confirm_an_attack(self):
         driver=Driver.__new__(Driver)
         driver.follower=Mock(path=self.dest/'Power.log')

@@ -99,7 +99,7 @@ def transcript(dest, review):
     return dict(run=dest.name, outcome=review['outcome'], version=build.get('version_id','unversioned'),
                 policy=build.get('coach_revision','unrecorded'), actions=len(proposed), cards=definitions,
                 matchup_drills=drills.get('cases',[]) if drills.get('run')==dest.name else [],
-                terminal_receipts=review.get('turn_end_attacks',[]),
+                terminal_receipts=review.get('turn_end_attacks',[]) + review.get('concession_attacks',[]),
                 events=sequence)
 
 

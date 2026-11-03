@@ -1,4 +1,4 @@
-"""Reconcile a submitted minion attack that the server stepped past at turn end."""
+"""Reconcile a submitted minion attack interrupted by turn end or concession."""
 import json
 import re
 import subprocess
@@ -14,8 +14,10 @@ def board_signature(view, action):
     minion_fields = ('id', 'card_id', 'attack', 'health', 'taunt', 'reborn', 'divine_shield', 'attacks_this_turn')
     source = next((c for c in view.get('my_board', []) if c['id'] == action['source_id']), {})
     target = next((c for c in view.get('enemy_board', []) if c['id'] == action['target_id']), {})
-    parts = [row(view.get('my_hero') or {}, hero_fields), row(view.get('enemy_hero') or {}, hero_fields),
-             row(source, minion_fields), row(target, minion_fields)]
+    enemy_hero = view.get('enemy_hero') or {}
+    target_row = row(enemy_hero, hero_fields) if enemy_hero.get('id') == action['target_id'] else row(target, minion_fields)
+    parts = [row(view.get('my_hero') or {}, hero_fields), row(enemy_hero, hero_fields),
+             row(source, minion_fields), target_row]
     if any(None in part or not part[1] for part in parts) or type(view.get('mana')) is not int:
         return None
     return [view['mana'], *parts]
@@ -31,6 +33,8 @@ def reconcile(dest, outcome, pending, events):
                 or marker.get('game_turn') != view.get('game_turn') or view.get('game_type') != 'GT_RANKED'
                 or view.get('format') != 'FT_STANDARD' or view.get('phase') != 'main'
                 or action not in (row.get('actions') or {}).values()
+                or (row.get('server_options_id') is not None and marker.get('options_id') is not None
+                    and row['server_options_id'] != marker['options_id'])
                 or not all(type(action.get(k)) is int for k in ('source_id','target_id'))):
             continue
         signature = board_signature(view, action)
@@ -106,7 +110,10 @@ def verify(dest, outcome, cases):
             return None
         if not view['own_turn'] or board_signature(view,{'source_id':case['source'],'target_id':target}) != case['signature']:
             return None
-        return {'case':case,'options_id':parser.options_id,'status':'submitted','bodies':bodies(case)}
+        return {'case':case, 'options_id':parser.options_id, 'status':'submitted', 'bodies':bodies(case),
+                'face':target == (view.get('enemy_hero') or {}).get('id'),
+                'can_concede':outcome == 'WON' and type(case['options_id']) is int and type(case['sent_before']) is int
+                              and not any(p.get('conceded') for p in board._players(parser.game))}
     with log.open('rb') as f:
         while f.tell() < size:
             line = f.readline(min(65537,size-f.tell()))
@@ -120,7 +127,7 @@ def verify(dest, outcome, cases):
             if b'GameState.SendOption() -' in line:
                 watch = None
                 sent = re.search(rb'GameState\.SendOption\(\) - selectedOption=(\d+) selectedSubOption=-1 selectedTarget=(\d+) selectedPosition=0\s*$',line)
-                if sent and games==1 and parser.game:
+                if sent and games==1 and parser.game and not terminal:
                     watch = submission(int(sent[1]), int(sent[2]))
             elif watch and b'GameState.' in line:
                 _, primary, msg = line.partition(b'GameState.DebugPrintPower() -')
@@ -130,9 +137,19 @@ def verify(dest, outcome, cases):
                 elif not primary:
                     watch = None
                 elif watch['status']=='submitted':
-                    if re.fullmatch(rb'TAG_CHANGE Entity=(?:GameEntity|1) tag=STEP value=MAIN_END',msg):
+                    if not watch['face'] and re.fullmatch(rb'TAG_CHANGE Entity=(?:GameEntity|1) tag=STEP value=MAIN_END',msg):
                         watch['status'] = 'ending'
+                    elif watch['can_concede'] and re.fullmatch(rb'TAG_CHANGE Entity=.+ tag=PLAYSTATE value=CONCEDED', msg):
+                        watch['status'] = 'conceded'
                     else:
+                        watch = None
+                elif watch['status'] == 'conceded':
+                    # Only the observed terminal bookkeeping may follow the opponent's concession.
+                    if not (re.fullmatch(rb'TAG_CHANGE Entity=.+ tag=(?:3479 value=1|NUM_TURNS_IN_HAND value=\d+|'
+                                         rb'PLAYSTATE value=(?:LOST|WON)|(?:NEXT_STEP|STEP) value=FINAL_(?:WRAPUP|GAMEOVER)|'
+                                         rb'STATE value=COMPLETE)', msg)
+                            or re.fullmatch(rb'BLOCK_START BlockType=TRIGGER Entity=(?:GameEntity|1) .* Target=0 .*', msg)
+                            or msg == b'BLOCK_END'):
                         watch = None
                 elif (not msg.startswith((b'TAG_CHANGE ',b'BLOCK_START BlockType=TRIGGER ',b'BLOCK_END'))
                       or re.search(rb'tag=(?:ATTACKING|DEFENDING|NUM_ATTACKS_THIS_TURN) value=[1-9]\d*\b',msg)):
@@ -154,6 +171,13 @@ def verify(dest, outcome, cases):
     if (meta.get('GameType')!='GT_RANKED' or meta.get('FormatType')!='FT_STANDARD'
             or outcome not in ('WON','LOST','TIED') or states!={own:outcome,3-own:{'WON':'LOST','LOST':'WON','TIED':'TIED'}[outcome]}):
         return []
+    if watch and watch['status'] == 'conceded':
+        case = watch['case']
+        conceded = [board._tag_int(p,'PLAYER_ID') for p in board._players(parser.game) if p.get('conceded')]
+        if conceded == [3-own] and bodies(case) == watch['bodies']:
+            proofs[case['decision_id']] = {'decision_id':case['decision_id'], 'game_turn':case['turn'],
+                'options_id':watch['options_id'], 'source_id':case['source'], 'target_id':case['target'],
+                'reason':'opponent_conceded'}
     return [proof for did,proof in proofs.items() if matches.get(did)==1]
 
 

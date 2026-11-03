@@ -21,7 +21,7 @@ The first change is the board; apply each next change to the preceding board. An
 Entity IDs and option labels are local to a position. Card definitions may include cards revealed later;
 use only what was public at that decision. Match a proposal's decision_id with its later receipt.
 An expired/withdrawn proposal or a shadow Luna suggestion is NOT a played move. terminal_receipts record attacks
-submitted as the turn ended without observed combat. Infer no hidden hand or RNG.
+submitted before a turn handoff or an opponent's concession without observed combat. Infer no hidden hand or RNG.
 Matchup drills compare one move against conditional replies. Their grades are not full games or win rates.
 Set opponent_class and opponent_archetype only for a supported matchup-specific lesson. Otherwise use null.
 Give each run a brief Chinese review (at most 100 characters), naming key turns, alternative lines and

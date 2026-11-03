@@ -182,7 +182,9 @@ def summarize(dest):
             proofs = reconcile(dest, outcome, pending, decisions)
             if proofs:
                 resolved_at_end = {proof['decision_id'] for proof in proofs}
-                summary['turn_end_attacks'] = proofs
+                for proof in proofs:
+                    field = 'concession_attacks' if proof.get('reason') == 'opponent_conceded' else 'turn_end_attacks'
+                    summary.setdefault(field, []).append(proof)
                 summary['unconfirmed_decisions'] = [i for i in summary['unconfirmed_decisions'] if i not in resolved_at_end]
                 pending = [r for r in pending if r.get('decision_id') not in resolved_at_end]
                 summary['needs_review'] = (outcome == 'LOST' or bool(summary['unconfirmed_decisions'])
@@ -199,8 +201,9 @@ def summarize(dest):
         if drills:
             summary['strategy_sample']['matchup_drills'] = drills
             save(dest/'matchup-drills.json',{'run':dest.name,'cases':drills})
-        if summary.get('turn_end_attacks'):
-            summary['strategy_sample']['turn_end_attacks'] = summary['turn_end_attacks']
+        for field in ('turn_end_attacks', 'concession_attacks'):
+            if field in summary:
+                summary['strategy_sample'][field] = summary[field]
     samples = pending[-1:]
     if not samples and outcome == 'LOST' and not summary.get('diagnostics_capped'):
         samples = [r for r in proposed if r.get('decision_id') in confirmed][-1:]

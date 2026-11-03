@@ -15,6 +15,11 @@ def thinking_review(events):
     import json
     paid=[]; single=[]; repeated=[]; previous={}; identified=0
     receipts={r.get('decision_id') for r in events if r.get('event')=='confirmed'}
+    confirmed_attacks = {r.get('decision_id'): r['action'] for r in events if r.get('event') == 'confirmed'
+                         and (r.get('action') or {}).get('kind') == 'attack'}
+    retries = [{'decision': r.get('decision_id'), 'turn': r.get('game_turn'),
+                'confirmed': confirmed_attacks.get(r.get('decision_id')) == r['action']}
+               for r in events if r.get('event') == 'attack_input_retry' and isinstance(r.get('action'), dict)]
     for e in events:
         if e.get('event')!='proposed' or e.get('policy')=='sol_timeout_backup_v1' or type(e.get('elapsed_ms')) is not int:
             continue
@@ -30,6 +35,7 @@ def thinking_review(events):
             if key in previous:repeated.append([previous[key],did])
             previous[key]=did
     return {'paid_primary':len(paid),'identified_main_windows':identified,'single_option_calls':single[-8:],'repeated_identical_windows':repeated[-8:],
+            'attack_input_retries': retries[-8:],
             'slowest_for_review':sorted(paid,key=lambda p:-p['ms'])[:3],
             'confirmed_plan_followups':sum(e.get('local_rule')=='verified_turn_plan_v1' and e.get('decision_id') in receipts
                                           for e in events if e.get('event')=='proposed'),

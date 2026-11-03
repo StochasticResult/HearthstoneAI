@@ -103,6 +103,7 @@ class TurnEndAttackTests(unittest.TestCase):
 
     def test_game_result_alone_does_not_confirm_an_attack(self):
         driver=Driver.__new__(Driver)
+        driver.follower=Mock(path=self.dest/'Power.log')
         driver.parser=self.parser;driver.owner=1;driver.identity_game=self.parser.game
         driver.advisor=Mock();driver.revalidate=Mock()
         def observe(predicate,_seconds):
@@ -119,6 +120,7 @@ class TurnEndAttackTests(unittest.TestCase):
 
     def test_matching_server_combat_can_confirm_even_at_natural_terminal(self):
         driver=Driver.__new__(Driver);driver.parser=self.parser;driver.owner=1
+        driver.follower=Mock(path=self.dest/'Power.log')
         driver.identity_game=self.parser.game;driver.advisor=Mock();driver.revalidate=Mock()
         def observe(predicate,_seconds):
             self.parser.feed(SEND+tags(['BLOCK_START BlockType=ATTACK Entity=52 EffectCardId= EffectIndex=0 Target=208 SubOption=-1',

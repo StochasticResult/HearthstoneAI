@@ -9,6 +9,8 @@ states, missing confirmation, loss of focus, or incomplete data stop the run.
 import argparse
 import json
 import os
+import re
+import stat
 import subprocess
 import sys
 import time
@@ -154,6 +156,45 @@ def click(point):
 
 def drag(start, end):
     run_checked(input_command("drag", *start, *end))
+
+
+def click_log_cursor(power_path):
+    path = power_path.with_name('Hearthstone.log')
+    try:
+        before = path.lstat()
+    except OSError:
+        return None
+    return (path, before) if stat.S_ISREG(before.st_mode) else None
+
+
+def client_rejected_drag(cursor, started, finished):
+    """Read only new InputManager warnings written for this native gesture."""
+    if cursor is None or not 0 <= finished - started <= 4:
+        return False
+    path, before = cursor
+    try:
+        with path.open('rb') as stream:
+            after = os.fstat(stream.fileno())
+            size = after.st_size - before.st_size
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or not 0 < size <= 16384:
+                return False
+            if before.st_size:
+                stream.seek(before.st_size - 1)
+                if stream.read(1) != b'\n':
+                    return False
+            lines = stream.read(size).split(b'\n')[:-1]
+    except OSError:
+        return False
+    warnings = [line for line in lines if b'You clicked on something that is not being handled by InputManager.' in line]
+    if len(warnings) != 1:
+        return False
+    stamp = re.fullmatch(rb'W (\d\d):(\d\d):(\d\d\.\d+) You clicked on something that is not being handled by InputManager\.  Alert The Brode!\r?', warnings[0])
+    if not stamp:
+        return False
+    local = time.localtime(started)
+    start_of_drag = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec + started % 1
+    written = int(stamp[1]) * 3600 + int(stamp[2]) * 60 + float(stamp[3])
+    return (written - start_of_drag) % 86400 <= finished - started
 
 
 def move(point):
@@ -831,7 +872,7 @@ class Driver:
                 click(second)
             self.wait_until(lambda: bool(self.game_result()) or
                 (self.parser.sent_options>sent_before and self.parser.options_id!=state['options_id']),10)
-        elif kind == "drag":
+        elif kind == "drag" and advice["kind"] != "attack":
             drag(first, second)
         elif kind == "battlecry":
             drag(first, (735, 510))
@@ -893,12 +934,43 @@ class Driver:
                     return False
                 entity = game["entities"].get(source)
                 return bool(entity and board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks)
-            self.wait_until(attacked, 10)
+            self.execute_attack_drag(own, state, advice, first, second, before_submissions, before_events, attacked)
         print("confirmed", advice["kind"], flush=True)
         print(json.dumps({"action_timing": {"kind": advice["kind"],
             "decision_ms": round((input_started-decision_started)*1000),
             "input_confirmation_ms": round((time.monotonic()-input_started)*1000)}}), flush=True)
         self.advisor.confirm(advice, state)
+
+    def execute_attack_drag(self, own, state, advice, first, second, sent, event_count, attacked):
+        minion = next((c for c in state['my_board'] if c['id'] == advice['source_id']), {})
+        single_swing = (minion.get('windfury') is False and minion.get('mega_windfury') is False
+                        and minion.get('attacks_this_turn') == 0)
+        cursor = click_log_cursor(self.follower.path) if RUN_MODE == 'ranked' and single_swing else None
+        started = time.time()
+        drag(first, second)
+        finished = time.time()
+        if cursor:
+            try:
+                self.wait_until(attacked, 2)
+                return
+            except ActionUnconfirmed:
+                pass
+            self.poll()
+            def same_window():
+                game = self.parser.game
+                return (game is not None and game is self.identity_game and self.owner == own and not self.parser.partial
+                        and self.parser.sent_options == sent and self.parser.options_id == state['options_id']
+                        and len(game.get('events', ())) == event_count and not self.parser.pending_choice(own))
+            if same_window() and client_rejected_drag(cursor, started, finished):
+                self.revalidate(own, state, advice)
+                checked_geometry()
+                self.poll()
+                if same_window() and signature(self.snapshot(own)) == signature(state):
+                    self.advisor.record({'event': 'attack_input_retry', 'action': advice,
+                                         'game_turn': state['game_turn'], 'options_id': state['options_id'],
+                                         'reason': 'client_rejected_drag'})
+                    drag(first, second)
+        self.wait_until(attacked, 10)
 
     def execute_mulligan(self, own, choice, attempt):
         game = self.parser.game

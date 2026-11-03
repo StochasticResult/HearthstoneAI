@@ -15,6 +15,25 @@ def result(run,version='0.2-build-a',outcome='WON',mode='ranked'):
 
 
 class VersionStatisticsTests(unittest.TestCase):
+    def test_matchup_groups_remain_separate_and_unknowns_are_retained(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)
+            sample={'observed_own_turns':1,'played_deck':'zoo','opponent_class':'ROGUE','opponent_build':'patch',
+                    'inferred_archetype':'Combo','archetype_evidence':['A','B']}
+            record(p,result('r1'),strategy_sample=sample)
+            record(p,result('r1'),strategy_sample=sample)
+            record(p,result('r2',outcome='LOST'),strategy_sample=dict(sample,inferred_archetype=None))
+            record(p,result('r3',outcome='TIED'),strategy_sample=sample)
+            record(p,result('r4',version='v2'),strategy_sample=sample)
+            record(p,result('r5'),strategy_sample=dict(sample,played_deck='other'))
+            record(p,result('r6',mode='practice'),strategy_sample=sample)
+            data=json.loads((p/'matchup-stats.json').read_bytes())
+            rows=[r for r in data['by_class'] if r['version']=='0.2-build-a' and r['deck']=='zoo']
+            self.assertEqual([(x['wins'],x['losses'],x['draws'],x['win_rate_pct']) for x in rows],[(1,1,1,50.0)])
+            kinds={r['inferred_archetype']:(r['wins'],r['losses']) for r in data['by_inferred_deck']
+                   if r['version']=='0.2-build-a' and r['deck']=='zoo'}
+            self.assertEqual(kinds,{'Combo':(1,0),'unknown':(0,1)})
+
     def test_startup_imports_legacy_and_new_build_shows_no_sample(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);old=result('old');old.pop('runtime_version')

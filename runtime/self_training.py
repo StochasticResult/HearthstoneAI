@@ -11,7 +11,7 @@ from pathlib import Path
 
 from coach_evidence import recent, sources
 from coach_delivery import TrainingError, begin, fetch, finish, ledger, restore
-from coach_policy import PHASES, ZONES, app_reviews_enabled, atomic, card_present, card_rules, read_json, revision, settings
+from coach_policy import PHASES, ZONES, app_reviews_enabled, atomic, card_present, card_rules, matchup_applies, read_json, revision, settings
 
 DATA = Path.home()/'Library/Application Support/HearthstoneAI'
 CONFIRMED = {'confirmed', 'confirmed_choice', 'confirmed_target'}
@@ -22,6 +22,8 @@ Entity IDs and option labels are local to a position. Card definitions may inclu
 use only what was public at that decision. Match a proposal's decision_id with its later receipt.
 An expired/withdrawn proposal or a shadow Luna suggestion is NOT a played move. terminal_receipts record attacks
 submitted as the turn ended without observed combat. Infer no hidden hand or RNG.
+Matchup drills compare one move against conditional replies. Their grades are not full games or win rates.
+Set opponent_class and opponent_archetype only for a supported matchup-specific lesson. Otherwise use null.
 Give each run a brief Chinese review (at most 100 characters), naming key turns, alternative lines and
 uncertainty. For transferable gameplay advice, give only high-confidence, conditional, falsifiable lessons.
 Cite a confirmed decision with a materially better option explicitly offered in its actions dictionary.
@@ -40,7 +42,8 @@ INT = {'type':'integer'}
 REF = obj({'run':STR, 'decision':INT})
 FINDING = obj({'evidence':REF, 'alternative':STR, 'control':REF,
                'phase':{'type':'string','enum':list(PHASES)}, 'zone':{'type':'string','enum':list(ZONES)},
-               'card':STR, 'advice':STR, 'exception':STR})
+               'card':STR, 'advice':STR, 'exception':STR, 'opponent_class':{'type':['string','null']},
+               'opponent_archetype':{'type':['string','null']}})
 SCHEMA = obj({'reviews':{'type':'array','items':obj({'run':STR,'review':STR})},
               'findings':{'type':'array','items':FINDING}})
 
@@ -105,6 +108,11 @@ def validated(result, games):
         if menu[alt].get('source_id') in unsafe:
             continue
         lesson = {k:f[k] for k in ('phase','zone','card','advice','exception','evidence','control','alternative')}
+        if any(f.get(k) is not None and not clean_text(f[k],80) for k in ('opponent_class','opponent_archetype')):
+            continue
+        if not matchup_applies(f,board) or not matchup_applies(f,index[control][0]):
+            continue
+        lesson.update({k:f[k] for k in ('opponent_class','opponent_archetype') if f.get(k)})
         game = next(g for g in games if g['run']==evidence[0])
         lesson['rules'] = card_rules(game['cards'].get(f['card'],{}))
         accepted.append(lesson)

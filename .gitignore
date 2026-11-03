@@ -5,5 +5,8 @@ dist/
 .DS_Store
 .env*
 private-evidence/
+*.sqlite3*
+/learning/
+/runs/
 runtime/mirror-status
 runtime/quartz-input

@@ -104,7 +104,7 @@ def shield_trades(view, menu):
 def fingerprint(view):
     # The dead card can drop out of the static rules dictionary. All live card IDs,
     # stats and modifiers remain in the projection. Corpse changes are checked below.
-    ignored = {'turn_pace', 'recent_confirmed_actions', 'card_definitions', 'enemy_corpses','learned_matchup_notes'}
+    ignored = {'turn_pace', 'recent_confirmed_actions', 'card_definitions', 'enemy_corpses','learned_matchup_notes','opponent_list_hypothesis'}
     data = {k:v for k,v in view.items() if k not in ignored}
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).digest()
 
@@ -182,7 +182,7 @@ def predictable_attacks(view, menu):
         return {}
     friends = {c['id']:c for c in view.get('my_board',[])}
     hero = view.get('enemy_hero') or {}
-    hits = removals(view,menu)
+    foes = {c['id']:c for c in view.get('enemy_board',[])}
     result = {}
     for aid,a in menu.items():
         if a.get('kind')!='attack':
@@ -198,12 +198,20 @@ def predictable_attacks(view, menu):
                     and all(type(hero.get(k)) is int for k in ('health','armor')) and hero['armor']>=0
                     and attacker['attack']<hero['health']+hero['armor']):
                 result[aid]='face'
-        elif aid in hits:
-            _,foe=hits[aid]
-            if (attacker['health']>foe['attack'] and foe.get('poisonous') is False
-                    and foe.get('lifesteal') is False and view.get('enemy_board_slots_used')==len(view['enemy_board'])
-                    and {c.get('position') for c in view['enemy_board']}==set(range(1,len(view['enemy_board'])+1))):
-                result[aid]='trade'
+        elif a.get('target_id') in foes:
+            foe = foes[a['target_id']]
+            if (type(attacker.get('health')) is not int or type(foe.get('health')) is not int
+                    or type(foe.get('attack')) is not int or min(attacker['health'],foe['health'])<=0
+                    or any(foe.get(k) is not False for k in ('poisonous','lifesteal','immune','divine_shield','reborn','deathrattle','dormant'))
+                    or view.get('enemy_board_slots_used')!=len(foes)
+                    or {c.get('position') for c in foes.values()}!=set(range(1,len(foes)+1))):
+                continue
+            if attacker['health'] <= foe['attack'] and (
+                    attacker.get('deathrattle') is not False or attacker.get('reborn') is not False
+                    or view.get('my_board_slots_used')!=len(friends)
+                    or {c.get('position') for c in friends.values()}!=set(range(1,len(friends)+1))):
+                continue
+            result[aid]='trade'
     actionable_sources = {a.get('source_id') for a in menu.values() if a.get('kind') in ('attack','play','hero_power')}
     return result if len(actionable_sources)>1 else {}
 
@@ -234,7 +242,7 @@ def continuation(view, menu, first, tail, decision_id, origin):
              'confirmed_options_id':None}
     if json.dumps(tail[0],sort_keys=True,separators=(',',':')) not in p['menu']:
         return None
-    p.update(remaining=list(tail[1:]),origin=origin,allow_corpse_increment=(kind=='trade'))
+    p.update(remaining=list(tail[1:]),origin=origin,allow_corpse_increment=p.get('allow_corpse_increment',False))
     return p
 
 
@@ -254,17 +262,28 @@ def prepare(view, menu, plan, decision_id):
         return {'first':first,'second':second,'remaining':[],'origin':decision_id,'decision_id':decision_id,
                 'turn':view['game_turn'],'expected':predicted_fingerprint(expected,next_menu),'menu':menu_key(next_menu),
                 'corpses':view.get('enemy_corpses'),'confirmed_options_id':None,'allow_corpse_increment':False}
-    expected['my_board'] = [
-        dict(c, health=c['health']-victim['attack'], exhausted=True, attacks_this_turn=c['attacks_this_turn']+1)
-        if c['id'] == source else c for c in view['my_board']]
-    expected['enemy_board'] = [
-        dict(c, position=c['position']-1) if c['position'] > victim['position'] else c
-        for c in view['enemy_board'] if c['id'] != target]
-    expected['enemy_board_slots_used'] = len(expected['enemy_board'])
-    next_menu = {k:a for k,a in menu.items() if a.get('source_id') != source and a.get('target_id') != target}
-    return {'first':first, 'second':second, 'decision_id':decision_id, 'turn':view['game_turn'],
-            'expected':predicted_fingerprint(expected,next_menu), 'menu':menu_key(next_menu), 'corpses':view.get('enemy_corpses'),
-            'confirmed_options_id':None}
+    attacker = next(c for c in view['my_board'] if c['id']==source)
+    dead = set()
+    for side,unit,damage in (('my',attacker,victim['attack']),('enemy',victim,attacker['attack'])):
+        key = side+'_board'
+        survives = unit['health']>damage
+        if survives:
+            survivor = dict(unit,health=unit['health']-damage)
+            if side=='my':
+                survivor.update(exhausted=True,attacks_this_turn=unit['attacks_this_turn']+1)
+            expected[key] = [survivor if c['id']==unit['id'] else c for c in view[key]]
+        else:
+            dead.add(unit['id'])
+            expected[key] = [dict(c,position=c['position']-1) if c['position']>unit['position'] else c
+                             for c in view[key] if c['id']!=unit['id']]
+            expected[side+'_board_slots_used'] = len(expected[key])
+    next_menu = {k:a for k,a in menu.items() if a.get('source_id')!=source and a.get('target_id') not in dead}
+    result = {'first':first,'second':second,'decision_id':decision_id,'turn':view['game_turn'],
+              'expected':predicted_fingerprint(expected,next_menu),'menu':menu_key(next_menu),
+              'corpses':view.get('enemy_corpses'),'allow_corpse_increment':target in dead,'confirmed_options_id':None}
+    if source in dead and type(view.get('my_corpses')) is int:
+        result['expected_with_own_corpse'] = predicted_fingerprint(dict(expected,my_corpses=view['my_corpses']+1),next_menu)
+    return result
 
 
 def mismatch_reason(plan, view, menu, options_id, decision_id):
@@ -279,7 +298,7 @@ def mismatch_reason(plan, view, menu, options_id, decision_id):
     corpses, before = view.get('enemy_corpses'), plan['corpses']
     if corpses != before and not (plan.get('allow_corpse_increment',True) and type(before) is int and corpses == before+1):
         return 'unexpected_corpse_count'
-    if fingerprint(view)!=plan['expected']:
+    if fingerprint(view) not in (plan['expected'],plan.get('expected_with_own_corpse')):
         return 'public_state_changed'
     return None
 

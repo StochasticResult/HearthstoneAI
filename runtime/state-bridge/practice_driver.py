@@ -835,12 +835,18 @@ class Driver:
             drag(first, second)
         elif kind == "battlecry":
             drag(first, (735, 510))
-            time.sleep(2.5)
+            # A target receipt can arrive before the reticle delay. Never click again after a submission.
+            try:
+                self.wait_until(lambda: self.parser.sent_options!=before_submissions or bool(self.game_result()),2.5)
+            except ActionUnconfirmed:
+                pass
             # The target reticle is a client animation and can appear
             # after the drag. Retry only while the same source, target,
             # options and board layout are still confirmed in the log.
             for target_attempt in range(3):
                 self.poll()
+                if self.parser.sent_options != before_submissions or self.game_result():
+                    break
                 current = self.snapshot(own)
                 if all(c["id"] != source_id for c in current["my_hand"]):
                     break
@@ -863,6 +869,7 @@ class Driver:
             # A played card may immediately open Discover, in which case
             # snapshot() intentionally blocks until that choice resolves.
             self.wait_until(lambda: self.parser.sent_options == before_submissions + 1 and
+                            (kind != 'battlecry' or self.parser.last_targeted_option == (state['options_id'],source,advice['target_id'])) and
                             self.parser.game is not None and not self.parser.partial and
                             all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")), 10)
         elif advice["kind"] == "attack":
@@ -1101,7 +1108,6 @@ class Driver:
                             time.sleep(.3)
                     continue
                 actions += 1
-                time.sleep(1.5 if targeted else 2)
                 continue
             if waiting_for_first_mana(self.parser, own):
                 first_mana_wait = first_mana_wait or time.monotonic()
@@ -1257,10 +1263,6 @@ class Driver:
             borrowed_options = state["options_id"]
             awaiting_fresh_options = True
             actions += 1
-            # Server confirmation can precede the end of a client animation.
-            # Keep this settling window; hand verification itself now polls
-            # readiness and avoids the old unconditional two-second delay.
-            time.sleep(1.5)
         print("practice limit reached, actions=%d" % actions, flush=True)
 
 

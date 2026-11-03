@@ -92,7 +92,7 @@ def continued_swap_baseline(path, current):
     return min(current,round(previous*MIB))
 
 
-def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, client_factory=None):
+def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, client_factory=None, refresh_decks=None):
     learning = data / 'learning'
     learning.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = learning / 'autoplay-state.json'
@@ -236,6 +236,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
                 return state
             if not maintain(swap_baseline):
                 return state
+            if refresh_decks:
+                refresh_decks(learning)
             state['current_game'] = state['completed_games'] + 1
             persist()
             emit('自动天梯：第 %d 局' % state['current_game'], play_status='自动天梯 · 第 %d 局' % state['current_game'])

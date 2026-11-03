@@ -1,0 +1,453 @@
+{
+ "run": "run-20261102-212151",
+ "decision_id": 27,
+ "observation": {
+  "game_type": "GT_RANKED",
+  "format": "FT_STANDARD",
+  "game_turn": "12",
+  "turn_timeout_seconds": 75,
+  "mana": 1,
+  "phase": "main",
+  "mana_cap": 10,
+  "mana_crystals": 6,
+  "mana_spent": 5,
+  "temporary_mana": 0,
+  "overload_locked": 0,
+  "overload_owed": 0,
+  "my_deck_count": 19,
+  "enemy_deck_count": 20,
+  "enemy_hand_count": 3,
+  "enemy_secret_count": 0,
+  "my_board_slots_used": 3,
+  "enemy_board_slots_used": 4,
+  "my_hero": {
+   "id": 66,
+   "card_id": "HERO_07",
+   "attack": 0,
+   "health": 17,
+   "max_health": 30,
+   "armor": 0,
+   "frozen": false,
+   "exhausted": false,
+   "immune": false,
+   "attacks_this_turn": 0,
+   "modifiers": []
+  },
+  "enemy_hero": {
+   "id": 64,
+   "card_id": "HERO_02bx",
+   "attack": 0,
+   "health": 28,
+   "max_health": 30,
+   "armor": 0,
+   "frozen": false,
+   "exhausted": false,
+   "immune": false,
+   "attacks_this_turn": 0,
+   "modifiers": []
+  },
+  "my_hand": [
+   {
+    "id": 41,
+    "card_id": "BE_726",
+    "position": 1,
+    "card_type": "SPELL",
+    "cost": 1,
+    "attack": null,
+    "health": null,
+    "modifiers": []
+   },
+   {
+    "id": 63,
+    "card_id": "BE_090",
+    "position": 2,
+    "card_type": "MINION",
+    "cost": 6,
+    "attack": 6,
+    "health": 6,
+    "modifiers": []
+   },
+   {
+    "id": 51,
+    "card_id": "CATA_210",
+    "position": 3,
+    "card_type": "MINION",
+    "cost": 3,
+    "attack": 0,
+    "health": 2,
+    "modifiers": [
+     {
+      "card_id": "GBL_005e"
+     }
+    ]
+   },
+   {
+    "id": 60,
+    "card_id": "CORE_UNG_205",
+    "position": 4,
+    "card_type": "MINION",
+    "cost": 1,
+    "attack": 2,
+    "health": 1,
+    "modifiers": [
+     {
+      "card_id": "GBL_999e"
+     }
+    ]
+   }
+  ],
+  "my_board": [
+   {
+    "id": 37,
+    "card_id": "EDR_856",
+    "position": 1,
+    "attack": 4,
+    "health": 2,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 1,
+    "modifiers": []
+   },
+   {
+    "id": 164,
+    "card_id": "TIME_029",
+    "position": 2,
+    "attack": 5,
+    "health": 5,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": true,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "modifiers": []
+   },
+   {
+    "id": 162,
+    "card_id": "TIME_029",
+    "position": 3,
+    "attack": 5,
+    "health": 5,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": false,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": true,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": true,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "modifiers": [
+     {
+      "card_id": "EDR_100t9e"
+     }
+    ]
+   }
+  ],
+  "enemy_board": [
+   {
+    "id": 16,
+    "card_id": "CATA_497",
+    "position": 1,
+    "attack": 8,
+    "health": 7,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "script_data_1": 4,
+    "modifiers": [
+     {
+      "card_id": "CATA_153e",
+      "script_data_1": 2
+     }
+    ]
+   },
+   {
+    "id": 146,
+    "card_id": "CATA_565t",
+    "position": 2,
+    "attack": 3,
+    "health": 4,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "script_data_1": 2,
+    "modifiers": [
+     {
+      "card_id": "CATA_153e",
+      "script_data_1": 1
+     }
+    ]
+   },
+   {
+    "id": 126,
+    "card_id": "CATA_565t",
+    "position": 3,
+    "attack": 3,
+    "health": 2,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "script_data_1": 1,
+    "modifiers": [
+     {
+      "card_id": "CATA_153e",
+      "script_data_1": 2
+     }
+    ]
+   },
+   {
+    "id": 14,
+    "card_id": "DINO_411",
+    "position": 4,
+    "attack": 2,
+    "health": 2,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "modifiers": [
+     {
+      "card_id": "CATA_153e",
+      "script_data_1": 1
+     }
+    ]
+   }
+  ],
+  "my_hero_power": {
+   "id": 67,
+   "card_id": "HERO_07bp",
+   "cost": 2,
+   "exhausted": false
+  },
+  "enemy_hero_power": {
+   "id": 69,
+   "card_id": "JAIL_800hp2",
+   "cost": null,
+   "exhausted": false
+  },
+  "my_locations": [],
+  "enemy_locations": [],
+  "my_player_effects": [],
+  "enemy_player_effects": [
+   {
+    "card_id": "CATA_497e",
+    "script_data_1": 2
+   },
+   {
+    "card_id": "CATA_497e",
+    "script_data_1": 3
+   }
+  ],
+  "my_objectives": [],
+  "enemy_objectives": [],
+  "active_rituals": [],
+  "enemy_active_rituals": [],
+  "my_secrets": []
+ },
+ "actions": {
+  "a0": {
+   "kind": "play",
+   "source_id": 41
+  },
+  "a1": {
+   "kind": "play",
+   "source_id": 60,
+   "target_id": 64
+  },
+  "a2": {
+   "kind": "play",
+   "source_id": 60,
+   "target_id": 14
+  },
+  "a3": {
+   "kind": "play",
+   "source_id": 60,
+   "target_id": 126
+  },
+  "a4": {
+   "kind": "play",
+   "source_id": 60,
+   "target_id": 16
+  },
+  "a5": {
+   "kind": "play",
+   "source_id": 60,
+   "target_id": 146
+  },
+  "a6": {
+   "kind": "attack",
+   "source_id": 162,
+   "target_id": 14
+  },
+  "a7": {
+   "kind": "attack",
+   "source_id": 162,
+   "target_id": 126
+  },
+  "a8": {
+   "kind": "attack",
+   "source_id": 162,
+   "target_id": 16
+  },
+  "a9": {
+   "kind": "attack",
+   "source_id": 162,
+   "target_id": 146
+  },
+  "a10": {
+   "kind": "attack",
+   "source_id": 164,
+   "target_id": 14
+  },
+  "a11": {
+   "kind": "attack",
+   "source_id": 164,
+   "target_id": 126
+  },
+  "a12": {
+   "kind": "attack",
+   "source_id": 164,
+   "target_id": 16
+  },
+  "a13": {
+   "kind": "attack",
+   "source_id": 164,
+   "target_id": 146
+  },
+  "a14": {
+   "kind": "end_turn"
+  }
+ },
+ "recorded_action": {
+  "kind": "attack",
+  "source_id": 162,
+  "target_id": 146
+ },
+ "recorded_followup": {
+  "kind": "play",
+  "source_id": 60,
+  "target_id": 16
+ },
+ "time_budget": {
+  "reason": "clock",
+  "remaining_seconds_upper": 15
+ },
+ "server_options_id": 50
+}

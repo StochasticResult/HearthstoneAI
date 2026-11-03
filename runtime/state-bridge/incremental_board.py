@@ -555,11 +555,12 @@ class IncrementalBoard:
                     "taunt": board._tag_int(entity, "TAUNT") == 1, "frozen": board._tag_int(entity, "FROZEN") == 1,
                     "exhausted": board._tag_int(entity, "EXHAUSTED") == 1}
             if extended:
+                result['max_health'] = required_number(entity, 'HEALTH')
                 for tag in ("DIVINE_SHIELD", "WINDFURY", 'MEGA_WINDFURY', 'RUSH', 'CHARGE',
                             "STEALTH", "LIFESTEAL", "POISONOUS", "REBORN", "IMMUNE", "DORMANT", "SILENCED",
                             'DEATHRATTLE','TITAN','CANT_BE_TARGETED_BY_SPELLS','CANT_BE_TARGETED_BY_HERO_POWERS'):
                     result[tag.lower()] = board._tag_int(entity, tag) != 0
-                for tag in ('CANT_ATTACK', 'CANT_ATTACK_HEROES'):
+                for tag in ('CANT_ATTACK', 'CANT_ATTACK_HEROES', 'CANT_BE_FROZEN'):
                     if board._tag_int(entity, tag):
                         result[tag.lower()] = True
                 result["attacks_this_turn"] = board._tag_int(entity, "NUM_ATTACKS_THIS_TURN")
@@ -649,6 +650,7 @@ class IncrementalBoard:
                     and (eid in visible_objectives or e.get("zone") not in ("HAND", "DECK", "SECRET", "SETASIDE"))
                     and board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION", "HERO")):
                 public_cards[eid] = {"id": eid, "card_id": e["cardId"],
+                    "played_publicly": eid in played_publicly,
                     "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))}
         seen_own = [{"id": e["id"], "card_id": e["cardId"]} for e in game["entities"].values()
             if e.get("controller") == own_player_id and e.get("cardId")

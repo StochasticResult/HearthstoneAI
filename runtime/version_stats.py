@@ -39,6 +39,7 @@ def connect(learning):
     connection.execute('PRAGMA temp_store=FILE')
     connection.execute('CREATE TABLE IF NOT EXISTS matches (run TEXT PRIMARY KEY, version TEXT NOT NULL, mode TEXT NOT NULL, outcome TEXT NOT NULL, models TEXT NOT NULL)')
     connection.execute('CREATE TABLE IF NOT EXISTS match_policies (run TEXT PRIMARY KEY, revision TEXT NOT NULL)')
+    connection.execute('CREATE TABLE IF NOT EXISTS matchups (run TEXT PRIMARY KEY, deck TEXT NOT NULL, opponent_class TEXT NOT NULL, archetype TEXT NOT NULL, evidence TEXT NOT NULL, client_build TEXT NOT NULL)')
     return connection
 
 
@@ -72,6 +73,24 @@ def export_report(connection,learning,current):
                                 for v,m,p,w,l,d,i in rows]
     from match_review import save
     save(Path(learning)/'version-stats.json',export)
+    matchups = {}
+    for level,field in [('by_class','opponent_class'),('by_inferred_deck','opponent_class,archetype')]:
+        data = connection.execute(f"""WITH ranked AS (SELECT m.run,m.version,m.outcome,coalesce(d.deck,'unknown') AS deck,
+            coalesce(d.client_build,'unknown') AS client_build,coalesce(d.opponent_class,'UNKNOWN') AS opponent_class,
+            coalesce(d.archetype,'unknown') AS archetype FROM matches m LEFT JOIN matchups d USING(run)
+            WHERE m.mode='ranked' AND m.outcome IN ('WON','LOST','TIED'))
+            SELECT version, deck, client_build, {field}, SUM(outcome='WON'), SUM(outcome='LOST'), SUM(outcome='TIED') FROM ranked
+            GROUP BY version,deck,client_build,{field} ORDER BY MAX(run) DESC LIMIT 400""")
+        groups = []
+        for row in data:
+            wins,losses,draws = row[-3:]
+            group=dict(version=row[0],deck=row[1],client_build=row[2],opponent_class=row[3],
+                       wins=wins,losses=losses,draws=draws,decisive_games=wins+losses,
+                       win_rate_pct=round(100*wins/(wins+losses),2) if wins+losses else None)
+            if level=='by_inferred_deck':group['inferred_archetype']=row[4]
+            groups.append(group)
+        matchups[level]=groups
+    save(Path(learning)/'matchup-stats.json',dict(rate_definition=RATE_DEFINITION,**matchups))
 
 
 def status(learning,version,mode='ranked'):
@@ -108,6 +127,11 @@ def record(learning, summary, history=(), *, strategy_sample=None):
             connection.execute('''INSERT INTO matches VALUES (?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET
                 version=excluded.version,mode=excluded.mode,outcome=excluded.outcome,models=excluded.models''',row)
             if strategy_sample is not None and (strategy_sample['observed_own_turns'] or 'opening' in strategy_sample):
+                if row[2]=='ranked':
+                    connection.execute('INSERT OR REPLACE INTO matchups VALUES (?,?,?,?,?,?)',
+                        (row[0],strategy_sample.get('played_deck','unknown'),strategy_sample.get('opponent_class','UNKNOWN'),
+                         strategy_sample.get('inferred_archetype') or 'unknown',
+                         json.dumps(strategy_sample.get('archetype_evidence',[])),strategy_sample.get('opponent_build','unknown')))
                 connection.execute('CREATE TABLE IF NOT EXISTS strategy_samples (run TEXT PRIMARY KEY, sample TEXT NOT NULL)')
                 connection.execute('INSERT OR REPLACE INTO strategy_samples VALUES (?,?)',
                                    (row[0], json.dumps(strategy_sample, ensure_ascii=False, separators=(',', ':'))))

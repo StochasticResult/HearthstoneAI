@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from coaching import lesson_role
 from coach_policy import hints, read_json
+from opponent_decks import class_plan, load_snapshot, predict
 import attack_plan
 from decision_standby import DecisionStandby
 from card_metadata import CATALOG
@@ -135,7 +136,7 @@ def public_view(state):
                    "taunt", "frozen", "exhausted", "divine_shield", "windfury", "stealth",
                    "lifesteal", "poisonous", "reborn", "immune", "dormant", "silenced",
                    'mega_windfury','rush','charge','deathrattle','titan','spell_damage','cooldown',
-                   'cant_be_targeted_by_spells','cant_be_targeted_by_hero_powers','cant_attack','cant_attack_heroes',
+                   'cant_be_targeted_by_spells','cant_be_targeted_by_hero_powers','cant_attack','cant_attack_heroes','cant_be_frozen',
                    "attacks_this_turn", "countdown_tag", "quest_progress", "quest_progress_total", "script_data_1", "script_data_2", "count")
     result = {k: state[k] for k in ("game_type", "format", "game_turn", "turn_timeout_seconds", "mana", "phase",
               "mana_cap", "mana_crystals", "mana_spent", "temporary_mana", "overload_locked", "overload_owed",
@@ -160,6 +161,9 @@ def public_view(state):
                 item["modifiers"] = [{k: mod[k] for k in ("card_id", "script_data_1", "script_data_2", "count") if k in mod}
                                      for mod in mods[:64] if mod.get("card_id") in CATALOG]
                 ids.update(mod["card_id"] for mod in item["modifiers"])
+                if (key == 'my_hand' and any(mod['card_id'] == 'GBL_999e' for mod in item['modifiers'])
+                        and CATALOG['GBL_999e'].get('text') == 'Discarded at the end of your turn.'):
+                    item['discarded_at_end_of_turn'] = True
                 unknown = sum(mod.get('count',1) for mod in mods[:64] if mod.get("card_id") not in CATALOG)
                 if unknown:
                     item["unknown_modifier_count"] = unknown
@@ -172,7 +176,7 @@ def public_view(state):
             return item
         result[key] = [clean(row) for row in value] if isinstance(value, list) else clean(value)
     for key in ("opponent_public_cards", "own_seen_original"):
-        result[key] = [{k: row[k] for k in ("id", "card_id", "generated") if k in row}
+        result[key] = [{k: row[k] for k in ("id", "card_id", "generated", "played_publicly") if k in row}
                        for row in state.get(key, [])[:60] if row.get("card_id") in CATALOG]
     result['enemy_secret_ids'] = [x for x in state.get('enemy_secret_ids', [])[:5] if type(x) is int]
     for key, limit in (('enemy_known_hand', 10), ('enemy_known_secrets', 5)):
@@ -400,6 +404,12 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
             'null_means': 'field not present on this action; choose action_id'}
         payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
         encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
+    matchup = observation.get('strategy',{}).get('matchup',{})
+    if len(encoded) > MAX_INPUT_BYTES and ('opponent_list_hypothesis' in observation or 'class_plan' in matchup):
+        observation.pop('opponent_list_hypothesis',None)
+        matchup.pop('class_plan',None)
+        payload['input'] = json.dumps(body,ensure_ascii=True,separators=(',',':'))
+        encoded = json.dumps(payload,ensure_ascii=True,separators=(',',':')).encode()
     if len(encoded) > MAX_INPUT_BYTES and ('buff_first_trades_by_tax_action' in observation
             or 'conditional_freeze_draw' in (observation.get('life_tap') or {})):
         observation.pop('buff_first_trades_by_tax_action',None)
@@ -514,6 +524,11 @@ class OpenAIAdvisor:
         self.audit = None
         self.audit_bytes = 0
         self.audit_path = Path(audit_path) if audit_path is not None else None
+        self.opponent_reference = ([],[])
+        self.class_plans = {}
+        self.starting_opponent_hero = None
+        if self.audit_path and self.audit_path.parent.parent.name == 'runs':
+            self.opponent_reference = load_snapshot(self.audit_path.parents[2]/'learning', self.client_build)
         self.play_policy = read_json(self.audit_path.with_name('run-policy.json'),32768,{}) if self.audit_path else {}
         self.overflow = None
         self.overflow_bytes = 0
@@ -668,6 +683,22 @@ class OpenAIAdvisor:
         if self.starting_deck is not None:
             source["starting_deck"] = self.starting_deck
         view = enrich(public_view(source))
+        if view.get('game_type')=='GT_RANKED':
+            hero = view.get('enemy_hero') or {}
+            if not self.starting_opponent_hero and view['strategy']['matchup']['enemy_class']!='UNKNOWN':
+                self.starting_opponent_hero = hero.get('card_id')
+            if self.starting_opponent_hero and hero.get('card_id')!=self.starting_opponent_hero:
+                from strategy import matchup_context
+                view['strategy']['matchup'] = matchup_context(dict(view,enemy_hero=dict(hero,card_id=self.starting_opponent_hero)))
+        if self.opponent_reference[0] and view.get('game_type')=='GT_RANKED' and view.get('format')=='FT_STANDARD':
+            matchup = view['strategy']['matchup']
+            cls = matchup['enemy_class']
+            if cls not in self.class_plans:
+                self.class_plans[cls] = class_plan(cls,self.opponent_reference[0],CATALOG)
+            if self.class_plans[cls]:matchup['class_plan'] = self.class_plans[cls]
+        hypothesis = predict(view,*self.opponent_reference,CATALOG)
+        if hypothesis:
+            view['opponent_list_hypothesis'] = hypothesis
         if view.get('enemy_secret_count'):
             view['secret_context'] = {'active_ids': view.get('enemy_secret_ids', []),
                 'identity': 'only enemy_known_secrets has public identity evidence; others unknown; no complete candidate-elimination engine',
@@ -744,14 +775,20 @@ class OpenAIAdvisor:
                                    'buffs. Order intended trades by the damage and attack triggers you can prevent even '
                                    'if the turn ends early. Account for effects and any buff essential to survival.'}
 
-    def time_pressure(self, view, menu):
+    def remaining_turn_seconds(self, view):
         clock = view.get('turn_timeout_seconds')
-        if (not self.compact_output or self.model != 'gpt-6.1-sol' or self.effort != 'medium'
-                or view.get('game_type') != 'GT_RANKED' or type(clock) is not int or not 1 <= clock <= 600
+        if (type(clock) is not int or not 1 <= clock <= 600
                 or self.pace_turn != view.get('game_turn') or not self.pace_started):
+            return None
+        return max(0, clock - int(time.monotonic() - self.pace_started))
+
+    def time_pressure(self, view, menu):
+        remaining = self.remaining_turn_seconds(view)
+        if (remaining is None or not self.compact_output or self.model != 'gpt-6.1-sol'
+                or self.effort != 'medium' or view.get('game_type') != 'GT_RANKED'):
             return {}
-        elapsed = int(time.monotonic() - self.pace_started)
-        remaining = max(0, clock - elapsed)
+        clock = view['turn_timeout_seconds']
+        elapsed = clock - remaining
         if (elapsed >= 15 or clock <= 20) and remaining <= 25:
             return {'reason': 'clock', 'remaining_seconds_upper': remaining}
         if elapsed < 12 or view.get('phase') != 'main':
@@ -773,7 +810,7 @@ class OpenAIAdvisor:
                     'legal_swings': swings, 'estimated_work_seconds': round(forecast, 1)}
         return {}
 
-    def select(self, view, menu):
+    def select(self, view, menu, *, server_options_id=None):
         self.decision_seq += 1
         observed_menu = menu
         view,menu = shred_battlecry_menu(view,menu,CATALOG)
@@ -924,6 +961,7 @@ class OpenAIAdvisor:
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
                      "usage_parts":usage_parts(response),"output_style":'tag' if used_tags else 'prose',
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
+                     "server_options_id":server_options_id,
                      "reasoning_effort": effort, "late_turn_effort": bool(budget),
                      **({'time_budget': budget} if budget else {}), **plan_record})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,
@@ -967,11 +1005,12 @@ class OpenAIAdvisor:
         if plan and 'origin' in plan:
             self.record({'event':'turn_plan_discarded','origin':plan['origin'],'from_decision':plan['decision_id'],
                          'game_turn':view.get('game_turn'),'reason':mismatch})
-        from tactical_checks import forced_face_attack
-        proof = None if gaps else forced_face_attack(state, menu)
+        from tactical_checks import expiring_freeze, forced_face_attack
+        proof = None if gaps else (expiring_freeze(view,menu,self.remaining_turn_seconds(view),CATALOG)
+                                   or forced_face_attack(state, menu))
         if proof:
             return self.local_action(view, menu, proof)
-        action = self.select(view, menu)
+        action = self.select(view, menu, server_options_id=state['options_id'])
         if self.pending_attack:
             self.pending_attack['offered_options_id'] = state['options_id']
         return action

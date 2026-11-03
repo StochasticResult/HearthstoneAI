@@ -75,13 +75,14 @@ class TapTests(unittest.TestCase):
     def test_urgent_draw_is_still_available_to_the_normal_selector(self):
         v,m=priest();v.update(my_hero={'health':7,'armor':0},my_board=[],enemy_board=[body(5,9,9)])
         a=OpenAIAdvisor({'api_key':'offline-test-placeholder'})
-        def choose(view,menu):
+        def choose(view,menu,*,server_options_id):
+            self.assertEqual(server_options_id,17)
             self.assertEqual(view['life_tap']['margin_hold'],-2)
             self.assertEqual(view['life_tap']['margin_tap'],-4)
             return menu['tap']
         with patch.object(a,'view',return_value=v),patch('openai_advisor.action_menu',return_value=(m,[])), \
              patch('tactical_checks.forced_face_attack',return_value=None),patch.object(a,'select',side_effect=choose):
-            self.assertEqual(a.ask({}),TAP)
+            self.assertEqual(a.ask({'options_id':17}),TAP)
 
 
 class TurnPaceTests(unittest.TestCase):

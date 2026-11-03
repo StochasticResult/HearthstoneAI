@@ -79,6 +79,43 @@ class RankedTurnPlanTests(unittest.TestCase):
             action,_,_,tail=parse_response(msg,menu,with_plan=True)
             self.assertEqual((action,tail),(menu[first],[]))
 
+    @patch('builtins.print')
+    def test_ordinary_combat_keeps_followup_for_all_four_survival_outcomes(self,_):
+        from test_attack_plan import boards
+        from test_openai_advisor import response
+        for friend_hp,foe_hp in ((10,9),(7,9),(7,12),(10,12)):
+            with self.subTest(friend_hp=friend_hp,foe_hp=foe_hp):
+                first,_unused = boards()
+                first.update(my_board_slots_used=2,my_corpses=2)
+                first['my_board'][0].update(health=friend_hp)
+                first['enemy_board'][0].update(health=foe_hp)
+                for card in first['my_board']:
+                    card['stealth']=False
+                next_state=copy.deepcopy(first)
+                next_state['options_id']+=1
+                friend,foe=next_state['my_board'][0],next_state['enemy_board'][0]
+                friend['health']-=7;foe['health']-=10
+                if friend['health']<=0:
+                    next_state['my_board'].pop(0);next_state['my_board'][0]['position']=1
+                    next_state['my_board_slots_used']=1;next_state['my_corpses']+=1
+                else:friend.update(exhausted=True,attacks_this_turn=1)
+                if foe['health']<=0:
+                    next_state['enemy_board'].pop(0);next_state['enemy_board'][0]['position']=1
+                    next_state['enemy_board_slots_used']=1;next_state['enemy_corpses']+=1
+                next_state['legal_options']=[dict(id=233,type='ATTACK',targets=[u['id'] for u in next_state['enemy_board']])]
+                a={'kind':'attack','source_id':53,'target_id':28}
+                b={'kind':'attack','source_id':233,'target_id':25}
+                calls=[]
+                def choose(payload):
+                    calls.append(1); moves=json.loads(payload['input'])['actions']
+                    ai_id=next(k for k,v in moves.items() if v==a); bi=next(k for k,v in moves.items() if v==b)
+                    msg=response(ai_id); msg['output'][0]['arguments']=json.dumps({'reason':'trade','action_id':ai_id,'follow_up_ids':[bi]})
+                    return msg
+                self.ai.pending_attack=None;self.ai.transport=choose
+                self.assertEqual(self.ai.ask(first),a);self.ai.confirm(a,first)
+                self.assertEqual(self.ai.ask(next_state),b)
+                self.assertEqual(len(calls),1)
+
     def test_live_risk_recalculation_matches_but_newly_observed_corpses_still_require_a_decision(self):
         path=Path(__file__).parent/'fixtures'/'turn-plan-risk-20261102.json'
         for (first,second),expected in zip(json.loads(path.read_text())['cases'],('unexpected_corpse_count',None)):

@@ -84,6 +84,41 @@ class LateTurnTests(unittest.TestCase):
                          'breaker_hp_after_first','finisher_hp_after_second','face_damage_forgone_if_available')],[175,13,8,3,3,17])
 
     @patch('builtins.print')
+    def test_vanishing_shard_freezes_the_dragon_before_another_request(self,_):
+        from card_metadata import CATALOG
+        from tactical_checks import expiring_freeze
+        row=json.loads((Path(__file__).parent/'fixtures/expiring-shard-20261102.json').read_text())
+        ai=self.advisor(lambda _:self.fail('clear last-window defense must not wait for Sol'))
+        state=replay_state(row)
+        ai.pace_turn=state['game_turn']; ai.pace_started=time.monotonic()-60
+        with patch.object(ai,'record',wraps=ai.record) as record:
+            self.assertEqual(ai.ask(state),row['recorded_followup'])
+        proposal=record.call_args.args[0]
+        self.assertEqual((proposal['local_rule'],proposal['action']['target_id'],ai.calls),
+                         ('expiring_freeze_before_rope_v1',16,0))
+        self.assertEqual(proposal['calculation']['printed_attack'],6)
+        self.assertEqual(ai.summary['confirmed_decisions'],0)
+        view=ai.view(state); menu=row['actions']
+        self.assertTrue(next(c for c in view['my_hand'] if c['id']==60)['discarded_at_end_of_turn'])
+        self.assertIsNone(expiring_freeze(view,menu,None,CATALOG))
+        self.assertIsNone(expiring_freeze(view,menu,23,CATALOG))
+        for flag in ('frozen','cant_be_frozen','cant_attack_heroes'):
+            changed=copy.deepcopy(view); changed['enemy_board'][0][flag]=True
+            self.assertIsNone(expiring_freeze(changed,menu,15,CATALOG))
+        normal=copy.deepcopy(view)
+        next(c for c in normal['my_hand'] if c['id']==60)['modifiers']=[]
+        self.assertIsNone(expiring_freeze(normal,menu,15,CATALOG))
+        face=dict(menu,face={'kind':'attack','source_id':162,'target_id':64})
+        self.assertIsNone(expiring_freeze(view,face,15,CATALOG))
+        self.assertIsNone(expiring_freeze(view,dict(menu,power={'kind':'hero_power','source_id':67}),15,CATALOG))
+        competitor=copy.deepcopy(view); competitor['enemy_board'][1]['attack']=7
+        self.assertIsNone(expiring_freeze(competitor,menu,15,CATALOG))
+        shifted=copy.deepcopy(view)
+        shifted['enemy_board'][0]['id']=233
+        new_menu={k:dict(a,target_id=233) if a.get('target_id')==16 else a for k,a in menu.items()}
+        self.assertEqual(expiring_freeze(shifted,new_menu,9,CATALOG)['action']['target_id'],233)
+
+    @patch('builtins.print')
     def test_lower_effort_tracks_the_turn_clock_not_a_losing_health_total(self,_):
         row=self.rows[-1];cases=[(5,75,'medium'),(49,75,'medium'),(50,75,'low'),(60,None,'medium'),(25,50,'low'),(2,15,'low')]
         for elapsed,clock,desired in cases:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from input_command import input_command
 from deck_observation import save_selected_deck
+from opponent_decks import start_refresh
 from game_watchdog import GAME_EXEC, processes
 from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
@@ -781,7 +782,7 @@ def main():
     config = validate_config(json.loads(sys.stdin.readline(4097)))
     if config.get('mode') == 'ranked_auto':
         from ranked_autoplay import run_autoplay
-        run_autoplay(config, args.parent_pid, DATA, run, emit, client_factory=PersistentClient)
+        run_autoplay(config, args.parent_pid, DATA, run, emit, client_factory=PersistentClient, refresh_decks=start_refresh)
         return
     from evaluation_session import consume_request, run_evaluation
     suite = consume_request(DATA)
@@ -792,7 +793,7 @@ def main():
         mode = consume_game_request(DATA)
         if mode in ("ranked_batch", "ranked_auto"):
             from ranked_autoplay import run_autoplay
-            run_autoplay(config, args.parent_pid, DATA, run, emit, client_factory=PersistentClient)
+            run_autoplay(config, args.parent_pid, DATA, run, emit, client_factory=PersistentClient, refresh_decks=start_refresh)
         else:
             run(config, args.parent_pid, mode if mode != 'practice' else config.get('mode', mode))
 

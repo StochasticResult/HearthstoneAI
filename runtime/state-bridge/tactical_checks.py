@@ -61,6 +61,63 @@ def forced_face_attack(state, menu):
             'evidence': {'available_attackers': len(safe), 'enemy_health': enemy['health']}}
 
 
+def expiring_freeze(state, menu, remaining, catalog):
+    """Spend a vanishing Shard on a clearly dominant exposed threat at the rope."""
+    if (remaining is None or not 0 < remaining <= 16 or state.get('game_type') != 'GT_RANKED'
+            or state.get('format') != 'FT_STANDARD' or state.get('phase') != 'main'
+            or state.get('mana') != 1 or state.get('enemy_secret_count') != 0
+            or any(state.get(k) for k in ('my_weapon','enemy_weapon','my_locations','enemy_locations',
+                                           'my_secrets','my_player_effects','active_rituals','enemy_active_rituals'))
+            or any(e.get('card_id') != 'CATA_497e' for e in state.get('enemy_player_effects', []))):
+        return None
+    friends = {c['id']:c for c in state.get('my_board', [])}
+    if (len(friends) >= 7 or state.get('my_board_slots_used') != len(friends)
+            or any(c.get('taunt') or c.get('lifesteal') or c.get('poisonous') for c in friends.values())):
+        return None
+    hand = {c['id']:c for c in state.get('my_hand', [])}
+    shards = [c['id'] for c in hand.values() if c.get('card_id') == 'CORE_UNG_205' and c.get('cost') == 1
+              and c.get('modifiers') == [{'card_id':'GBL_999e'}] and not c.get('unknown_modifier_count')]
+    if (len(shards) != 1 or ' '.join(catalog.get('CORE_UNG_205',{}).get('text','').split()) != 'Battlecry: Freeze an enemy.'
+            or catalog.get('GBL_999e',{}).get('text') != 'Discarded at the end of your turn.'):
+        return None
+    hero = state.get('my_hero') or {}
+    if hero.get('immune') is not False or type(hero.get('health')) is not int or type(hero.get('armor')) is not int:
+        return None
+    enemies = [c for c in state.get('enemy_board',[]) if not any(c.get(k) for k in
+               ('frozen','dormant','cant_attack','cant_attack_heroes'))]
+    if not enemies or any(type(c.get('attack')) is not int or c.get('lifesteal') or c.get('windfury')
+                          or c.get('mega_windfury') for c in enemies):
+        return None
+    enemies.sort(key=lambda c:c['attack'], reverse=True)
+    target = enemies[0]
+    # Removing an adjacent aura can lower displayed Attack. Use the smaller printed value.
+    base = catalog.get(target.get('card_id'), {}).get('attack')
+    if (type(base) is not int or type(target.get('health')) is not int or target.get('cant_be_frozen')
+            or target.get('immune') or target.get('unknown_modifier_count')):
+        return None
+    threat = min(base,target['attack'])
+    if (threat < 5 or threat * 3 < hero['health'] + hero['armor']
+            or any(c['attack'] > threat - 3 for c in enemies[1:])):
+        return None
+    freeze = {'kind':'play','source_id':shards[0],'target_id':target['id']}
+    if freeze not in menu.values():
+        return None
+    for action in menu.values():
+        kind = action.get('kind')
+        if kind == 'end_turn' or (kind == 'play' and (action['source_id'] == shards[0] or
+                hand.get(action['source_id'],{}).get('card_id') == 'BE_726')):
+            continue
+        attacker = friends.get(action.get('source_id'), {})
+        if (kind != 'attack' or type(attacker.get('attack')) is not int
+                or action.get('target_id') == (state.get('enemy_hero') or {}).get('id')
+                or (action.get('target_id') == target['id'] and attacker['attack'] >= target['health'])):
+            return None
+    return {'rule':'expiring_freeze_before_rope_v1','action':freeze,
+            'reason':'回合将结束，临时冰川裂片会被弃掉。先冻结当前场上能打脸的主要威胁。',
+            'evidence':{'source_id':shards[0],'target_id':target['id'],'displayed_attack':target['attack'],
+                        'printed_attack':base,'remaining_seconds_upper':remaining}}
+
+
 def glare_survival(state, targets, catalog):
     if (extra_public_effects(state) or state.get('phase') != 'target' or not state.get('own_turn')
             or state.get('mana') != 0 or state.get('my_board') != []

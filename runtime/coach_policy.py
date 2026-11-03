@@ -71,10 +71,17 @@ def card_present(view, zone, card):
     return any(isinstance(row, dict) and row.get('card_id') == card for row in rows)
 
 
+def matchup_applies(rule, view):
+    matchup = view.get('opponent_estimate') or (view.get('strategy') or {}).get('matchup') or {}
+    names = (view.get('opponent_list_hypothesis') or {}).get('examples',[])
+    return ((not rule.get('opponent_class') or rule['opponent_class']==matchup.get('enemy_class'))
+            and (not rule.get('opponent_archetype') or names==[rule['opponent_archetype']]))
+
+
 def hints(policy, view):
     return [{'card':r['card'], 'consider':r['advice'], 'exception':r['exception']} for r in
             reversed(policy.get('lessons', [])) if r['phase'] == view.get('phase', 'main')
-            and card_present(view, r['zone'], r['card'])
+            and matchup_applies(r,view) and card_present(view, r['zone'], r['card'])
             and (not r.get('rules') or r['rules']==card_rules(view.get('card_definitions',{}).get(r['card'],{})))][:2]
 
 

@@ -152,10 +152,12 @@ def _previews(view, menu):
                 result[aid] = {'mana_left_after_play':budget,'spells_priced_out_if_tax_played_first':spells}
         if played.get('card_id')=='CORE_UNG_205':
             victim = hero if target==hero.get('id') else enemies.get(target,{})
-            if type(victim.get('attack')) is int and not any(victim.get(k) for k in ('dormant','frozen','cant_attack')):
+            if type(victim.get('attack')) is int and not any(victim.get(k) for k in ('dormant','frozen','cant_attack','cant_be_frozen')):
                 result[aid] = {'freeze_target_id':target,'attack_now':victim['attack'],
                                'has_lifesteal':bool(victim.get('lifesteal')),
                                'can_normally_hit_face':not victim.get('cant_attack_heroes')}
+                if played.get('discarded_at_end_of_turn'):
+                    result[aid]['shard_discarded_at_end_of_turn'] = True
         if a.get('kind')=='attack' and source in friendly:
             unit,other = friendly[source],enemies.get(target)
             if type(unit.get('attack')) is not int:
@@ -293,7 +295,7 @@ def tactical_payload(view, menu, *, orders=None):
         'legal_face_attackers_now':[(eid,actors[eid].get('attack')) for eid in sorted(face_sources) if eid in actors],
         'choices_shown':list(choices.values()),'recent_actions':view.get('recent_confirmed_actions',[]),
         'remaining_deck':{k:deck[k] for k in ('remaining_basis','reconciled_remaining_counts','unseen_reference_copies') if k in deck},
-        'matchup':{k:matchup[k] for k in ('enemy_class','stale','build_compatible','candidates') if k in matchup}}
+        'matchup':{k:matchup[k] for k in ('enemy_class','stale','build_compatible','candidates','class_plan') if k in matchup}}
     orders = buff_before_tax(view,menu) if orders is None else orders
     if orders:
         evidence['buff_first_trades_by_tax_action'] = orders
@@ -312,6 +314,10 @@ def tactical_payload(view, menu, *, orders=None):
     payload = {'model':MODEL,'input':json.dumps(evidence,ensure_ascii=True,separators=(',', ':')),
                'questions':[{'type':'choice','name':'next_action','instructions':instructions,
                              'choices':[{'value':aid,'description':label} for aid,label in labels.items()]}]}
+    if len(json.dumps(payload,separators=(',', ':')).encode())>MAX_INPUT_BYTES:
+        evidence['public_position'].pop('opponent_list_hypothesis',None)
+        evidence['matchup'].pop('class_plan',None)
+        payload['input']=json.dumps(evidence,ensure_ascii=True,separators=(',',':'))
     if not 2<=len(menu)<=255 or len(json.dumps(payload,separators=(',', ':')).encode())>MAX_INPUT_BYTES:
         raise ContextTooLarge('Tactical Decisions request exceeds the supported menu or size')
     pressure = blasphemy_pressure(view,menu)

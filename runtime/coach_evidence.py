@@ -15,7 +15,7 @@ FIELDS = ('game_type format phase game_turn mana mana_cap mana_spent temporary_m
           'my_secrets enemy_known_secrets enemy_secret_count enemy_known_hand opponent_public_cards '
           'my_player_effects enemy_player_effects active_rituals enemy_active_rituals choices source_card '
           'target_effect healing_as_damage healing_double turn_pace life_tap shred_battlecry unavailable_interactions '
-          'secret_context own_known_deck enemy_secret_ids calculated_resources learned_matchup_notes turn_timeout_seconds').split()
+          'secret_context own_known_deck enemy_secret_ids calculated_resources learned_matchup_notes turn_timeout_seconds client_build').split()
 EVENT_FIELDS = ('decision_id event for_decision action actions reason model model_action policy local_rule '
                 'conditional_sequence conditional_attack evidence elapsed_ms requested_tier served_tier '
                 'tactical_lesson sol_action restricted_menu candidate_scores sent card_id outcome game_turn '
@@ -41,7 +41,9 @@ def public_event(row):
         deck = strategy.get('deck') or {}
         result['board']['remaining_deck'] = {k:deck[k] for k in ('remaining_basis','reconciled_remaining_counts') if k in deck}
         matchup = strategy.get('matchup') or {}
-        result['board']['opponent_estimate'] = {k:matchup[k] for k in ('enemy_class','stale','build_compatible','candidates') if k in matchup}
+        result['board']['opponent_estimate'] = {k:matchup[k] for k in ('enemy_class','stale','build_compatible','candidates','class_plan') if k in matchup}
+        if obs.get('opponent_list_hypothesis'):
+            result['board']['opponent_list_hypothesis'] = obs['opponent_list_hypothesis']
         result['definitions'] = {cid:{k:c[k] for k in ('name','text','type','cost') if k in c}
                                  for cid,c in obs.get('card_definitions',{}).items()}
     return result
@@ -93,8 +95,10 @@ def transcript(dest, review):
     if not (opened and terminal and proposed and len(proposed)==expected):
         return None
     build = read_json(dest/'run-version.json', 8192, {})
+    drills = read_json(dest/'matchup-drills.json', 65536, {})
     return dict(run=dest.name, outcome=review['outcome'], version=build.get('version_id','unversioned'),
                 policy=build.get('coach_revision','unrecorded'), actions=len(proposed), cards=definitions,
+                matchup_drills=drills.get('cases',[]) if drills.get('run')==dest.name else [],
                 terminal_receipts=review.get('turn_end_attacks',[]),
                 events=sequence)
 

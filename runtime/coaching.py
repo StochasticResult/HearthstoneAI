@@ -10,13 +10,39 @@ def lesson_role(event):
     return None
 
 
+def thinking_review(events):
+    import hashlib
+    import json
+    paid=[]; single=[]; repeated=[]; previous={}; identified=0
+    receipts={r.get('decision_id') for r in events if r.get('event')=='confirmed'}
+    for e in events:
+        if e.get('event')!='proposed' or e.get('policy')=='sol_timeout_backup_v1' or type(e.get('elapsed_ms')) is not int:
+            continue
+        v=e.get('observation') or {}; menu=e.get('actions') or {}
+        did=e.get('decision_id'); turn=v.get('game_turn')
+        paid.append({'decision':did,'turn':turn,'ms':e['elapsed_ms'],'options':len(menu),'effort':e.get('reasoning_effort')})
+        if len(menu)==1 and not v.get('unavailable_interactions'):single.append(did)
+        group=e.get('server_options_id')
+        if type(group) is int and v.get('phase')=='main':
+            identified+=1
+            board={k:x for k,x in v.items() if k not in ('turn_pace','learned_matchup_notes','opponent_list_hypothesis')}
+            key=(turn,group,hashlib.sha256(json.dumps([board,menu],sort_keys=True).encode()).digest())
+            if key in previous:repeated.append([previous[key],did])
+            previous[key]=did
+    return {'paid_primary':len(paid),'identified_main_windows':identified,'single_option_calls':single[-8:],'repeated_identical_windows':repeated[-8:],
+            'slowest_for_review':sorted(paid,key=lambda p:-p['ms'])[:3],
+            'confirmed_plan_followups':sum(e.get('local_rule')=='verified_turn_plan_v1' and e.get('decision_id') in receipts
+                                          for e in events if e.get('event')=='proposed'),
+            'plan_discard_reasons':[str(e.get('reason','unknown')) for e in events if e.get('event')=='turn_plan_discarded'][-8:]}
+
+
 def strategy_sample(events, capped=False):
     confirmed = {e.get('decision_id') for e in events
                  if e.get('event') in ('confirmed', 'confirmed_choice', 'confirmed_target')}
     expired = {e.get('decision_id') for e in events if e.get('event') == 'expired_without_submission'}
     shadows = {e.get('for_decision'):e for e in events
                if e.get('event')=='decision_assist_shadow' and isinstance(e.get('action'),dict)}
-    sample = {'partial_log': bool(capped), 'whole_turn_pass_with_options': [], 'cases': {}}
+    sample = {'partial_log': bool(capped), 'whole_turn_pass_with_options': [], 'cases': {}, 'thinking':thinking_review(events)}
     ranks, turns = {}, {}
     for event in events:
         if event.get('event') == 'mulligan_confirmed':
@@ -37,6 +63,19 @@ def strategy_sample(events, capped=False):
         hp = hero.get('health')
         kind = selected.get('kind', 'choice')
         if did in confirmed:
+            matchup = (ob.get('strategy') or {}).get('matchup') or {}
+            if ob.get('client_build') and matchup.get('enemy_class') not in (None,'UNKNOWN'):
+                sample.setdefault('opponent_build', ob['client_build'])
+                sample.setdefault('opponent_class', matchup['enemy_class'])
+                hypothesis = ob.get('opponent_list_hypothesis') or {}
+                names = hypothesis.get('examples',[])
+                sample['inferred_archetype'] = names[0] if len(names)==1 and hypothesis.get('class')==sample['opponent_class'] else None
+                sample['archetype_evidence'] = hypothesis.get('observed_signatures',[])[:10]
+                originals = sample.setdefault('opponent_played_originals', [])
+                for c in ob.get('opponent_public_cards', []):
+                    if c.get('played_publicly') and c.get('generated') is False and c.get('card_id'):
+                        cid = c['card_id'].removeprefix('CORE_')
+                        if cid not in originals and len(originals) < 30:originals.append(cid)
             if enemy.get('card_id'):
                 sample['opponent_hero'] = enemy['card_id']
             if ob.get('opponent_public_cards'):

@@ -189,6 +189,16 @@ def summarize(dest):
                                            or bool(summary.get('result_after_ai_fault')))
         from coaching import strategy_sample
         summary['strategy_sample'] = strategy_sample(decisions, summary.get('diagnostics_capped', False))
+        from deck_observation import public_selected_deck
+        from coach_policy import read_json, revision
+        deck = public_selected_deck(read_json(dest/'selected-deck.json',8192))
+        if deck:
+            summary['strategy_sample']['played_deck'] = revision(deck['cards'])
+        from matchup_drills import review_drills
+        drills = review_drills(decisions,dest.parent.parent/'learning',summary['strategy_sample'].get('opponent_build'))
+        if drills:
+            summary['strategy_sample']['matchup_drills'] = drills
+            save(dest/'matchup-drills.json',{'run':dest.name,'cases':drills})
         if summary.get('turn_end_attacks'):
             summary['strategy_sample']['turn_end_attacks'] = summary['turn_end_attacks']
     samples = pending[-1:]

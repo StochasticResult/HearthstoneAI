@@ -378,9 +378,10 @@ class DriverTests(unittest.TestCase):
             return state
         with patch.object(driver,'snapshot',side_effect=snapshot), \
              patch('practice_driver.mirror',return_value={}), patch('practice_driver.checked_geometry'), \
-             patch('practice_driver.click'), patch('practice_driver.time.sleep'), patch('builtins.print'):
+             patch('practice_driver.click'), patch('practice_driver.time.sleep') as sleep, patch('builtins.print'):
             driver.run(10,2)
         self.assertEqual([c.args[0]['options_id'] for c in driver.advisor.ask.call_args_list],[7,8])
+        self.assertTrue(all(call.args[0] < 1 for call in sleep.call_args_list))
 
     def test_end_turn_uses_exact_submission_and_turn_flags_while_effect_resolves(self):
         driver = self.identified_driver()

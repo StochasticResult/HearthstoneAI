@@ -681,6 +681,7 @@ class IncrementalBoard:
             # not yet reconstructed. Consumers must not promote this to live play.
             "readiness_verified": False, "ritual_state_verified": False,
             "own_player_id": own_player_id, "own_turn": board._tag_int(own, "CURRENT_PLAYER") == 1,
+            "turn_timeout_seconds": board._num(own["tags"].get("TIMEOUT")),
             "mana": max(0, required_number(own, "RESOURCES") - board._tag_int(own, "RESOURCES_USED")
                         - board._tag_int(own, "OVERLOAD_LOCKED")) + board._tag_int(own, "TEMP_RESOURCES"),
             "mana_cap": board._num(own["tags"].get("MAXRESOURCES")),

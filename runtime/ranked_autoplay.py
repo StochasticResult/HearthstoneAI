@@ -24,36 +24,7 @@ class AfterGameStop(RuntimeError):
     pass
 
 
-def reviewed_within_loss_streak(review, boundary, path):
-    if not boundary or not path or not path.is_file() or path.is_symlink():
-        return False
-    try:
-        if path.stat().st_size > 256 * 1024:
-            return False
-        history = json.loads(path.read_bytes())
-    except (OSError, ValueError):
-        return False
-    if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
-        return False
-    if history[-1].get('run') != review.get('run'):
-        return False
-    losses = 0
-    for row in reversed(history):
-        if not isinstance(row, dict) or row.get('game_type') != 'GT_RANKED':
-            break
-        if row.get('outcome') == 'INCOMPLETE':
-            continue
-        if row.get('outcome') != 'LOST':
-            break
-        if row.get('run') == boundary:
-            return True
-        losses += 1
-        if losses == 3:
-            break
-    return False
-
-
-def stop_reason(review, *, reviewed_loss_run=None, history_path=None):
+def stop_reason(review):
     if not isinstance(review, dict) or review.get('outcome') not in ('WON', 'LOST', 'TIED'):
         return 'incomplete_game'
     if review.get('game_type') != 'GT_RANKED':
@@ -68,8 +39,6 @@ def stop_reason(review, *, reviewed_loss_run=None, history_path=None):
         return 'unconfirmed_action'
     if review.get('started_without_mulligan') or not review.get('mulligan_confirmed'):
         return 'midgame_start_requires_review'
-    if review.get('consecutive_losses', 0) >= 3 and not reviewed_within_loss_streak(review, reviewed_loss_run, history_path):
-        return 'three_consecutive_losses'
     return None
 
 
@@ -283,19 +252,29 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
             if client:state['game_pid']=client.pid
             if review.get('version_stats'):
                 state['version_stats']=review['version_stats']
-            state['stop_reason'] = stop_reason(review, reviewed_loss_run=reviewed_loss_run,
-                                               history_path=learning / 'match-history.json')
+            state['stop_reason'] = stop_reason(review)
             if state['stop_reason']:
                 state['status'] = 'needs_review'
                 persist()
                 emit('本局结束后暂停复盘：' + state['stop_reason'], play_status='本局已结束 · 等待问题复盘')
                 return state
+            if review.get('outcome')=='LOST' and review.get('consecutive_losses',0)>=3:
+                try:
+                    from coaching import record_clean_losses
+                    batch=record_clean_losses(learning,review['run'],state.get('reviewed_loss_run'))
+                    if batch:
+                        state['reviewed_loss_run']=review['run']
+                        state['loss_review_at_game']=state['completed_games']
+                        emit('三场已结算负局已保存至后台复盘，继续排队', loss_review_runs=batch)
+                except (OSError,ValueError,TypeError) as exc:
+                    emit('后台连败复盘记录暂不可用，继续排队',loss_review_error=type(exc).__name__)
             ack = read_small(learning / 'review-ack.json') or {}
             if ack.get('autoplay_id') == state['autoplay_id']:
                 count = ack.get('completed_games')
                 if type(count) is int and 0 <= count <= state['completed_games']:
                     state['last_reviewed_game'] = count
-            state['review_due'] = state['completed_games'] - state['last_reviewed_game'] >= 3
+            state['review_due'] = (state['completed_games']-state['last_reviewed_game']>=3
+                                   or state.get('loss_review_at_game',0)>state['last_reviewed_game'])
             persist()
             if deferred_stop():
                 return state

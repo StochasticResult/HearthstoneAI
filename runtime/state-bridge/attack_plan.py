@@ -57,10 +57,54 @@ def options(view, menu):
     return pairs if len(pairs) <= 16 else {}
 
 
+def shield_trades(view, menu):
+    """Two currently legal hits on one shield. Only the first hit is predicted."""
+    if (view.get('phase')!='main' or view.get('enemy_secret_count')!=0 or view.get('unavailable_interactions')
+            or any(view.get(k) for k in ('my_locations','enemy_locations','my_secrets'))):
+        return {}
+    friends={c['id']:c for c in view.get('my_board',[]) if type(c.get('attack')) is int and c['attack']>0
+             and type(c.get('health')) is int and c['health']>0 and c.get('attacks_this_turn')==0
+             and type(c.get('windfury')) is bool and type(c.get('divine_shield')) is bool
+             and all(c.get(k) is False for k in ('exhausted','immune','frozen','mega_windfury','lifesteal',
+                                                  'poisonous','dormant','stealth'))}
+    enemies={c['id']:c for c in view.get('enemy_board',[]) if c.get('divine_shield') is True
+             and type(c.get('attack')) is int and c['attack']>0 and type(c.get('health')) is int and c['health']>0
+             and all(c.get(k) is False for k in ('immune','dormant','poisonous','lifesteal','deathrattle','reborn'))}
+    hero=(view.get('enemy_hero') or {}).get('id')
+    face={a['source_id'] for a in menu.values() if a.get('kind')=='attack' and a.get('target_id')==hero}
+    attacks=[(aid,a['source_id'],a['target_id']) for aid,a in menu.items() if a.get('kind')=='attack'
+             and a.get('source_id') in friends and a.get('target_id') in enemies]
+    result={}
+    for first,source,target in attacks:
+        unit,foe=friends[source],enemies[target]
+        first_hp=unit['health']-(0 if unit.get('divine_shield') else foe['attack'])
+        if first_hp<=0:
+            continue
+        candidates=[]
+        for second,other,victim in attacks:
+            finisher=friends[other]
+            if victim!=target or finisher['attack']<foe['health'] or (source==other and not unit.get('windfury')):
+                continue
+            counter=foe['attack'] if other==source or not finisher.get('divine_shield') else 0
+            second_hp=max(0,(first_hp if other==source else finisher['health'])-counter)
+            cost=(unit['attack'] if source in face else 0)+(finisher['attack'] if other in face else 0)
+            facts={'target':target,'target_attack':foe['attack'],'breaker_hp_after_first':first_hp,
+                   'finisher_hp_after_second':second_hp,'face_damage_forgone_if_available':cost}
+            pressure=(view.get('life_tap') or {}).get('unblocked_board_and_weapon_attack')
+            if (type(pressure) is int and not any(foe.get(k) for k in ('windfury','mega_windfury','frozen',
+                                                                       'cant_attack','cant_attack_heroes')) and pressure>=foe['attack']):
+                facts.update(unblocked_enemy_attack_now=pressure,unblocked_enemy_attack_after_pair=pressure-foe['attack'])
+            candidates.append(((other!=source,second_hp==0,cost,-second_hp,second),second,facts))
+        if candidates:
+            _,second,facts=min(candidates,key=lambda row:row[0])
+            result[first+'+'+second]={'kind':'attack_plan','first':first,'then_if_unchanged':second,'shield_trade':facts}
+    return dict(sorted(result.items(),key=lambda row:-row[1]['shield_trade']['target_attack'])[:16])
+
+
 def fingerprint(view):
     # The dead card can drop out of the static rules dictionary. All live card IDs,
     # stats and modifiers remain in the projection. Corpse changes are checked below.
-    ignored = {'turn_pace', 'recent_confirmed_actions', 'card_definitions', 'enemy_corpses'}
+    ignored = {'turn_pace', 'recent_confirmed_actions', 'card_definitions', 'enemy_corpses','learned_matchup_notes'}
     data = {k:v for k,v in view.items() if k not in ignored}
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).digest()
 
@@ -195,11 +239,21 @@ def continuation(view, menu, first, tail, decision_id, origin):
 
 
 def prepare(view, menu, plan, decision_id):
-    """Predict just an ordinary surviving attacker killing one defending minion."""
+    """Predict just the first ordinary combat, then demand an exact server match."""
     first, second = menu[plan['first']], menu[plan['then_if_unchanged']]
     source, target = first['source_id'], first['target_id']
     victim = next(c for c in view['enemy_board'] if c['id'] == target)
     expected = dict(view)
+    if 'shield_trade' in plan:
+        attacker=next(c for c in view['my_board'] if c['id']==source)
+        spent=not attacker['windfury']
+        expected['my_board']=[dict(c,health=plan['shield_trade']['breaker_hp_after_first'],divine_shield=False,
+                                   exhausted=spent,attacks_this_turn=1) if c['id']==source else c for c in view['my_board']]
+        expected['enemy_board']=[dict(c,divine_shield=False) if c['id']==target else c for c in view['enemy_board']]
+        next_menu={k:a for k,a in menu.items() if not (spent and a.get('kind')=='attack' and a.get('source_id')==source)}
+        return {'first':first,'second':second,'remaining':[],'origin':decision_id,'decision_id':decision_id,
+                'turn':view['game_turn'],'expected':predicted_fingerprint(expected,next_menu),'menu':menu_key(next_menu),
+                'corpses':view.get('enemy_corpses'),'confirmed_options_id':None,'allow_corpse_increment':False}
     expected['my_board'] = [
         dict(c, health=c['health']-victim['attack'], exhausted=True, attacks_this_turn=c['attacks_this_turn']+1)
         if c['id'] == source else c for c in view['my_board']]

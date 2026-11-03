@@ -7,6 +7,7 @@ from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES, usage
 from spell_order import buff_before_tax, review_action
 from card_metadata import CATALOG
 from resource_facts import blasphemy_damage, blasphemy_pressure, shred_battlecry_menu
+from attack_plan import shield_trades
 
 MODEL = 'gpt-6-luna'
 
@@ -193,8 +194,9 @@ def recovery_inputs(sol, view, menu, *, orders=None):
                             'Compare its next moves against all candidates. Prioritize certain lethal, then surviving '
                             'visible threats. Respect timing, costs, Taunt, Lifesteal and possible triggers.',
                             'levels':levels} for aid in menu]}
-    if 'blasphemy_pressure' in ev and any(len(json.dumps(p,separators=(',', ':')).encode()) > MAX_INPUT_BYTES for p in (compact,scored)):
-        del ev['blasphemy_pressure']
+    if ('blasphemy_pressure' in ev or 'conditional_shield_trades' in ev) and any(len(json.dumps(p,separators=(',', ':')).encode()) > MAX_INPUT_BYTES for p in (compact,scored)):
+        ev.pop('blasphemy_pressure',None)
+        ev.pop('conditional_shield_trades',None)
         compact['input'] = scored['input'] = json.dumps(ev,ensure_ascii=True,separators=(',', ':'))
     if len(json.dumps(compact,separators=(',', ':')).encode()) > MAX_INPUT_BYTES:
         raise ContextTooLarge('Sol recovery input exceeds the existing limit')
@@ -313,8 +315,14 @@ def tactical_payload(view, menu, *, orders=None):
     if not 2<=len(menu)<=255 or len(json.dumps(payload,separators=(',', ':')).encode())>MAX_INPUT_BYTES:
         raise ContextTooLarge('Tactical Decisions request exceeds the supported menu or size')
     pressure = blasphemy_pressure(view,menu)
+    extra={}
     if pressure:
-        richer = dict(payload,input=json.dumps(dict(evidence,blasphemy_pressure=pressure),
+        extra['blasphemy_pressure']=pressure
+    shields=shield_trades(view,menu)
+    if shields:
+        extra['conditional_shield_trades']=shields
+    if extra:
+        richer = dict(payload,input=json.dumps(dict(evidence,**extra),
                                               ensure_ascii=True,separators=(',',':')))
         if len(json.dumps(richer,separators=(',',':')).encode()) <= MAX_INPUT_BYTES:
             return richer

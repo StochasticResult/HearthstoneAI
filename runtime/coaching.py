@@ -97,3 +97,51 @@ def strategy_sample(events, capped=False):
     sample['observed_own_turns'] = len(turns)
     sample['whole_turn_pass_with_options'] = [t for t, (played, other) in turns.items() if not played and other][:20]
     return sample
+
+
+def record_clean_losses(learning, last_run, previous):
+    """Write a bounded local evidence review for three disjoint, verified losses."""
+    import sqlite3
+    import json
+    from coach_policy import atomic,read_json
+    from ranked_autoplay import stop_reason
+    history=read_json(learning/'match-history.json',256*1024,[])
+    if not isinstance(history,list) or not all(isinstance(g,dict) for g in history[-3:]):
+        raise ValueError('Invalid match history for loss review')
+    games=history[-3:]
+    runs=[g.get('run') for g in games]
+    if (len(runs)!=3 or runs[-1]!=last_run or previous in runs or len(set(runs))!=3
+            or any(g.get('outcome')!='LOST' or stop_reason(g) for g in games)):
+        return None
+    path=learning/'loss-streak-reviews.json'
+    reviews=read_json(path,512*1024,[])
+    if not isinstance(reviews,list) or not all(isinstance(r,dict) and isinstance(r.get('runs'),list) for r in reviews):
+        raise ValueError('Invalid recorded loss review')
+    if any(set(runs).intersection(record['runs']) for record in reviews):
+        return None
+    samples={}
+    database=learning/'match-stats.sqlite3'
+    if database.is_file() and not database.is_symlink():
+        try:
+            db=sqlite3.connect(database.resolve().as_uri()+'?mode=ro',uri=True,timeout=.3)
+            try:
+                for run,raw in db.execute('SELECT run,sample FROM strategy_samples WHERE run IN (?,?,?) AND length(sample)<=65536',runs):
+                    data=json.loads(raw)
+                    if isinstance(data,dict) and isinstance(data.get('cases',{}),dict):
+                        samples[run]=data
+            finally:
+                db.close()
+        except sqlite3.Error:
+            pass  # Counters and versioned results remain available from match history.
+    evidence=[]
+    for g in games:
+        sample=samples.get(g['run'],{})
+        cases=[{'kind':kind, **{k:c[k] for k in ('turn','decision_id','status','action') if k in c},
+                'alternatives':c.get('alternatives',[])[:3]} for kind,c in sample.get('cases',{}).items() if isinstance(c,dict)]
+        evidence.append({k:g[k] for k in ('run','runtime_version','coach_revision','confirmed_decisions','expired_decisions',
+                         'api_timeouts','median_decision_ms','late_turn_responses','turn_budget_backups') if k in g}
+                        | {'decision_sample_available':bool(sample),'key_turns':cases,
+                           'whole_turn_pass_with_options':sample.get('whole_turn_pass_with_options') if sample else None})
+    reviews.append({'runs':runs,'games':evidence})
+    atomic(path,reviews[-12:])
+    return runs

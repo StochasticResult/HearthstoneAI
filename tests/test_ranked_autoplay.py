@@ -42,21 +42,26 @@ class RankedAutoplayTests(unittest.TestCase):
             self.assertIsNone(reviewed_streak_boundary(prior,dict(ack,completed_games=5),runs))
             self.assertIsNone(reviewed_streak_boundary(dict(prior,status='cancelled'),ack,runs))
 
-    def test_acknowledged_run_is_discounted_once_but_new_three_loss_streak_still_pauses(self):
+    def test_six_clean_losses_continue_with_two_disjoint_background_reviews(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp)/'history.json'
-            history = [completed(str(n),'LOST',n) for n in range(1,4)]
-            for n in range(4,7):
-                current = completed(str(n),'LOST',n)
-                history.append(current)
-                path.write_text(json.dumps(history))
-                options = dict(reviewed_loss_run='3',history_path=path)
-                self.assertEqual(stop_reason(current,**options), 'three_consecutive_losses' if n == 6 else None)
-                self.assertEqual(stop_reason(dict(current,unconfirmed_decisions=[7]),**options),'unconfirmed_action')
-                self.assertEqual(stop_reason(current,reviewed_loss_run='unrelated',history_path=path),'three_consecutive_losses')
-                self.assertEqual(current['consecutive_losses'],n)
-            path.write_text('[]')
-            self.assertEqual(stop_reason(current,**options),'three_consecutive_losses')
+            data=Path(tmp); history=[]
+            def play(*_,**__):
+                n=len(history)+1
+                r=completed('run-'+str(n),'LOST' if n<=6 else 'WON',n if n<=6 else 0)
+                history.append(r)
+                (data/'learning/match-history.json').write_text(json.dumps(history))
+                if n==7:
+                    (data/'learning/pause-after-game.json').write_text(json.dumps({'reason':'user_requested_stop'}))
+                return r
+            state=run_autoplay({'api_key':'offline-test'},None,data,play,Mock(),Mock())
+            self.assertEqual((state['status'],state['completed_games']),('cancelled',7))
+            reports=json.loads((data/'learning/loss-streak-reviews.json').read_text())
+            self.assertEqual([r['runs'] for r in reports],[['run-1','run-2','run-3'],['run-4','run-5','run-6']])
+            from coaching import record_clean_losses
+            self.assertIsNone(record_clean_losses(data/'learning','run-7',None))
+            history[-1]=dict(history[-1],outcome='LOST',unconfirmed_decisions=[2])
+            (data/'learning/match-history.json').write_text(json.dumps(history))
+            self.assertIsNone(record_clean_losses(data/'learning','run-7',None))
 
     def test_gui_wake_lifetime_follows_user_intent_across_reviews_and_faults(self):
         for reason, expected, release in (('review_update','paused_for_review',False),
@@ -137,10 +142,11 @@ class RankedAutoplayTests(unittest.TestCase):
             self.awake.assert_called_once()
             self.awake.return_value.terminate.assert_called_once()
 
-    def test_single_loss_can_continue_but_faults_and_three_losses_stop(self):
+    def test_clean_losses_continue_but_faults_stop(self):
         self.assertIsNone(stop_reason(completed(outcome='LOST',losses=1)))
+        self.assertIsNone(stop_reason(completed(outcome='LOST',losses=3)))
         changes=[{'outcome':'INCOMPLETE'}, {'game_closed':False}, {'unconfirmed_decisions':[1]},
-                 {'consecutive_losses':3}, {'started_without_mulligan':True}, {'game_type':'GT_VS_AI'}]
+                 {'consecutive_losses':3,'result_after_ai_fault':True}, {'started_without_mulligan':True}, {'game_type':'GT_VS_AI'}]
         for change in changes:
             with tempfile.TemporaryDirectory() as tmp:
                 run=Mock(return_value={**completed(),**change})

@@ -15,12 +15,12 @@ FIELDS = ('game_type format phase game_turn mana mana_cap mana_spent temporary_m
           'my_secrets enemy_known_secrets enemy_secret_count enemy_known_hand opponent_public_cards '
           'my_player_effects enemy_player_effects active_rituals enemy_active_rituals choices source_card '
           'target_effect healing_as_damage healing_double turn_pace life_tap shred_battlecry unavailable_interactions '
-          'secret_context own_known_deck enemy_secret_ids calculated_resources learned_matchup_notes').split()
+          'secret_context own_known_deck enemy_secret_ids calculated_resources learned_matchup_notes turn_timeout_seconds').split()
 EVENT_FIELDS = ('decision_id event for_decision action actions reason model model_action policy local_rule '
                 'conditional_sequence conditional_attack evidence elapsed_ms requested_tier served_tier '
                 'tactical_lesson sol_action restricted_menu candidate_scores sent card_id outcome game_turn '
                 'phase basis offered planned_ids marked_ids submitted replaced_ids kept_ids model_reason '
-                'proposed_index actual_index choice_id from_decision').split()
+                'proposed_index actual_index choice_id from_decision handoff_reason late_turn_effort').split()
 
 
 def compact(value):

@@ -18,12 +18,12 @@ class DecisionStandby:
             if result is not None:
                 self.discarded(job['origin'],result,job.get('primary_action'))
 
-    def start(self, origin, prepare):
+    def start(self, origin, prepare, *, dispatch_by=None):
         self.reap()
         if self.active:
             return None  # A speculative request from the preceding window is still draining.
         wake, cancel = Event(),Event()
-        due = monotonic()+self.delay
+        due = monotonic()+(self.delay if dispatch_by is None else min(self.delay,dispatch_by))
         def work():
             try:
                 send = prepare()
@@ -44,6 +44,15 @@ class DecisionStandby:
                 job['primary_action'] = primary_action
             job['cancel'].set()
             job['wake'].set()
+
+    def take_ready(self, job, origin, menu):
+        if job is None or self.active is not job or job['origin']!=origin or not job['future'].done():
+            return None
+        result=job['future'].result()
+        if not result or result.get('error') or result.get('action') not in menu.values():
+            return None
+        self.active=None
+        return result
 
     def take(self, job):
         if job is None:

@@ -90,6 +90,8 @@ def summarize(dest):
     summary = {'run': dest.name, 'game_type': mode, 'outcome': outcome,
                'api_timeouts': sum(r.get('event') == 'api_timeout' for r in decisions),
                'decisions_proposed': sum(r.get('policy') == 'sol_timeout_backup_v1' for r in proposed),
+               'turn_budget_backups':sum(r.get('handoff_reason')=='turn_budget' for r in proposed),
+               'late_turn_responses':sum(bool(r.get('late_turn_effort')) for r in proposed),
                'decisions_shadow': sum(r.get('event') == 'decision_assist_shadow' for r in decisions),
                'decisions_declined': sum(r.get('event') == 'decision_assist_declined' for r in decisions),
                'lesson_corrections': dict(Counter(role for r in decisions if (role:=lesson_role(r)))),
@@ -134,7 +136,7 @@ def summarize(dest):
         summary['external_choices'] = compact.get('external_choices', len(external))
         summary['withdrawn_decisions'] = compact.get('withdrawn_decisions', len(withdrawn))
         summary['api_timeouts'] = compact.get('api_timeouts', summary['api_timeouts'])
-        for key in ('decisions_proposed','decisions_shadow','decisions_declined',
+        for key in ('decisions_proposed','decisions_shadow','decisions_declined','turn_budget_backups','late_turn_responses',
                     'turn_plans_chosen','turn_plan_steps','turn_plans_discarded'):
             summary[key] = compact.get(key,summary[key])
         summary['lesson_corrections'] = compact.get('lesson_corrections',summary['lesson_corrections'])
@@ -244,7 +246,11 @@ def write_review(dest, learning, *, game_closed=None, game_preserved=False, matc
             break
         losses += 1
     summary['consecutive_losses'] = losses
-    summary['review_before_next_game'] = summary['needs_review'] or losses >= 3
+    if summary['game_type']=='GT_RANKED':
+        from ranked_autoplay import stop_reason
+        summary['review_before_next_game'] = stop_reason(summary) is not None
+    else:
+        summary['review_before_next_game'] = summary['needs_review']
     from version_stats import record
     summary['version_stats']=record(learning,summary,history,strategy_sample=strategy_sample)
     save(dest / 'review.json', summary)

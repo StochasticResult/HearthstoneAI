@@ -40,6 +40,38 @@ class AdvisorTimeout(AdvisorError):
     """No decision was returned before this request's network deadline."""
 
 
+class TurnWindowBackup(Exception):
+    def __init__(self, result):
+        super().__init__('A checked standby move is ready for this turn window')
+        self.result=result
+
+
+def primary_with_ready_backup(command, packet, cutoff, take_ready):
+    """Keep waiting for Sol if the standby is absent, ambiguous or invalid."""
+    until=time.monotonic()+18
+    with subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) as child:
+        wait=cutoff
+        try:
+            while True:
+                remaining=until-time.monotonic()
+                if remaining<=0:
+                    raise subprocess.TimeoutExpired(command,18)
+                try:
+                    out,err=child.communicate(packet,timeout=min(wait,remaining))
+                    return subprocess.CompletedProcess(command,child.returncode,out,err)
+                except subprocess.TimeoutExpired:
+                    packet=None
+                    if child.poll() is None:
+                        backup=take_ready()
+                        if backup is not None:
+                            raise TurnWindowBackup(backup)
+                    wait=0.35
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+
+
 class ContextTooLarge(AdvisorError):
     """The complete request exceeds the existing input bound."""
 
@@ -105,7 +137,7 @@ def public_view(state):
                    'mega_windfury','rush','charge','deathrattle','titan','spell_damage','cooldown',
                    'cant_be_targeted_by_spells','cant_be_targeted_by_hero_powers','cant_attack','cant_attack_heroes',
                    "attacks_this_turn", "countdown_tag", "quest_progress", "quest_progress_total", "script_data_1", "script_data_2", "count")
-    result = {k: state[k] for k in ("game_type", "format", "game_turn", "mana", "phase",
+    result = {k: state[k] for k in ("game_type", "format", "game_turn", "turn_timeout_seconds", "mana", "phase",
               "mana_cap", "mana_crystals", "mana_spent", "temporary_mana", "overload_locked", "overload_owed",
               "healing_as_damage", "healing_double",
               "deck_tracking_from_mulligan", "own_card_identity_changed",
@@ -400,9 +432,16 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
             return request_payload(model,view,menu,full_instructions,service_tier=service_tier,effort=effort,
                                    orders=orders,plan_prefixes=plan_prefixes,compact_output=False)
         raise ContextTooLarge("Decision context exceeds the request size limit")
+    extra = {}
     pressure = blasphemy_pressure(view,menu)
     if pressure:
-        wire = json.dumps(dict(body,blasphemy_pressure=pressure),ensure_ascii=True,separators=(',',':'))
+        extra['blasphemy_pressure']=pressure
+    if not any('shield_trade' in a for a in menu.values()):
+        shields=attack_plan.shield_trades(view,menu)
+        if shields:
+            extra['conditional_shield_trades']=shields
+    if extra:
+        wire = json.dumps(dict(body,**extra),ensure_ascii=True,separators=(',',':'))
         candidate = dict(payload,input=wire)
         size = len(json.dumps(candidate,ensure_ascii=True,separators=(',',':')).encode())
         if size<=MAX_INPUT_BYTES:
@@ -492,6 +531,7 @@ class OpenAIAdvisor:
         self.standby = (DecisionStandby(self.record_unused_backup, delay=self.play_policy.get('standby_delay',8))
                         if self.decisions_transport and self.play_policy.get('standby',True) else None)
         self.last_backup_id = None
+        self.turn_handoff = None
         if audit_path is not None:
             import os
             path = Path(audit_path)
@@ -533,6 +573,10 @@ class OpenAIAdvisor:
                 self.summary['turn_plan_steps'] = self.summary.get('turn_plan_steps',0)+1
             if event.get('policy') == 'sol_timeout_backup_v1':
                 self.summary['decisions_proposed'] = self.summary.get('decisions_proposed',0) + 1
+            if event.get('handoff_reason')=='turn_budget':
+                self.summary['turn_budget_backups']=self.summary.get('turn_budget_backups',0)+1
+            if event.get('late_turn_effort'):
+                self.summary['late_turn_responses']=self.summary.get('late_turn_responses',0)+1
             model = event.get('model')
             if isinstance(model, str) and model[:160] not in self.summary['models']:
                 self.summary['models'] = (self.summary['models'] + [model[:160]])[-4:]
@@ -634,9 +678,13 @@ class OpenAIAdvisor:
         # A separate short-lived worker gives a hard wall-clock network timeout.
         # No key in argv, environment, disk, logs, exception bodies or API errors.
         try:
-            run = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker"],
-                input=json.dumps({"api_key": self.key, "payload": payload, "endpoint": endpoint, "quick":quick}), text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6 if quick and endpoint=='decisions' else 18, check=False)
+            command=[sys.executable,str(Path(__file__).resolve()),'--worker']
+            packet=json.dumps({"api_key":self.key,"payload":payload,"endpoint":endpoint,"quick":quick})
+            if endpoint=='responses' and self.turn_handoff is not None:
+                run=primary_with_ready_backup(command,packet,*self.turn_handoff)
+            else:
+                run=subprocess.run(command,input=packet,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                   timeout=6 if quick and endpoint=='decisions' else 18,check=False)
         except subprocess.TimeoutExpired:
             raise AdvisorTimeout("API worker timed out; no action was sent") from None
         if len(run.stdout) > 128 * 1024:
@@ -706,6 +754,13 @@ class OpenAIAdvisor:
         if not menu:
             raise AdvisorError('No supported action survives the observed self-damage check')
         self.note_turn_pace(view, menu)
+        clock = view.get('turn_timeout_seconds')
+        elapsed = int(time.monotonic()-self.pace_started) if self.pace_turn==view.get('game_turn') and self.pace_started else 0
+        late = (self.compact_output and self.model=='gpt-6.1-sol' and self.effort=='medium'
+                and view.get('game_type')=='GT_RANKED' and type(clock) is int and 1<=clock<=600
+                and elapsed>=15 and clock-elapsed<=25)
+        effort = 'low' if late else self.effort
+        cutoff = max(2,min(8,clock-elapsed-5)) if late and clock-elapsed<=16 else None
         if (self.compact_output and len(observed_menu)==len(menu)==1 and not view.get('unavailable_interactions')
                 and next(iter(menu.values())).get('kind')!='end_turn'):
             action = dict(next(iter(menu.values())))
@@ -722,28 +777,31 @@ class OpenAIAdvisor:
         critical_drake = bool(view.get('shred_battlecry'))
         may_plan = self.play_policy.get('multi_step',True) and not critical_drake
         pairs = attack_plan.options(view, menu) if may_plan else {}
+        if may_plan:
+            pairs.update(attack_plan.shield_trades(view,menu))
         coins = attack_plan.coin_options(view,menu) if may_plan else {}
         orders = buff_before_tax(view,menu)
         prefixes = attack_plan.predictable_attacks(view,menu) if len(menu)>2 and may_plan else {}
         offered = {**menu, **pairs, **{key:value[0] for key,value in coins.items()}} if pairs or coins else menu
         instructions = self.instructions
         if pairs:
-            instructions += (' An attack_plan names two independent attacks in the menu. Choose it only if you intend '
-                             'both in that order. Only the first is sent now. The second requires server confirmation '
-                             'and a fresh board and menu matching the expected first combat. Single actions remain available.')
+            instructions += (' An attack_plan names two attacks in order. A shield_trade breaks the shield first; '
+                'a Windfury source can hit the same target twice. Compare the unblocked incoming attack after both hits '
+                'against taking nonlethal face damage now. Only the first is sent until receipt and a fresh matching board/menu. '
+                'Singles remain available. Choose a pair only if you intend both attacks.')
         if coins:
             instructions += (' Choose a coin_plan when you want The Coin followed by its named minion. The Coin alone '
                              'is sent first. The minion requires the exact predicted state and new legal server menu.')
         try:
             payload, size = request_payload(self.model, view, offered, instructions,
-                                           service_tier=self.service_tier, effort=self.effort,orders=orders,plan_prefixes=prefixes,
+                                           service_tier=self.service_tier, effort=effort,orders=orders,plan_prefixes=prefixes,
                                            compact_output=self.compact_output)
         except ContextTooLarge:
             if not pairs and not coins:
                 raise
             offered = menu
             payload, size = request_payload(self.model, view, menu, self.instructions,
-                                           service_tier=self.service_tier, effort=self.effort,orders=orders,
+                                           service_tier=self.service_tier, effort=effort,orders=orders,
                                            compact_output=self.compact_output)
         for field in ('life_tap', 'turn_pace', 'learned_matchup_notes'):
             if field in view and ('"' + field + '":') not in payload['input']:
@@ -759,11 +817,17 @@ class OpenAIAdvisor:
             # Both decisions own the same immutable public evidence. The
             # standby has no access to the driver or any game input.
             backup_view, backup_menu = copy.deepcopy((view,menu))
-            standby_job = self.standby.start(self.decision_seq,lambda:prepare_backup(
-                payload,backup_view,backup_menu,self.decisions_transport,orders=orders))
+            prepare=lambda:prepare_backup(payload,backup_view,backup_menu,self.decisions_transport,orders=orders)
+            standby_job=self.standby.start(self.decision_seq,prepare,**({'dispatch_by':max(0,cutoff-1)} if cutoff else {}))
+            if cutoff and standby_job:
+                origin=self.decision_seq
+                self.turn_handoff=(cutoff,lambda:self.standby.take_ready(standby_job,origin,menu))
         started = time.monotonic()
         try:
             response = self.transport(payload)
+        except TurnWindowBackup as handoff:
+            self.consecutive_timeouts=0
+            return self.accept_backup(view,observed_menu,handoff.result,turn_budget=True)
         except AdvisorTimeout:
             self.consecutive_timeouts += 1
             self.record({'event':'api_timeout', 'game_turn':view.get('game_turn'), 'phase':view.get('phase'),
@@ -779,6 +843,8 @@ class OpenAIAdvisor:
             if standby_job:
                 self.standby.discard(standby_job)
             raise
+        finally:
+            self.turn_handoff=None
         if standby_job:
             self.standby.discard(standby_job)
         elapsed_ms = round((time.monotonic() - started) * 1000)
@@ -800,6 +866,8 @@ class OpenAIAdvisor:
         if action.get('kind') == 'attack_plan':
             self.pending_attack = attack_plan.prepare(view, menu, action, self.decision_seq)
             plan_record['conditional_attack'] = self.pending_attack['second']
+            if 'shield_trade' in action:
+                plan_record.update(shield_trade=action['shield_trade'],conditional_sequence=[self.pending_attack['second']])
             action = self.pending_attack['first']
         elif action.get('kind') == 'coin_plan':
             predicted = next(p for macro,p in coins.values() if macro==action)
@@ -826,11 +894,11 @@ class OpenAIAdvisor:
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
                      "usage_parts":usage_parts(response),"output_style":'tag' if used_tags else 'prose',
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
-                     "reasoning_effort": self.effort, **plan_record})
+                     "reasoning_effort": effort,"late_turn_effort":late, **plan_record})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,
                           "api_elapsed_ms": elapsed_ms, "request_bytes": size,
                           "response_model": actual_model, "served_tier": response.get('service_tier'),
-                          "reasoning_effort": self.effort, "decision": action,
+                          "reasoning_effort": effort, "decision": action,
                           "reason": reason}, ensure_ascii=False), flush=True)
         return action
 
@@ -885,7 +953,7 @@ class OpenAIAdvisor:
         event = 'decision_assist_shadow' if primary_action is not None else 'decision_assist_declined'
         self.record({'event':event,'for_decision':origin,'sol_action':primary_action,**backup})
 
-    def accept_backup(self, view, menu, backup):
+    def accept_backup(self, view, menu, backup, *, turn_budget=False):
         action = backup['action']
         if backup['mode']=='forced':
             chosen = self.local_action(view,menu,{'action':action,'rule':'only_action_after_timeout',
@@ -898,7 +966,9 @@ class OpenAIAdvisor:
         self.decision_seq += 1
         self.last_backup_id = self.decision_seq
         self.record({'event':'proposed','observation':view,'actions':menu,'endpoint':'/v1/decisions',
-                     'policy':'sol_timeout_backup_v1','reason':'Sol 超时，使用同一局面预备的 Decisions 动作。',
+                     'policy':'sol_timeout_backup_v1','handoff_reason':'turn_budget' if turn_budget else 'network_timeout',
+                     'for_decision':self.decision_seq-1,
+                     'reason':'回合时间紧，采用同一局面已备好的动作。' if turn_budget else 'Sol 超时，使用同一局面预备的 Decisions 动作。',
                      **backup})
         print(json.dumps({'decision_assist':backup['model'],'elapsed_ms':backup['elapsed_ms'],'action':action}),flush=True)
         return action

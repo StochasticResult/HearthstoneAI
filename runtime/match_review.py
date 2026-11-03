@@ -45,6 +45,8 @@ def held_result(dest, outcomes):
 
 
 def summarize(dest):
+    from collections import Counter
+    from coaching import lesson_role
     decisions = rows(dest / 'decisions.jsonl', 2 * 1024 * 1024)
     actions = rows(dest / 'actions.log', 4 * 1024 * 1024) + rows(dest / 'actions-tail.log', 64 * 1024)
     events = rows(dest / 'session-events.jsonl', 1024 * 1024)
@@ -90,6 +92,7 @@ def summarize(dest):
                'decisions_proposed': sum(r.get('policy') == 'sol_timeout_backup_v1' for r in proposed),
                'decisions_shadow': sum(r.get('event') == 'decision_assist_shadow' for r in decisions),
                'decisions_declined': sum(r.get('event') == 'decision_assist_declined' for r in decisions),
+               'lesson_corrections': dict(Counter(role for r in decisions if (role:=lesson_role(r)))),
                'requested_mode': next((r['game_mode'] for r in events if r.get('game_mode') in ('practice', 'ranked')), None),
                'first_decision_game_turn': next((r['observation'].get('game_turn') for r in proposed if isinstance(r.get('observation'), dict)), None),
                'models': sorted({r['model'] for r in proposed if isinstance(r.get('model'), str)}),
@@ -130,6 +133,7 @@ def summarize(dest):
         summary['api_timeouts'] = compact.get('api_timeouts', summary['api_timeouts'])
         for key in ('decisions_proposed','decisions_shadow','decisions_declined'):
             summary[key] = compact.get(key,summary[key])
+        summary['lesson_corrections'] = compact.get('lesson_corrections',summary['lesson_corrections'])
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',
                     'local_calculations', 'models', 'game_type', 'first_decision_game_turn',
                     'mulligan_confirmed', 'median_decision_ms', 'latency_sample_size', 'diagnostics_capped'):

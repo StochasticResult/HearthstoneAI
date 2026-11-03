@@ -1,4 +1,5 @@
 """Paired Decisions vs production Sol evaluation. No Hearthstone input."""
+import copy
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ from hard_cases import hard_cases, prepare as prepare_hard
 from incremental_board import IncrementalBoard
 from life_tap import life_tap_facts
 from luna_decisions import decision_payload, emergency_clears, parse_choice, parse_scores, prepare_backup, recovery_inputs, tactical_payload
-from model_comparison import comparison_cases, prepare
+from model_comparison import CaptureAdvisor, comparison_cases, prepare
 from openai_advisor import (AdvisorError, AdvisorTimeout, CATALOG, OpenAIAdvisor, action_menu,
                             enrich, parse_response, public_view, request_payload)
 
@@ -236,9 +237,77 @@ def verify_rescue(config, output):
         advisor.close()
 
 
+def verify_shared_lessons(config, output):
+    """Use the selected primary and the Decisions adapter on the same public inputs."""
+    output = Path(output)
+    trade, tax = json.loads(read_bounded(output.parent/'standby-ranked-20261102.json',128*1024))
+    draw = json.loads(read_bounded(output.parent/'shared-freeze-out-20261102.json',64*1024))
+    harder = copy.deepcopy(tax['observation'])
+    for foe in harder['enemy_board']:
+        if foe.get('taunt'):
+            foe['attack'] += 1
+            foe['health'] += 1
+            if type(foe.get('max_health')) is int:
+                foe['max_health'] += 1
+            foe['modifiers'].append({'card_id':'TIME_026e'})
+    five = dict(tax['observation'],mana=5)
+    cases = [
+        ('ranked_tax',tax['observation'],tax['actions'],[{'kind':'play','source_id':55,'target_id':i} for i in (41,49)]),
+        ('stronger_taunts',harder,tax['actions'],[{'kind':'play','source_id':55,'target_id':49}]),
+        ('extra_mana_control',five,tax['actions'],None),
+        ('rush_trade_control',trade['observation'],trade['actions'],None),
+        ('ranked_freeze_draw',draw['observation'],draw['actions'],draw['rubric'])]
+    advisor = CaptureAdvisor(config)
+    config['api_key'] = ''
+    # Both arms are explicitly evaluated below. Avoid a third speculative call.
+    advisor.standby.close()
+    advisor.standby = None
+    rows = []
+    try:
+        with output.open('w') as report:
+            for i,(name,view,menu,expected) in enumerate(cases):
+                view = copy.deepcopy(view)
+                tap = life_tap_facts(view,menu,CATALOG)
+                if tap:
+                    view['life_tap'] = tap
+                menu = blind_menu('shared-order/'+name,menu)
+                for arm in (('primary','backup') if i%2==0 else ('backup','primary')):
+                    row = {'case':name,'arm':arm,'control':expected is None}
+                    try:
+                        if arm=='primary':
+                            advisor.pace_turn = None
+                            advisor.pending_attack = None
+                            advisor.last_event = {}
+                            advisor.select(view,menu)
+                            result = advisor.last_event
+                        else:
+                            sol,_ = request_payload(advisor.model,view,menu,service_tier=advisor.service_tier,effort=advisor.effort)
+                            result = prepare_backup(sol,view,menu,advisor.decisions_transport)()
+                        row.update({k:result[k] for k in ('action','model','tactical_lesson','elapsed_ms','served_tier',
+                                                         'reasoning_effort','error') if k in result})
+                        row['model_action'] = result.get('model_action',result.get('action'))
+                    except AdvisorError as exc:
+                        row['error'] = str(exc)[:160]
+                    if expected:
+                        row['model_hit'] = row.get('model_action') in expected
+                        row['system_hit'] = row.get('action') in expected
+                    rows.append(row)
+                    report.write(json.dumps(row)+'\n'); report.flush()
+            summary = {a:{'answered':sum(bool(r.get('action')) for r in rows if r['arm']==a),
+                          'raw_hits':sum(bool(r.get('model_hit')) for r in rows if r['arm']==a),
+                          'system_hits':sum(bool(r.get('system_hit')) for r in rows if r['arm']==a),
+                          'controls_rewritten':sum(bool(r.get('tactical_lesson')) for r in rows if r['arm']==a and r['control'])}
+                       for a in ('primary','backup')}
+            report.write(json.dumps({'summary':summary})+'\n')
+    finally:
+        advisor.close()
+
+
 if __name__ == '__main__':
     config = json.loads(sys.stdin.readline(4097))
-    if sys.argv[2:]==['--verify-rescue']:
+    if sys.argv[2:]==['--shared-lessons']:
+        verify_shared_lessons(config,sys.argv[1])
+    elif sys.argv[2:]==['--verify-rescue']:
         verify_rescue(config,sys.argv[1])
     else:
         evaluate(config,sys.argv[1],holdout=sys.argv[2:]==['--holdout'],recovery=sys.argv[2:]==['--recovery'])

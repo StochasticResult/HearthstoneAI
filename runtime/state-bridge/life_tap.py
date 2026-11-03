@@ -80,11 +80,41 @@ def life_tap_facts(view, menu, catalog):
         costs['friendly_taunts_before_trades'] = taunts
     if power_attack:
         costs['enemy_hero_power_attack_if_usable'] = power_attack
-    remaining = ((view.get('strategy') or {}).get('deck') or {}).get('reconciled_remaining_counts')
+    deck_info = (view.get('strategy') or {}).get('deck') or {}
+    remaining = deck_info.get('reconciled_remaining_counts')
     if isinstance(remaining, dict) and remaining.get('TIME_025t'):
         costs['verified_shreds_in_deck'] = remaining['TIME_025t']
     if len(hand) + draws > 10:
         costs['hand_slots_before_drawing'] = max(0, 10-len(hand))
+    # Compare an actual possible draw with the visible damage. In particular,
+    # an unreconciled deck supports a conditional line, never an exact draw rate.
+    shard = 'CORE_UNG_205'
+    counted = isinstance(remaining,dict)
+    copies = (remaining if counted else (deck_info.get('unseen_reference_copies') or {})).get(shard,0)
+    shard_cost = catalog.get(shard,{}).get('cost')
+    slots = view.get('my_board_slots_used')
+    if (not taunts and not missing and draws==1 and len(hand)<10 and costs['margin_hold']<=0
+            and 0<costs['effective_health_tap_before_other_effects'] and view.get('enemy_secret_count')==0
+            and type(slots) is int and 0<=slots<7 and not any(c.get('card_id')==shard for c in hand)
+            and type(shard_cost) is int and shard_cost<=mana-cost and type(copies) is int and copies>0
+            and (counted or (deck_info.get('selected_cards') or {}).get(shard,0)>0)):
+        targets_after_draw = []
+        for foe in enemies:
+            prevented = attacks.get(foe['id'],0)
+            if (foe['id'] in removed or not prevented or foe.get('stealth') is not False
+                    or foe.get('immune') is not False or foe.get('dormant') is not False):
+                continue
+            connects = after-prevented+power_attack
+            margin = costs['effective_health_tap_before_other_effects']-connects
+            if margin>0:
+                targets_after_draw.append({'target_id':foe['id'],'attack_prevented':prevented,
+                                           'remaining_visible_attack':connects,'health_margin':margin})
+        if targets_after_draw:
+            costs['conditional_freeze_draw'] = {'card_id':shard,'printed_mana_cost':shard_cost,
+                'count_basis':'reconciled deck' if counted else 'unseen in verified starting list; presence uncertain',
+                'if_drawn_and_playable':targets_after_draw,
+                'assumptions':'Draw the plain Shard, play at the affordable cost, target stays frozen; '
+                              'ignores other triggers, hidden damage and future draws. Compare drawing before spending mana.'}
     costs['compare'] = ('Compare holding life with drawing. Both margins assume the example trades work and remaining '
                         'minions/weapon connect unblocked. Taunts can prevent that damage. Check hero power, visible effects, '
                         'damage prevention, Shreds, waking minions and plausible reach. '

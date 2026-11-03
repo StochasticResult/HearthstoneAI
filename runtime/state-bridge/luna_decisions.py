@@ -4,10 +4,11 @@ import math
 import time
 
 from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES
+from spell_order import buff_before_tax, review_action
 
 MODEL = 'gpt-6-luna'
 
-def prepare_backup(sol, view, menu, transport):
+def prepare_backup(sol, view, menu, transport, *, orders=None):
     """Prepare from this exact window now; the returned call can be dispatched later."""
     if len(menu)==1:
         return lambda: {'action':next(iter(menu.values())),'mode':'forced','sent':False}
@@ -16,14 +17,15 @@ def prepare_backup(sol, view, menu, transport):
     tap_hp = (view.get('life_tap') or {}).get('effective_health_tap_before_other_effects')
     if type(tap_hp) is int and tap_hp<=0:
         allowed = [a for a in allowed if a.get('kind')!='hero_power']
+    orders = buff_before_tax(view,menu) if orders is None else orders
     try:
-        _,packet = recovery_inputs(sol,view,menu)
+        _,packet = recovery_inputs(sol,view,menu,orders=orders)
         if len(json.dumps(packet,separators=(',', ':')).encode())>MAX_INPUT_BYTES:
             raise ContextTooLarge('Score request exceeds the existing limit')
         mode = 'score'
     except ContextTooLarge:
         try:
-            packet = tactical_payload(view,menu)
+            packet = tactical_payload(view,menu,orders=orders)
         except ContextTooLarge:
             packet = decision_payload(sol,menu)
         mode = 'choice'
@@ -32,6 +34,7 @@ def prepare_backup(sol, view, menu, transport):
         info = {'sent':True,'mode':mode,'restricted_menu':len(allowed)!=len(menu)}
         try:
             reply = transport(packet)
+            scores = {}
             if mode=='score':
                 action,scores,tokens = parse_scores(reply,menu)
                 eligible = [aid for aid in scores if menu[aid] in allowed]
@@ -45,6 +48,11 @@ def prepare_backup(sol, view, menu, transport):
             else:
                 action,_,tokens = parse_choice(reply,menu)
             info.update(model=reply['model'],tokens=tokens)
+            if action in allowed:
+                revised,lesson = review_action(menu,action,orders,scores)
+                if lesson and revised in allowed:
+                    info.update(model_action=action,tactical_lesson=lesson)
+                    action = revised
             if action in allowed:
                 info['action'] = action
             else:
@@ -171,9 +179,9 @@ def _previews(view, menu):
     return result
 
 
-def recovery_inputs(sol, view, menu):
+def recovery_inputs(sol, view, menu, *, orders=None):
     """Give Sol and the independent Luna grader the same named moves and local arithmetic."""
-    typed = tactical_payload(view,menu)
+    typed = tactical_payload(view,menu,orders=orders)
     desc = {x['value']:x['description'] for x in typed['questions'][0]['choices']}
     ev = json.loads(typed['input'])
     ev['candidate_moves'] = {i:{'action':a,'description':desc[i]} for i,a in menu.items()}
@@ -222,7 +230,7 @@ def parse_scores(reply, menu):
     return dict(menu[best]), scores, tokens
 
 
-def tactical_payload(view, menu):
+def tactical_payload(view, menu, *, orders=None):
     """Represent a position as public actors, threats and executable options."""
     entities = {}
     actors = {}
@@ -288,6 +296,14 @@ def tactical_payload(view, menu):
         'choices_shown':list(choices.values()),'recent_actions':view.get('recent_confirmed_actions',[]),
         'remaining_deck':{k:deck[k] for k in ('remaining_basis','reconciled_remaining_counts','unseen_reference_copies') if k in deck},
         'matchup':{k:matchup[k] for k in ('enemy_class','stale','build_compatible','candidates') if k in matchup}}
+    orders = buff_before_tax(view,menu) if orders is None else orders
+    if orders:
+        evidence['buff_first_trades_by_tax_action'] = orders
+        for tax,options in orders.items():
+            labels[tax] += ' Taxing first prices out a buff that can clear a Taunt and still leave mana for this minion.'
+            for buff, facts in options.items():
+                labels[buff] += (f" First this buff lets #{facts['attacker']} remove Taunt #{facts['taunt']} "
+                                 f"and survive on {facts['attacker_health_after_trade']} Health, retaining mana for {tax}.")
     instructions = ('Choose the best NEXT legal move in Standard Hearthstone for Zoo Warlock. Compare complete '
         'feasible lines beyond the first action. Take guaranteed lethal; otherwise survive visible next-turn lethal, '
         'then maximize pressure. Respect Taunt, frozen units, remaining attacks, current mana, both spell taxes, '

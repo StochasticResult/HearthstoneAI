@@ -1,0 +1,930 @@
+{
+ "case": "mirror_draw_for_freeze",
+ "run": "run-20261102-170336",
+ "decision_id": 26,
+ "observation": {
+  "game_type": "GT_RANKED",
+  "format": "FT_STANDARD",
+  "game_turn": "14",
+  "mana": 7,
+  "phase": "main",
+  "mana_cap": 10,
+  "mana_crystals": 7,
+  "mana_spent": 0,
+  "temporary_mana": 0,
+  "overload_locked": 0,
+  "overload_owed": 0,
+  "healing_as_damage": 0,
+  "healing_double": 0,
+  "deck_tracking_from_mulligan": true,
+  "own_card_identity_changed": false,
+  "my_deck_count": 18,
+  "enemy_deck_count": 22,
+  "enemy_hand_count": 1,
+  "my_fatigue": 0,
+  "enemy_fatigue": 0,
+  "enemy_mana_crystals": 7,
+  "my_corpses": 9,
+  "enemy_corpses": 9,
+  "enemy_secret_count": 0,
+  "client_build": "37.0.255790",
+  "my_board_slots_used": 1,
+  "enemy_board_slots_used": 2,
+  "my_hero": {
+   "id": 66,
+   "card_id": "HERO_07f",
+   "attack": 0,
+   "health": 6,
+   "max_health": 30,
+   "armor": 0,
+   "frozen": false,
+   "exhausted": false,
+   "immune": false,
+   "attacks_this_turn": 0,
+   "modifiers": []
+  },
+  "enemy_hero": {
+   "id": 64,
+   "card_id": "HERO_07",
+   "attack": 0,
+   "health": 14,
+   "max_health": 30,
+   "armor": 0,
+   "frozen": false,
+   "exhausted": false,
+   "immune": false,
+   "attacks_this_turn": 0,
+   "modifiers": []
+  },
+  "my_hero_power": {
+   "id": 67,
+   "card_id": "HERO_07ebp",
+   "cost": 2,
+   "exhausted": false
+  },
+  "enemy_hero_power": {
+   "id": 65,
+   "card_id": "HERO_07bp",
+   "cost": 2,
+   "exhausted": true
+  },
+  "my_hand": [
+   {
+    "id": 58,
+    "card_id": "CORE_SCH_713",
+    "position": 1,
+    "card_type": "MINION",
+    "cost": 2,
+    "attack": 3,
+    "health": 2,
+    "modifiers": []
+   },
+   {
+    "id": 63,
+    "card_id": "BE_729",
+    "position": 2,
+    "card_type": "MINION",
+    "cost": 3,
+    "attack": 4,
+    "health": 4,
+    "modifiers": []
+   },
+   {
+    "id": 57,
+    "card_id": "TIME_025",
+    "position": 3,
+    "card_type": "MINION",
+    "cost": 2,
+    "attack": 4,
+    "health": 4,
+    "modifiers": []
+   },
+   {
+    "id": 55,
+    "card_id": "BE_726",
+    "position": 4,
+    "card_type": "SPELL",
+    "cost": 1,
+    "attack": null,
+    "health": null,
+    "modifiers": []
+   },
+   {
+    "id": 50,
+    "card_id": "CAP_405",
+    "position": 5,
+    "card_type": "MINION",
+    "cost": 3,
+    "attack": 3,
+    "health": 3,
+    "modifiers": []
+   }
+  ],
+  "my_board": [
+   {
+    "id": 138,
+    "card_id": "CATA_210t",
+    "position": 1,
+    "attack": 7,
+    "health": 3,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 1,
+    "modifiers": []
+   }
+  ],
+  "enemy_board": [
+   {
+    "id": 11,
+    "card_id": "TIME_025",
+    "position": 1,
+    "attack": 8,
+    "health": 8,
+    "taunt": false,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "modifiers": [
+     {
+      "card_id": "BE_094e",
+      "script_data_1": 4
+     }
+    ]
+   },
+   {
+    "id": 129,
+    "card_id": "BE_085t",
+    "position": 2,
+    "attack": 3,
+    "health": 5,
+    "taunt": true,
+    "frozen": false,
+    "exhausted": true,
+    "divine_shield": false,
+    "windfury": false,
+    "stealth": false,
+    "lifesteal": false,
+    "poisonous": false,
+    "reborn": false,
+    "immune": false,
+    "dormant": false,
+    "silenced": false,
+    "mega_windfury": false,
+    "rush": false,
+    "charge": false,
+    "deathrattle": false,
+    "titan": false,
+    "spell_damage": 0,
+    "cant_be_targeted_by_spells": false,
+    "cant_be_targeted_by_hero_powers": false,
+    "attacks_this_turn": 0,
+    "modifiers": []
+   }
+  ],
+  "active_rituals": [],
+  "enemy_active_rituals": [],
+  "my_locations": [],
+  "enemy_locations": [],
+  "my_objectives": [],
+  "enemy_objectives": [],
+  "my_secrets": [],
+  "my_player_effects": [],
+  "enemy_player_effects": [],
+  "opponent_public_cards": [
+   {
+    "id": 4,
+    "card_id": "TIME_027",
+    "generated": false
+   },
+   {
+    "id": 7,
+    "card_id": "BE_726",
+    "generated": false
+   },
+   {
+    "id": 9,
+    "card_id": "BE_085",
+    "generated": false
+   },
+   {
+    "id": 11,
+    "card_id": "TIME_025",
+    "generated": false
+   },
+   {
+    "id": 13,
+    "card_id": "CORE_SCH_713",
+    "generated": false
+   },
+   {
+    "id": 14,
+    "card_id": "TLC_451",
+    "generated": false
+   },
+   {
+    "id": 21,
+    "card_id": "TLC_451",
+    "generated": false
+   },
+   {
+    "id": 23,
+    "card_id": "BE_094",
+    "generated": false
+   },
+   {
+    "id": 26,
+    "card_id": "TLC_603",
+    "generated": false
+   },
+   {
+    "id": 29,
+    "card_id": "BE_085",
+    "generated": false
+   },
+   {
+    "id": 30,
+    "card_id": "TIME_027",
+    "generated": false
+   },
+   {
+    "id": 31,
+    "card_id": "BE_729",
+    "generated": false
+   },
+   {
+    "id": 33,
+    "card_id": "BE_729",
+    "generated": false
+   },
+   {
+    "id": 92,
+    "card_id": "BE_013t5",
+    "generated": true
+   },
+   {
+    "id": 93,
+    "card_id": "BE_013t5",
+    "generated": true
+   },
+   {
+    "id": 102,
+    "card_id": "BE_085t",
+    "generated": true
+   },
+   {
+    "id": 103,
+    "card_id": "BE_085t",
+    "generated": true
+   },
+   {
+    "id": 128,
+    "card_id": "BE_085t",
+    "generated": true
+   },
+   {
+    "id": 129,
+    "card_id": "BE_085t",
+    "generated": true
+   }
+  ],
+  "own_seen_original": [
+   {
+    "id": 34,
+    "card_id": "CORE_SCH_713"
+   },
+   {
+    "id": 35,
+    "card_id": "TLC_603"
+   },
+   {
+    "id": 38,
+    "card_id": "CATA_210"
+   },
+   {
+    "id": 41,
+    "card_id": "TIME_029"
+   },
+   {
+    "id": 42,
+    "card_id": "TIME_025"
+   },
+   {
+    "id": 43,
+    "card_id": "BE_085"
+   },
+   {
+    "id": 44,
+    "card_id": "CORE_UNG_205"
+   },
+   {
+    "id": 46,
+    "card_id": "BE_086"
+   },
+   {
+    "id": 50,
+    "card_id": "CAP_405"
+   },
+   {
+    "id": 55,
+    "card_id": "BE_726"
+   },
+   {
+    "id": 57,
+    "card_id": "TIME_025"
+   },
+   {
+    "id": 58,
+    "card_id": "CORE_SCH_713"
+   },
+   {
+    "id": 63,
+    "card_id": "BE_729"
+   }
+  ],
+  "enemy_secret_ids": [],
+  "enemy_known_hand": [],
+  "enemy_known_secrets": [],
+  "own_known_deck": [],
+  "starting_deck": {
+   "BE_085": 2,
+   "BE_086": 2,
+   "BE_090": 1,
+   "BE_094": 2,
+   "BE_726": 2,
+   "BE_728": 1,
+   "BE_729": 2,
+   "CAP_405": 1,
+   "CATA_210": 2,
+   "CORE_SCH_713": 2,
+   "CORE_UNG_205": 2,
+   "EDR_856": 1,
+   "TIME_025": 2,
+   "TIME_026": 2,
+   "TIME_029": 2,
+   "TLC_451": 2,
+   "TLC_603": 2
+  },
+  "card_definitions": {
+   "BE_085t": {
+    "name": "C'thrax Brute",
+    "text": "Taunt",
+    "cost": 4,
+    "attack": 3,
+    "health": 5,
+    "type": "MINION",
+    "mechanics": [
+     "TAUNT"
+    ]
+   },
+   "BE_094e": {
+    "name": "Flying",
+    "text": "Increased Stats.",
+    "type": "ENCHANTMENT"
+   },
+   "BE_726": {
+    "name": "Ritual of C'Thun",
+    "text": "In 2 turns, choose a\nC'Thun ability to trigger.",
+    "cost": 1,
+    "type": "SPELL"
+   },
+   "BE_729": {
+    "name": "Mawman Cultist",
+    "text": "ALL spells cost (1) more.",
+    "cost": 3,
+    "attack": 4,
+    "health": 4,
+    "type": "MINION",
+    "mechanics": [
+     "AURA"
+    ]
+   },
+   "CAP_405": {
+    "name": "Godfather Kazakus",
+    "text": "Battlecry: Plot a custom sham trial! Then choose the trial's length.",
+    "cost": 3,
+    "attack": 3,
+    "health": 3,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "CATA_210t": {
+    "name": "Accelerated Whelp",
+    "cost": 2,
+    "attack": 2,
+    "health": 1,
+    "type": "MINION"
+   },
+   "CORE_SCH_713": {
+    "name": "Cult Neophyte",
+    "text": "Battlecry:& Your opponent's spells cost (1) more next turn.",
+    "cost": 2,
+    "attack": 3,
+    "health": 2,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "HERO_07": {
+    "name": "Gul'dan",
+    "health": 30,
+    "type": "HERO"
+   },
+   "HERO_07bp": {
+    "name": "Life Tap",
+    "text": "Hero Power\nDraw a card and take $2 damage.",
+    "cost": 2,
+    "type": "HERO_POWER"
+   },
+   "HERO_07ebp": {
+    "name": "Life Tap",
+    "text": "Hero Power\nDraw a card and take $2 damage.",
+    "cost": 2,
+    "type": "HERO_POWER"
+   },
+   "HERO_07f": {
+    "name": "Nemesis Gul'dan",
+    "health": 30,
+    "type": "HERO"
+   },
+   "TIME_025": {
+    "name": "Twilight Timehopper",
+    "text": "Battlecry: Shuffle 2\nShreds of Time into your\ndeck. When drawn, deal 3\ndamage to your hero.",
+    "cost": 2,
+    "attack": 4,
+    "health": 4,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "BE_013t5": {
+    "name": "Faceless Fanatic",
+    "text": "Taunt",
+    "cost": 2,
+    "attack": 2,
+    "health": 3,
+    "type": "MINION",
+    "mechanics": [
+     "TAUNT"
+    ]
+   },
+   "BE_014": {
+    "name": "Spawn of C'Thun",
+    "text": "Battlecry: If C'Thun\nstarted in your deck,\nchoose one of its\nabilities to trigger.",
+    "cost": 4,
+    "attack": 2,
+    "health": 2,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "BE_085": {
+    "name": "Ritual of Summoning",
+    "text": "In 2 turns, summon\ntwo 3/5 C'thraxxi\nwith Taunt.",
+    "cost": 2,
+    "type": "SPELL"
+   },
+   "BE_086": {
+    "name": "Blasphemy",
+    "text": "Deal $2 damage to all enemies. If this is\nthe highest Cost card in your hand, do it again.",
+    "cost": 4,
+    "type": "SPELL"
+   },
+   "BE_090": {
+    "name": "Kith'ix",
+    "text": "Battlecry: If you've\ncompleted a Ritual this\ngame, choose a Sinister\nRitual to begin.",
+    "cost": 6,
+    "attack": 6,
+    "health": 6,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "BE_094": {
+    "name": "Floating Lessons",
+    "text": "Give a minion and a random one in your hand stats equal to double this card's Cost.",
+    "cost": 1,
+    "type": "SPELL"
+   },
+   "BE_204": {
+    "name": "Gargantuan Slitherer",
+    "text": "Taunt\nBattlecry:& Choose a C'Thun\nability to trigger.",
+    "cost": 6,
+    "attack": 6,
+    "health": 7,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY",
+     "TAUNT"
+    ]
+   },
+   "BE_728": {
+    "name": "Zakajz the Corruptor",
+    "text": "Battlecry: Reduce the Cost\nof minions in your hand and\ndeck by (1) and increase the\nCost of spells by (1).",
+    "cost": 4,
+    "attack": 5,
+    "health": 5,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "CATA_210": {
+    "name": "Twilight Egg",
+    "text": "Deathrattle: Summon a\n{0}/{1} Whelp. (Gains +1/+1\n  at the start of your turns!)  ",
+    "cost": 1,
+    "attack": 0,
+    "health": 2,
+    "type": "MINION",
+    "mechanics": [
+     "DEATHRATTLE",
+     "TRIGGER_VISUAL"
+    ]
+   },
+   "CORE_CS2_062": {
+    "name": "Hellfire",
+    "text": "Deal $3 damage to ALL characters.",
+    "cost": 3,
+    "type": "SPELL"
+   },
+   "CORE_UNG_205": {
+    "name": "Glacial Shard",
+    "text": "Battlecry: Freeze an enemy.",
+    "cost": 1,
+    "attack": 2,
+    "health": 1,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY"
+    ]
+   },
+   "EDR_856": {
+    "name": "Nightmare Lord Xavius",
+    "text": "Battlecry: Discover a minion from your deck. Give it a Dark Gift.",
+    "cost": 4,
+    "attack": 4,
+    "health": 4,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY",
+     "DISCOVER"
+    ]
+   },
+   "TIME_026": {
+    "name": "Entropic Continuity",
+    "text": "Give your minions +1/+1.\nShuffle 2 Shreds of Time\ninto your deck.",
+    "cost": 1,
+    "type": "SPELL"
+   },
+   "TIME_027": {
+    "name": "Tachyon Barrage",
+    "text": "Deal $6 damage split among all enemies. Shuffle 2 Shreds of Time into your deck.",
+    "cost": 2,
+    "type": "SPELL",
+    "mechanics": [
+     "ImmuneToSpellpower"
+    ]
+   },
+   "TIME_029": {
+    "name": "Ruinous Velocidrake",
+    "text": "Rush\nBattlecry: Cast a Shred\n of Time from your deck to\n   summon a copy of this.",
+    "cost": 5,
+    "attack": 5,
+    "health": 5,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY",
+     "RUSH"
+    ]
+   },
+   "TLC_451": {
+    "name": "Cursed Catacombs",
+    "text": "Discover another\ncard from your deck. Make it Temporary.",
+    "cost": 0,
+    "type": "SPELL",
+    "mechanics": [
+     "DISCOVER"
+    ]
+   },
+   "TLC_603": {
+    "name": "Platysaur",
+    "text": "Battlecry: Draw a card. Deathrattle: Discard it.",
+    "cost": 1,
+    "attack": 1,
+    "health": 2,
+    "type": "MINION",
+    "mechanics": [
+     "BATTLECRY",
+     "DEATHRATTLE"
+    ]
+   }
+  },
+  "strategy": {
+   "deck": {
+    "name": "Ritual Zoo Warlock",
+    "reference_cards": {
+     "TLC_451": 2,
+     "TIME_026": 2,
+     "BE_094": 2,
+     "CORE_UNG_205": 2,
+     "TLC_603": 2,
+     "BE_726": 2,
+     "CATA_210": 2,
+     "CORE_SCH_713": 2,
+     "BE_085": 2,
+     "TIME_025": 2,
+     "CAP_405": 1,
+     "BE_729": 2,
+     "BE_086": 2,
+     "EDR_856": 1,
+     "BE_728": 1,
+     "TIME_029": 2,
+     "BE_090": 1
+    },
+    "selected_cards": {
+     "BE_085": 2,
+     "BE_086": 2,
+     "BE_090": 1,
+     "BE_094": 2,
+     "BE_726": 2,
+     "BE_728": 1,
+     "BE_729": 2,
+     "CAP_405": 1,
+     "CATA_210": 2,
+     "CORE_SCH_713": 2,
+     "CORE_UNG_205": 2,
+     "EDR_856": 1,
+     "TIME_025": 2,
+     "TIME_026": 2,
+     "TIME_029": 2,
+     "TLC_451": 2,
+     "TLC_603": 2
+    },
+    "verification": "30 cards read from the selected game deck",
+    "profile_matches_selected": true,
+    "unseen_reference_copies": {
+     "BE_085": 1,
+     "BE_086": 1,
+     "BE_090": 1,
+     "BE_094": 2,
+     "BE_726": 1,
+     "BE_728": 1,
+     "BE_729": 1,
+     "CAP_405": 0,
+     "CATA_210": 1,
+     "CORE_SCH_713": 0,
+     "CORE_UNG_205": 1,
+     "EDR_856": 1,
+     "TIME_025": 0,
+     "TIME_026": 2,
+     "TIME_029": 1,
+     "TLC_451": 2,
+     "TLC_603": 1
+    },
+    "reconciled_remaining_counts": null,
+    "remaining_basis": "composition not fully reconciled; do not assume exact draw odds",
+    "count_warning": "Not exact remaining deck: reconnects, generation, returns and transforms can change counts.",
+    "observed_outside_reference": [],
+    "plan": "Build a board and timed Ritual waves; convert efficient trades into repeat damage. Against fast boards protect health and board first; against slow decks force answers, retain one refill and build a lethal clock. Do not spend an entire turn on value if current pressure wins.",
+    "mulligan": "Seek a playable turns 1-2 curve: Twilight Egg, Platysaur, Ritual of C'Thun, Twilight Timehopper. Keep Ritual of Summoning when early tempo is covered. Keep Floating Lessons only with a good minion target/curve. Entropic Continuity needs multiple bodies, not an empty board. Glacial Shard gains value against early attacks. Neophyte is better before a spell swing. Usually replace 4+ mana cards; evaluate Kazakus only with a strong early curve. This is a heuristic, not measured mulligan data.",
+    "sequencing": [
+     "Mawman Cultist taxes ALL spells. Cast desired cheap spells before it unless the higher current Cost intentionally improves Floating Lessons and total mana still fits. Zakajz discounts minions and taxes your spells; calculate the whole turn with observed costs.",
+     "Floating Lessons gives stats equal to twice its CURRENT Cost, not printed cost. Check board target, hand minions and actual remaining mana. Spread pressure against single-target removal; avoid pushing every minion to 5+ Attack into Shadow Word: Ruin without a payoff.",
+     "Blasphemy hits all enemies including the hero. Check the highest CURRENT cost in hand, including ties. Spending a higher-cost card first may enable the second hit; never assume a 4-damage clear while holding a higher-cost card.",
+     "Catacombs gives a Temporary card: choose one useful before it expires. Xavius chooses from deck then adds a Dark Gift; evaluate the revealed actual result, not an assumed gift.",
+     "Platysaur's drawn card can be discarded on its death. Use the tracked card before sacrificing Platysaur when beneficial. Do not trade an egg just to hatch it if its next growth or resilience is worth more.",
+     "Continuity and Timehopper shuffle Shreds that deal 3 self-damage when drawn. Velocidrake needs a Shred and two free board slots for both bodies; Rush cannot hit the hero on the summon turn. Do not assume a Shred remains on incomplete history.",
+     "Rituals are delayed. Use observed countdown only; reserve board slots when Summoning is about to resolve. Kith'ix requires a completed Ritual, not merely one cast. Missing progress is unknown.",
+     "Kazakus takes three choices to build one trial. After paying for him, check the live costs against the base costs of 7 for immediate effects, 4 for next turn and 0 for four turns. If only delayed effects fit, take attacks you already intend before opening the choices. Match both effects to survival and board space. For C'Thun compare lethal, healing, taunts and refill."
+    ]
+   },
+   "matchup": {
+    "as_of": "2026-10-29",
+    "stale": false,
+    "kind": "card-based hypotheses, not an optimal policy",
+    "enemy_class": "WARLOCK",
+    "build_compatible": true,
+    "status": "uncertain candidates; evidence counts are NOT probabilities; unseen cards are NOT guaranteed",
+    "unlisted_or_modified_deck_possible": true,
+    "candidates": [
+     {
+      "id": "zoo",
+      "name": "Ritual Zoo Warlock",
+      "evidence": [
+       "BE_094",
+       "BE_729",
+       "TIME_025"
+      ],
+      "basis": "public signals",
+      "matching_original_cards": [
+       "BE_085",
+       "BE_094",
+       "BE_726",
+       "BE_729",
+       "SCH_713",
+       "TIME_025",
+       "TLC_451",
+       "TLC_603"
+      ],
+      "unmatched_original_cards": [
+       "TIME_027"
+      ],
+      "template_status": "30-card published template",
+      "template_source": "https://www.vicioussyndicate.com/decks/ritual-zoo-warlock/",
+      "if_template_matches_unseen_watch_cards": {
+       "BE_086": 2,
+       "BE_085": 0,
+       "BE_094": 1,
+       "TIME_029": 2
+      },
+      "count_warning": "Conditional unseen copies, NOT known hand contents. Includes unseen hand/deck; generated copies and tech variants can differ.",
+      "plan": "Contest board before racing: every surviving body threatens buffs. Use favorable trades and freeze to deny their buff targets. Track their Ritual wave and board space. Separate minion health above Blasphemy's 2/4 thresholds when feasible; do not assume their repeat condition is active without seeing their hand.",
+      "mulligan": "Prioritize early minions, Timehopper and playable buffs; retain freeze with a curve. Avoid a slow value-only opener.",
+      "watch_cards": [
+       "BE_086",
+       "BE_085",
+       "BE_094",
+       "TIME_029"
+      ]
+     },
+     {
+      "id": "rafaam_warlock",
+      "name": "Ritual Rafaam Warlock",
+      "evidence": [],
+      "basis": "class-only possibility",
+      "matching_original_cards": [
+       "BE_085",
+       "BE_726",
+       "TLC_451"
+      ],
+      "unmatched_original_cards": [
+       "BE_094",
+       "BE_729",
+       "SCH_713",
+       "TIME_025",
+       "TIME_027",
+       "TLC_603"
+      ],
+      "template_status": "source list count is not 30; completeness or expansion is unverified",
+      "template_source": "https://www.vicioussyndicate.com/decks/ritual-rafaam-warlock/",
+      "if_template_matches_unseen_watch_cards": {
+       "CORE_CS2_062": 2,
+       "BE_014": 2,
+       "BE_204": 2
+      },
+      "count_warning": "Conditional unseen copies, NOT known hand contents. Includes unseen hand/deck; generated copies and tech variants can differ.",
+      "plan": "Treat as a slow Ritual shell until a Rafaam-specific public card confirms more. Preserve one refill and avoid unnecessary Life Tap damage into C'Thun reach. Hellfire thresholds and delayed Ritual taunts matter more than hypothetical late value.",
+      "mulligan": "Develop early pressure with a reliable curve and disruption.",
+      "watch_cards": [
+       "CORE_CS2_062",
+       "BE_014",
+       "BE_204"
+      ]
+     }
+    ]
+   }
+  },
+  "recent_confirmed_actions": [
+   {
+    "turn": "12",
+    "kind": "attack",
+    "card_id": "TIME_025",
+    "target_id": 64,
+    "mana_before": 6,
+    "observed_cost": null,
+    "card_type": null,
+    "target_was_hero": true,
+    "enemy_secret_ids_before": [],
+    "mana_after_observed": 6
+   },
+   {
+    "turn": "12",
+    "kind": "play",
+    "card_id": "BE_086",
+    "target_id": null,
+    "mana_before": 6,
+    "observed_cost": 6,
+    "card_type": "SPELL",
+    "target_was_hero": false,
+    "enemy_secret_ids_before": [],
+    "mana_after_observed": 0
+   },
+   {
+    "turn": "12",
+    "kind": "end_turn",
+    "card_id": null,
+    "target_id": null,
+    "mana_before": 0,
+    "observed_cost": null,
+    "card_type": null,
+    "target_was_hero": false,
+    "enemy_secret_ids_before": []
+   },
+   {
+    "turn": "14",
+    "kind": "attack",
+    "card_id": "CATA_210t",
+    "target_id": 128,
+    "mana_before": 7,
+    "observed_cost": null,
+    "card_type": null,
+    "target_was_hero": false,
+    "enemy_secret_ids_before": [],
+    "mana_after_observed": 7
+   }
+  ],
+  "life_tap": {
+   "base_self_damage": 2,
+   "draws": 1,
+   "fatigue_if_no_casts_when_drawn": 0,
+   "mana_after_tap": 5,
+   "effective_health_hold": 6,
+   "effective_health_tap_before_other_effects": 4,
+   "unblocked_board_and_weapon_attack": 11,
+   "example_trades": [],
+   "unblocked_attack_after_example": 11,
+   "margin_hold": -5,
+   "margin_tap": -7,
+   "compare": "Compare holding life with drawing. Both margins assume the example trades work and remaining minions/weapon connect unblocked. Taunts can prevent that damage. Check hero power, visible effects, damage prevention, Shreds, waking minions and plausible reach. At a thin margin prefer a useful play/trade already available. For a risky Tap name a specific affordable immediate out; if holding already loses, drawing for a live out can be best."
+  }
+ },
+ "actions": {
+  "a0": {
+   "kind": "play",
+   "source_id": 63
+  },
+  "a1": {
+   "kind": "play",
+   "source_id": 58
+  },
+  "a2": {
+   "kind": "play",
+   "source_id": 57
+  },
+  "a3": {
+   "kind": "play",
+   "source_id": 55
+  },
+  "a4": {
+   "kind": "play",
+   "source_id": 50
+  },
+  "a5": {
+   "kind": "hero_power",
+   "source_id": 67
+  },
+  "a6": {
+   "kind": "end_turn"
+  }
+ },
+ "recorded_sol_replay_action": {
+  "kind": "play",
+  "source_id": 50
+ },
+ "rubric": [
+  {
+   "kind": "hero_power",
+   "source_id": 67
+  }
+ ]
+}

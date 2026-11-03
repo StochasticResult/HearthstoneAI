@@ -1,11 +1,20 @@
 """Small public decision samples retained across detailed match-log cleanup."""
 
+def lesson_role(event):
+    if not event.get('tactical_lesson') or not event.get('model_action'):
+        return None
+    if event.get('event')=='decision_assist_shadow':
+        return 'shadow'
+    if event.get('event')=='proposed':
+        return 'backup' if event.get('policy')=='sol_timeout_backup_v1' else 'primary'
+    return None
+
 
 def strategy_sample(events, capped=False):
     confirmed = {e.get('decision_id') for e in events
                  if e.get('event') in ('confirmed', 'confirmed_choice', 'confirmed_target')}
     expired = {e.get('decision_id') for e in events if e.get('event') == 'expired_without_submission'}
-    shadows = {e.get('for_decision'):e['action'] for e in events
+    shadows = {e.get('for_decision'):e for e in events
                if e.get('event')=='decision_assist_shadow' and isinstance(e.get('action'),dict)}
     sample = {'partial_log': bool(capped), 'whole_turn_pass_with_options': [], 'cases': {}}
     ranks, turns = {}, {}
@@ -55,7 +64,12 @@ def strategy_sample(events, capped=False):
         if event.get('policy')=='sol_timeout_backup_v1':
             labels.append(('decisions_backup',int(did in expired)))
         if did in shadows:
-            labels.append(('decisions_shadow',int(shadows[did]!=selected)))
+            labels.append(('decisions_shadow',int(shadows[did]['action']!=selected)))
+        role = lesson_role(event)
+        if role:
+            labels.append(('lesson_'+role,int(did in expired)))
+        if did in shadows and lesson_role(shadows[did]):
+            labels.append(('lesson_shadow',1))
         labels = [(name,priority) for name,priority in labels if name not in ranks or priority>ranks[name]]
         if not labels:
             continue
@@ -75,7 +89,11 @@ def strategy_sample(events, capped=False):
             if name=='life_tap' and ob.get('life_tap'):
                 sample['cases'][name]['life_tap'] = ob['life_tap']
             if name=='decisions_shadow':
-                sample['cases'][name]['unused_suggestion'] = shadows[did]
+                sample['cases'][name]['unused_suggestion'] = shadows[did]['action']
+            if name.startswith('lesson_'):
+                judged = shadows[did] if name=='lesson_shadow' else event
+                sample['cases'][name].update(model=judged.get('model'),model_action=judged['model_action'],
+                    reviewed_action=judged['action'],tactical_lesson=judged['tactical_lesson'])
     sample['observed_own_turns'] = len(turns)
     sample['whole_turn_pass_with_options'] = [t for t, (played, other) in turns.items() if not played and other][:20]
     return sample

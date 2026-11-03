@@ -17,9 +17,14 @@ import time
 from functools import partial
 from pathlib import Path
 
+# Native evaluations execute this directory's scripts directly; their import
+# path must also contain the runtime's audit writer, as the game driver does.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from coaching import lesson_role
 import attack_plan
 from decision_standby import DecisionStandby
 from card_metadata import CATALOG
+from spell_order import buff_before_tax, review_action
 DEFAULT_MODEL = "gpt-6.1-sol"
 MAX_OUTPUT = 1536
 MAX_INPUT_BYTES = 64000
@@ -243,7 +248,7 @@ Never claim a guaranteed win from an uncertain line.
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 
 
-def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tier=None, effort='low'):
+def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tier=None, effort='low', orders=None):
     if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise AdvisorError("Invalid model ID")
     if service_tier not in (None, 'default', 'priority') or effort not in EFFORTS:
@@ -253,6 +258,9 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
     # conversation storage. The input remains bounded and self-contained.
     body = {}
     observation = copy.deepcopy(view)
+    orders = buff_before_tax(view,menu) if orders is None else orders
+    if orders:
+        observation['buff_first_trades_by_tax_action'] = orders
     defaults = {}
     status_defaults = {key: False for key in ('taunt', 'frozen', 'exhausted', 'divine_shield',
         'windfury', 'stealth', 'lifesteal', 'poisonous', 'reborn', 'immune', 'dormant', 'silenced')}
@@ -313,6 +321,12 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         body['action_table'] = {'columns': ['action_id', *columns],
             'rows': [[aid, *[action.get(key) for key in columns]] for aid, action in menu.items()],
             'null_means': 'field not present on this action; choose action_id'}
+        payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
+        encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
+    if len(encoded) > MAX_INPUT_BYTES and ('buff_first_trades_by_tax_action' in observation
+            or 'conditional_freeze_draw' in (observation.get('life_tap') or {})):
+        observation.pop('buff_first_trades_by_tax_action',None)
+        (observation.get('life_tap') or {}).pop('conditional_freeze_draw',None)
         payload['input'] = json.dumps(body, ensure_ascii=True, separators=(',', ':'))
         encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
     if len(encoded) > MAX_INPUT_BYTES and ('life_tap' in observation or 'turn_pace' in observation):
@@ -412,6 +426,11 @@ class OpenAIAdvisor:
 
     def record(self, event):
         kind = event.get('event')
+        if event.get('tactical_lesson'):
+            role = lesson_role(event)
+            if role:
+                counts = self.summary.setdefault('lesson_corrections',{})
+                counts[role] = counts.get(role,0)+1
         if kind == 'proposed':
             pending = self.summary['unconfirmed_decisions']
             if len(pending) >= 64:
@@ -586,6 +605,7 @@ class OpenAIAdvisor:
                          "action": {"kind": "end_turn"}, "reason": "only legal supported action"})
             return {"kind": "end_turn"}
         pairs = attack_plan.options(view, menu)
+        orders = buff_before_tax(view,menu)
         offered = {**menu, **pairs} if pairs else menu
         instructions = self.instructions
         if pairs:
@@ -594,13 +614,13 @@ class OpenAIAdvisor:
                              'and a fresh board and menu matching the expected first combat. Single actions remain available.')
         try:
             payload, size = request_payload(self.model, view, offered, instructions,
-                                           service_tier=self.service_tier, effort=self.effort)
+                                           service_tier=self.service_tier, effort=self.effort,orders=orders)
         except ContextTooLarge:
             if not pairs:
                 raise
             offered = menu
             payload, size = request_payload(self.model, view, menu, self.instructions,
-                                           service_tier=self.service_tier, effort=self.effort)
+                                           service_tier=self.service_tier, effort=self.effort,orders=orders)
         for field in ('life_tap', 'turn_pace'):
             if field in view and ('"' + field + '":') not in payload['input']:
                 view = {k: v for k, v in view.items() if k != field}
@@ -616,7 +636,7 @@ class OpenAIAdvisor:
             # standby has no access to the driver or any game input.
             backup_view, backup_menu = copy.deepcopy((view,menu))
             standby_job = self.standby.start(self.decision_seq,lambda:prepare_backup(
-                payload,backup_view,backup_menu,self.decisions_transport))
+                payload,backup_view,backup_menu,self.decisions_transport,orders=orders))
         started = time.monotonic()
         try:
             response = self.transport(payload)
@@ -647,6 +667,12 @@ class OpenAIAdvisor:
             self.pending_attack = attack_plan.prepare(view, menu, action, self.decision_seq)
             plan_record['conditional_attack'] = self.pending_attack['second']
             action = self.pending_attack['first']
+        revised,lesson = review_action(menu,action,orders)
+        if lesson:
+            plan_record.update(model_action=action,model_reason=reason,tactical_lesson=lesson)
+            action = revised
+            reason = (f"先给随从加成，可以解嘲讽且保留 {lesson['mana_left_if_buff_first']} 费下加费随从。"
+                      f"反过来该法术要 {lesson['buff_after_tax']} 费。")
         self.consecutive_timeouts = 0
         if standby_job:
             standby_job['primary_action'] = dict(action)

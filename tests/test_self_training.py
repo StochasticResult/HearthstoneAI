@@ -159,7 +159,8 @@ class SelfTrainingTests(unittest.TestCase):
                 patch('maintenance.swap_used',return_value=0),patch('maintenance.readiness') as health, \
                 patch('self_training.train',side_effect=fake) as calls:
             health.return_value={'ready':False,'reasons':['thermal']}
-            run()
+            with patch('time.sleep'), patch('os.getppid',return_value=1):
+                run()
             self.assertEqual(inp.tell(),0)
             self.assertFalse(calls.called)
             atomic(self.learning/'coach-clock.json',{'last_attempt':0})
@@ -167,6 +168,16 @@ class SelfTrainingTests(unittest.TestCase):
             run(); run()
             self.assertEqual(calls.call_count,1)
             self.assertEqual(json.loads((self.learning/'coach-state.json').read_text())['last_run'],self.name)
+
+    def test_one_manual_request_survives_resource_wait_with_automatic_recovery(self):
+        from self_training import wait_for_resources
+        from unittest.mock import Mock
+        notify=Mock()
+        with patch('maintenance.swap_used',return_value=0), patch('time.sleep') as pause, patch('maintenance.readiness',
+                side_effect=[{'ready':False,'reasons':['disk reserve']},{'ready':True}]):
+            self.assertTrue(wait_for_resources(self.learning,'manual',notify))
+            pause.assert_called_once_with(60)
+            notify.assert_called_once()
 
     def test_optional_training_does_not_aggregate_policy_win_rates(self):
         from version_stats import record

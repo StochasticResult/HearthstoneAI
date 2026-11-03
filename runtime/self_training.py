@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from coach_evidence import recent
+from coach_evidence import recent, sources
 from coach_policy import PHASES, ZONES, atomic, card_present, card_rules, read_json, revision, settings
 
 DATA = Path.home()/'Library/Application Support/HearthstoneAI'
@@ -178,6 +178,29 @@ def train(learning, prefs, state, games, skipped, key, transport=request):
     return report
 
 
+def wait_for_resources(learning, trigger, status):
+    from maintenance import MIB, RESOURCE_CHECK_SECONDS, readiness, swap_used
+    ranked = read_json(learning/'autoplay-state.json',16384,{})
+    baseline = ranked.get('swap_baseline_mib')
+    baseline = baseline*MIB if type(baseline) in (int,float) else swap_used()
+    previous, reported = None, None
+    while True:
+        health = readiness(baseline,previous)
+        if health['ready']:
+            return True
+        reasons = tuple(health['reasons'])
+        if reasons != reported:
+            status('训练等待资源，恢复后自动继续 · '+', '.join(reasons))
+            reported = reasons
+        previous = health
+        time.sleep(RESOURCE_CHECK_SECONDS if health.get('memory_pressure_level')==2 else 60)
+        if os.getppid()==1:
+            return False
+        if trigger=='scheduled' and not settings(learning)['scheduled']:
+            status('定时自训练已关闭')
+            return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--trigger',choices=('manual','scheduled'),required=True)
@@ -203,15 +226,16 @@ def main():
             message(text)
         try:
             state = read_json(learning/'coach-state.json',384*1024,{})
-            games, skipped = recent(DATA,state.get('last_run',''),prefs['games'])
+            after = state.get('last_run','')
+            archived,runs = sources(DATA)
+            if not any(name>after for name in archived.keys() | runs.keys()):
+                status('没有新的完整标准天梯记录可训练');return
+            if not wait_for_resources(learning,args.trigger,status):
+                return
+            prefs = settings(learning)
+            games, skipped = recent(DATA,after,prefs['games'])
             if not games:
                 status('没有新的完整标准天梯记录可训练');return
-            from maintenance import MIB, readiness, swap_used
-            ranked = read_json(learning/'autoplay-state.json',16384,{})
-            baseline = ranked.get('swap_baseline_mib')
-            health = readiness(baseline*MIB if type(baseline) in (int,float) else swap_used())
-            if not health['ready']:
-                status('训练推迟 · '+', '.join(health['reasons']));return
             status(f"正在复盘 {len(games)} 局，共 {sum(g['actions'] for g in games)} 个决策")
             message('NEED_KEY')
             key = sys.stdin.readline(515).strip()

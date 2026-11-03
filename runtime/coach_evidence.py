@@ -125,10 +125,15 @@ def archive(dest, review, learning):
             old.unlink(missing_ok=True)
 
 
-def recent(data, after, count):
+def sources(data):
     folder = data/'learning/coach-replays'
     archived = {p.name[:-8]:p for p in folder.glob('run-*.json.gz') if RUN.fullmatch(p.name[:-8])}
     runs = {p.name:p for p in (data/'runs').glob('run-*') if RUN.fullmatch(p.name) and (p/'review.json').is_file()}
+    return archived,runs
+
+
+def recent(data, after, count):
+    archived,runs = sources(data)
     batch, skipped = [], []
     for name in sorted(archived.keys() | runs.keys(), reverse=True):
         if name <= after or len(batch) == count:

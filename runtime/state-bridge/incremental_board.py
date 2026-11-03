@@ -214,6 +214,9 @@ class IncrementalBoard:
                          r"(?: selectedSubOption=(-?\d+) selectedTarget=(\d+)\b)?", line)
         if sent:
             self.sent_options += 1
+            game['events_at_submission'] = len(game['events'])
+            if game['events']:
+                game['events'][-1].pop('first_corpse_attack', None)
             self.last_end_turn_options_id = None
             index = int(sent[1])
             self.last_targeted_option = self.targeted_option(index, int(sent[3])) if sent[2] == '-1' else None
@@ -334,6 +337,8 @@ class IncrementalBoard:
             self._remember_departing_objective(board.HIDE_ENTITY_RE.match(packet))
         elif packet.startswith('TAG_CHANGE') and ' tag=ZONE value=' in packet and not packet.endswith(' value=SECRET'):
             self._remember_departing_objective(board.TAG_CHANGE_RE.match(packet))
+        elif packet.startswith('TAG_CHANGE') and ' tag=CORPSES ' in packet:
+            self._first_combat_corpse(packet)
         if payload[:1] in (" ", "\t"):
             tag = board.TAG_LINE_RE.match(packet)
             if tag:
@@ -345,9 +350,37 @@ class IncrementalBoard:
         else:
             game["cur"] = None
             board._handle_packet(game, payload)
+        if packet.startswith('BLOCK_START BlockType=DEATHS ') and len(game['blocks']) == 1:
+            game['blocks'][0]['events_before_deaths'] = len(game['events'])
         self._remember_public_card(packet)
         if len(game["entities"]) > MAX_ENTITIES or len(game["events"]) > MAX_EVENTS or len(game["blocks"]) > MAX_BLOCK_DEPTH:
             self.invalidate("state size limit exceeded")
+
+    def _first_combat_corpse(self, packet):
+        """Bind a newly visible corpse to the single victim of this submitted attack."""
+        game = self.game
+        events, blocks = game['events'], game['blocks']
+        if not events:
+            return
+        death = events[-1]
+        death.pop('first_corpse_attack', None)
+        if (not self.last_targeted_option or len(events) < 2 or len(blocks) != 1
+                or blocks[0].get('events_before_deaths') != len(events)-1
+                or game.get('events_at_submission') != len(events)-2):
+            return
+        group, source, target = self.last_targeted_option
+        attack = events[-2]
+        if (group != self.options_id or attack['type'] != 'attack' or death['type'] != 'death'
+                or death.get('eid') != target or attack.get('turn') != game['turn'] or death.get('turn') != game['turn']
+                or board._ref_id(attack.get('atk_ref') or '') != source or board._ref_id(attack.get('tgt_ref') or '') != target):
+            return
+        tag = board.TAG_CHANGE_RE.fullmatch(packet)
+        if tag and tag[3] == '1':
+            player = game['entities'].get(board._resolve(game, tag[1]))
+            owner = game['entities'][target]['controller']
+            if (player and owner in (1, 2) and board._ctype(player) == 'PLAYER' and board._tag_int(player, 'PLAYER_ID') == owner
+                    and player['tags'].get('CORPSES') is None and attack.get('actor') == 3-owner):
+                death['first_corpse_attack'] = self.last_targeted_option
 
     def _remember_departing_objective(self, match):
         # HIDE_ENTITY can erase the card ID before moving a resolved spell to
@@ -676,7 +709,9 @@ class IncrementalBoard:
             if cid:
                 known_deck.append({'id':e['id'],'card_id':cid,'generated':shred or
                                    bool(board._tag_int(e,'CREATOR') or board._tag_int(e,'COPIED_FROM_ENTITY_ID'))})
+        first_corpse = game['events'][-1].get('first_corpse_attack') if game['events'] else None
         return {
+            **({'first_corpse_attack':first_corpse} if first_corpse and first_corpse == self.last_targeted_option else {}),
             "phase": "target" if choosing_target else "choose_one" if choosing else "main",
             "format": game["meta"].get("FormatType"), "game_type": game["meta"].get("GameType"),
             # EXHAUSTED alone does not prove attack readiness, and ritual timing is

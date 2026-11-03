@@ -125,12 +125,47 @@ class RankedTurnPlanTests(unittest.TestCase):
                                           [second['confirmed_action']],turn,turn)
             plan['confirmed_options_id']=first['options_id']
             self.assertEqual(attack_plan.mismatch_reason(plan,view,menu,second['options_id'],turn),expected)
+            if expected == 'unexpected_corpse_count':
+                source, target = first['confirmed_action']['source_id'], first['confirmed_action']['target_id']
+                receipt = (first['options_id'], source, target)
+                def reason(current, proof):
+                    return attack_plan.mismatch_reason(plan, current, menu, second['options_id'], turn, proof)
+                self.assertIsNone(reason(view, receipt))
+                for wrong in ((second['options_id'], source, target), (first['options_id'], source, source)):
+                    self.assertEqual(reason(view, wrong), 'unexpected_corpse_count')
+                self.assertEqual(reason(dict(view, enemy_corpses=2), receipt), 'unexpected_corpse_count')
+                self.assertEqual(reason(dict(view, mana=view['mana']+1), receipt), 'public_state_changed')
             if expected is None:
                 self.assertNotEqual(first['observation']['life_tap']['margin_tap'],view['life_tap']['margin_tap'])
                 self.assertEqual(attack_plan.checked_action(plan,view,menu,second['options_id'],turn),second['confirmed_action'])
                 damaged=copy.deepcopy(view)
                 damaged['my_hero']['health']-=1
                 self.assertEqual(attack_plan.mismatch_reason(plan,damaged,menu,second['options_id'],turn),'public_state_changed')
+
+    def test_first_corpse_receipt_requires_the_submitted_attack_and_its_own_death_block(self):
+        from incremental_board import IncrementalBoard
+        from test_turn_end_attack import setup_log, SEND, tags, OPTIONS
+        attack = tags(['BLOCK_START BlockType=ATTACK Entity=52 EffectCardId= EffectIndex=0 Target=208 SubOption=-1', 'BLOCK_END'])
+        deaths = tags(['BLOCK_START BlockType=DEATHS Entity=GameEntity EffectCardId= EffectIndex=0 Target=0 SubOption=-1'])
+        victim = tags(['TAG_CHANGE Entity=208 tag=ZONE value=GRAVEYARD'])
+        corpse = tags(['TAG_CHANGE Entity=3 tag=CORPSES value=1'])
+        close = tags(['BLOCK_END'])
+        resolved = SEND + attack + deaths + victim + corpse + close
+        next_group = (OPTIONS+'id=77\n'+OPTIONS+'option 0 type=END_TURN mainEntity= error=INVALID\n').encode()
+        for label, packets, expected in (
+            ('one ordinary death', resolved, (76,52,208)),
+            ('no matching submit', resolved.replace(SEND, b''), None),
+            ('different deaths block', resolved.replace(corpse, close + deaths + corpse), None),
+            ('different attacker', resolved.replace(b'BlockType=ATTACK Entity=52 ', b'BlockType=ATTACK Entity=20 '), None),
+            ('different corpse owner', resolved.replace(corpse, corpse.replace(b'Entity=3 ', b'Entity=2 ')), None),
+            ('two corpses', resolved.replace(corpse, corpse.replace(b'value=1', b'value=2')), None),
+            ('duplicate tag', resolved.replace(corpse, corpse+corpse), None),
+            ('later submit', resolved+SEND, None),
+        ):
+            with self.subTest(label=label):
+                parser = IncrementalBoard()
+                parser.feed(setup_log() + packets + next_group)
+                self.assertEqual(parser.snapshot(1, extended=True).get('first_corpse_attack'), expected)
 
     @patch('builtins.print')
     def test_coin_into_previously_unaffordable_minion_rechecks_every_resource_and_option(self,_):

@@ -982,8 +982,9 @@ class OpenAIAdvisor:
         if gaps:
             view['unavailable_interactions'] = gaps
         plan, self.pending_attack = self.pending_attack, None
+        first_corpse = state.get('first_corpse_attack')
         mismatch = ('unavailable_interaction' if gaps else
-                    attack_plan.mismatch_reason(plan,view,menu,state.get('options_id'),self.decision_seq))
+                    attack_plan.mismatch_reason(plan,view,menu,state.get('options_id'),self.decision_seq,first_corpse))
         if plan and not mismatch:
             _,safe = shred_battlecry_menu(view,menu,CATALOG)
             if plan['second'] not in safe.values():
@@ -995,7 +996,7 @@ class OpenAIAdvisor:
                 'action':followup,'reason':'上一步已确认，牌面和合法菜单与预期一致，执行已选的后续动作。',
                 'evidence':{'from_decision':plan['decision_id'],'origin':plan.get('origin',plan['decision_id']),
                             'first':plan['first'],'previous_options_id':plan['confirmed_options_id'],
-                            'options_id':state['options_id']}})
+                            'options_id':state['options_id'], **({'first_corpse_attack':first_corpse} if first_corpse else {})}})
             if sequence and plan['remaining']:
                 self.pending_attack = attack_plan.continuation(view,menu,chosen,plan['remaining'],
                                                               self.decision_seq,plan['origin'])

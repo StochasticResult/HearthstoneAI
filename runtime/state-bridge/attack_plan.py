@@ -286,7 +286,7 @@ def prepare(view, menu, plan, decision_id):
     return result
 
 
-def mismatch_reason(plan, view, menu, options_id, decision_id):
+def mismatch_reason(plan, view, menu, options_id, decision_id, first_corpse_attack=None):
     if not plan or plan['confirmed_options_id'] is None or plan['decision_id']!=decision_id:
         return 'missing_matching_receipt'
     if options_id is None or plan['confirmed_options_id']==options_id:
@@ -296,8 +296,13 @@ def mismatch_reason(plan, view, menu, options_id, decision_id):
     if plan['menu']!=menu_key(menu) or plan['second'] not in menu.values():
         return 'legal_menu_changed'
     corpses, before = view.get('enemy_corpses'), plan['corpses']
-    if corpses != before and not (plan.get('allow_corpse_increment',True) and type(before) is int and corpses == before+1):
-        return 'unexpected_corpse_count'
+    if corpses != before:
+        first = plan['first']
+        newly_observed = (before is None and corpses == 1 and first_corpse_attack ==
+                          (plan['confirmed_options_id'], first.get('source_id'), first.get('target_id')))
+        if (not plan.get('allow_corpse_increment', True) or type(corpses) is not int
+                or not (newly_observed or (type(before) is int and corpses == before+1))):
+            return 'unexpected_corpse_count'
     if fingerprint(view) not in (plan['expected'],plan.get('expected_with_own_corpse')):
         return 'public_state_changed'
     return None

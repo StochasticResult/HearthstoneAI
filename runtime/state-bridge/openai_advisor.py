@@ -516,7 +516,8 @@ class OpenAIAdvisor:
             code = data.get("http_status")
             if data.get("transport_error") == "timeout":
                 raise AdvisorTimeout("API network timed out; no action was sent")
-            raise AdvisorError("API request failed" + (" (HTTP %s)" % code if isinstance(code, int) else ""))
+            detail = " (reasoning parameter rejected)" if data.get("reasoning_parameter") is True else ""
+            raise AdvisorError("API request failed" + (" (HTTP %s)" % code if isinstance(code, int) else "") + detail)
         return data
 
     def note_turn_pace(self, view, menu):
@@ -766,7 +767,15 @@ def worker():
                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
         response = conn.getresponse()
         if response.status != 200:
-            print(json.dumps({"http_status": response.status}))
+            # Never emit a provider message or arbitrary echoed parameter.
+            result = {"http_status":response.status}
+            if path == '/v1/decisions' and response.status == 400:
+                try:
+                    err = json.loads(response.read(4096)).get('error') or {}
+                    result['reasoning_parameter'] = err.get('param') in ('reasoning','reasoning.effort')
+                except (ValueError, AttributeError):
+                    pass
+            print(json.dumps(result))
             return 2
         data = response.read(128 * 1024 + 1)
         if len(data) > 128 * 1024:

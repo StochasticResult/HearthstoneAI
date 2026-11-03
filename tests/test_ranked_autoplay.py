@@ -25,6 +25,23 @@ class RankedAutoplayTests(unittest.TestCase):
         self.assertIsNone(reviewed_streak_boundary(dict(prior,status='running'),ack))
         self.assertEqual(reviewed_streak_boundary({'reviewed_loss_run':'c'},{}),'c')
 
+    def test_reviewed_fault_and_three_losses_share_the_verified_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            (runs/'run-c').mkdir()
+            prior = dict(status='needs_review', stop_reason='ai_fault_during_match',
+                         autoplay_id='s', completed_games=6, runs=['run-c'])
+            ack = dict(autoplay_id='s', completed_games=6)
+            review = dict(completed('run-c','LOST',3), result_after_ai_fault=True)
+            path = runs/'run-c/review.json'
+            for changes, expected in (({},'run-c'),({'consecutive_losses':2},None),
+                                      ({'run':'run-other'},None),({'outcome':'WON'},None)):
+                path.write_text(json.dumps(dict(review,**changes)))
+                self.assertEqual(reviewed_streak_boundary(prior,ack,runs),expected)
+            path.write_text(json.dumps(review))
+            self.assertIsNone(reviewed_streak_boundary(prior,dict(ack,completed_games=5),runs))
+            self.assertIsNone(reviewed_streak_boundary(dict(prior,status='cancelled'),ack,runs))
+
     def test_acknowledged_run_is_discounted_once_but_new_three_loss_streak_still_pauses(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'history.json'

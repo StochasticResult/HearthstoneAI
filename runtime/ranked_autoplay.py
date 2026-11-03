@@ -7,6 +7,7 @@ import subprocess
 import time
 import math
 
+from pathlib import Path
 from match_review import save
 from resource_guard import swap_used, MIB
 from maintenance import cleanup, readiness, RESOURCE_CHECK_SECONDS, WAIT_LABELS
@@ -83,13 +84,25 @@ def read_small(path, limit=2048):
     return value
 
 
-def reviewed_streak_boundary(prior, ack):
+def reviewed_streak_boundary(prior, ack, runs_dir=None):
     runs = prior.get('runs') or []
-    if (prior.get('status') == 'needs_review' and prior.get('stop_reason') == 'three_consecutive_losses'
+    if (prior.get('status') == 'needs_review'
             and prior.get('autoplay_id') and ack.get('autoplay_id') == prior['autoplay_id']
             and type(ack.get('completed_games')) is int and 0 < ack['completed_games'] == prior.get('completed_games')
             and runs and isinstance(runs[-1], str)):
-        return runs[-1]
+        last = runs[-1]
+        if prior.get('stop_reason') == 'three_consecutive_losses':
+            return last
+        # An in-match fault has priority in the displayed stop reason even
+        # when the verified result also completed a three-loss review.
+        if (prior.get('stop_reason') == 'ai_fault_during_match' and runs_dir and last.startswith('run-')
+                and Path(last).name == last and not (runs_dir/last).is_symlink()):
+            review = read_small(runs_dir/last/'review.json', 16384) or {}
+            losses = review.get('consecutive_losses')
+            if (review.get('run') == last and review.get('outcome') == 'LOST'
+                    and review.get('game_type') == 'GT_RANKED' and review.get('result_after_ai_fault') is True
+                    and type(losses) is int and losses >= 3):
+                return last
     return prior.get('reviewed_loss_run')
 
 
@@ -130,7 +143,7 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
         observed_swap=swap_used()
         swap_baseline=continued_swap_baseline(path,observed_swap)
         reviewed_loss_run = reviewed_streak_boundary(read_small(path, 16384) or {},
-                                                     read_small(learning / 'review-ack.json') or {})
+                                                     read_small(learning / 'review-ack.json') or {}, data/'runs')
     except Exception:
         lock.close()
         config['api_key']=''

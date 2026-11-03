@@ -6,6 +6,100 @@ from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES
 
 MODEL = 'gpt-6-luna'
 
+def _hitpoints(unit, damage, poisonous=False):
+    if unit.get('dormant') or unit.get('immune') or damage <= 0 or unit.get('divine_shield'):
+        return unit['health']
+    return 0 if poisonous else max(0,unit['health']-damage)
+
+
+def _previews(view, menu):
+    """One ordinary combat or printed damage spell, before triggered effects."""
+    friendly = {x['id']:x for x in view.get('my_board',[])}
+    enemies = {x['id']:x for x in view.get('enemy_board',[])}
+    hand = {x['id']:x for x in view.get('my_hand',[])}
+    costs = [x.get('cost') for x in hand.values()]
+    hero = view.get('enemy_hero') or {}
+    result = {}
+    for aid,a in menu.items():
+        source,target = a.get('source_id'),a.get('target_id')
+        if a.get('kind')=='attack' and source in friendly:
+            unit,other = friendly[source],enemies.get(target)
+            if type(unit.get('attack')) is not int:
+                continue
+            if target==hero.get('id') and all(type(hero.get(k)) is int for k in ('health','armor')):
+                result[aid] = {'face_damage_before_triggers': 0 if hero.get('immune') or hero.get('divine_shield') else unit['attack'],
+                               'enemy_health_with_armor': hero['health']+hero['armor']}
+            elif other and all(type(v) is int for v in (unit.get('health'),other.get('health'),other.get('attack'))):
+                result[aid] = {'defender_hp_after_hit':_hitpoints(other,unit['attack'],unit.get('poisonous')),
+                               'attacker_hp_after_counter':_hitpoints(unit,other['attack'],other.get('poisonous'))}
+        if (a.get('kind')!='play' or hand.get(source,{}).get('card_id')!='BE_086'
+                or any(type(c) is not int for c in costs)
+                or any(type(x.get('health')) is not int for x in enemies.values())):
+            continue
+        waves = 2 if hand[source]['cost']==max(costs) else 1
+        power = sum(x.get('spell_damage') or 0 for x in friendly.values() if not x.get('dormant') and not x.get('silenced'))
+        per = 2+power
+        remaining, triggers = {}, []
+        for eid,x in enemies.items():
+            hits = 0 if x.get('immune') or x.get('dormant') else max(0,waves-int(bool(x.get('divine_shield'))))
+            hp = max(0,x['health']-hits*per)
+            remaining[eid] = hp
+            if hp==0 and (x.get('deathrattle') or x.get('reborn')):
+                triggers.append(eid)
+        result[aid] = {'waves':waves,'damage_per_wave_before_replacements':per,
+                       'original_enemy_minion_hp_after_spell_before_triggers':remaining,
+                       'destroyed_with_deathrattle_or_reborn':triggers,
+                       'enemy_hero_damage_before_other_effects':0 if hero.get('immune') else per*max(0,waves-int(bool(hero.get('divine_shield'))))}
+    return result
+
+
+def recovery_inputs(sol, view, menu):
+    """Give Sol and the independent Luna grader the same named moves and local arithmetic."""
+    typed = tactical_payload(view,menu)
+    desc = {x['value']:x['description'] for x in typed['questions'][0]['choices']}
+    ev = json.loads(typed['input'])
+    ev['candidate_moves'] = {i:{'action':a,'description':desc[i]} for i,a in menu.items()}
+    ev['one_step_arithmetic'] = _previews(view,menu)
+    ev['scope'] = ('Arithmetic applies only to the listed hit(s) before further triggers, protection effects, '
+                   'Deathrattle, Reborn, hidden plays or future draws. Recheck the live menu after each move.')
+    wire = json.dumps(ev, ensure_ascii=True, separators=(',', ':'))
+    compact = dict(sol,input=wire,instructions=typed['questions'][0]['instructions']+
+                   ' Return only a choose_action function call with a short Chinese reason and the chosen action_id.')
+    levels = [{'label':'losing','description':'Misses a visible kill or fails to address a bigger immediate threat.'},
+              {'label':'weak','description':'Legal but leaves avoidable danger, wastes resources or misses tempo.'},
+              {'label':'reasonable','description':'A defensible line with useful pressure or survival chances.'},
+              {'label':'best','description':'The best first step of a feasible winning or defensive sequence.'}]
+    scored = {'model':MODEL,'input':wire,
+              'questions':[{'name':aid,'type':'score','instructions':f'Rate candidate {aid}: {desc[aid]}. '
+                            'Compare its next moves against all candidates. Prioritize certain lethal, then surviving '
+                            'visible threats. Respect timing, costs, Taunt, Lifesteal and possible triggers.',
+                            'levels':levels} for aid in menu]}
+    if len(json.dumps(compact,separators=(',', ':')).encode()) > MAX_INPUT_BYTES:
+        raise ContextTooLarge('Sol recovery input exceeds the existing limit')
+    return compact, scored
+
+
+def parse_scores(reply, menu):
+    model = reply.get('model','')
+    if not isinstance(model,str) or not (model==MODEL or model.startswith(MODEL+'-')):
+        raise AdvisorError('Unexpected Decisions scoring model')
+    ans = reply.get('answers')
+    if not isinstance(ans,list) or len(ans)!=len(menu):
+        raise AdvisorError('Incomplete score set')
+    scores = {}
+    for a in ans:
+        if not isinstance(a,dict) or a.get('type')!='score':
+            raise AdvisorError('Missing score')
+        name, score = a.get('name'),a.get('score')
+        if type(name) is not str or name not in menu or name in scores or type(score) not in (int,float) or not 0<=score<=3:
+            raise AdvisorError('Invalid or duplicate candidate score')
+        scores[name] = score
+    tokens = (reply.get('usage') or {}).get('total_tokens')
+    if type(tokens) is not int or tokens<0:
+        raise AdvisorError('Missing Decisions usage')
+    best = max(scores,key=scores.get)
+    return dict(menu[best]), scores, tokens
+
 
 def tactical_payload(view, menu):
     """Represent a position as public actors, threats and executable options."""

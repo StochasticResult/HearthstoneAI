@@ -21,6 +21,7 @@ SUITES = {
     'sol-fast-efforts-v1': ('sol-fast-efforts','sol_profile_eval.py',16,320),
     'luna-decisions-v1': ('decisions-sol-evaluation','luna_decisions_eval.py',32,620),
     'luna-decisions-holdout-v1': ('decisions-sol-holdout','luna_decisions_eval.py',36,690),
+    'luna-decisions-recovery-v1': ('decisions-sol-recovery','luna_decisions_eval.py',25,480),
 }
 
 
@@ -67,8 +68,8 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child, suite="stra
             "--log", str(dest / "evaluation.log"), "--timeout", str(seconds), "--max-rss-mib", "200", "--max-cpu", "130",
             "--parent-pid", str(os.getpid()), "--", sys.executable,
             str(root / "state-bridge" / script), str(dest / "results.jsonl")]
-            + (['--fast-efforts'] if suite=='sol-fast-efforts-v1' else
-               ['--holdout'] if suite=='luna-decisions-holdout-v1' else []),
+            + {'sol-fast-efforts-v1':['--fast-efforts'], 'luna-decisions-holdout-v1':['--holdout'],
+               'luna-decisions-recovery-v1':['--recovery']}.get(suite, []),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         guard.stdin.write((json.dumps(config) + "\n").encode()); guard.stdin.close()
         config["api_key"] = ""

@@ -12,7 +12,7 @@ import time
 from hard_cases import hard_cases, prepare as prepare_hard
 from incremental_board import IncrementalBoard
 from life_tap import life_tap_facts
-from luna_decisions import decision_payload, parse_choice, tactical_payload
+from luna_decisions import decision_payload, parse_choice, parse_scores, recovery_inputs, tactical_payload
 from model_comparison import comparison_cases, prepare
 from openai_advisor import (AdvisorError, CATALOG, OpenAIAdvisor, action_menu,
                             enrich, parse_response, public_view, request_payload)
@@ -75,7 +75,7 @@ def real_cases(runs):
     return results
 
 
-def cases_for(output, *, holdout=False):
+def cases_for(output, *, holdout=False, recovery=False):
     # Keep the public snapshots independently of the five-run rotating logs.
     archive = output.parent.parent/'decisions-sol-evaluation'/'public-replays-v1.json'
     if archive.exists():
@@ -86,28 +86,47 @@ def cases_for(output, *, holdout=False):
             json.dump(live, f, ensure_ascii=False)
         os.replace(f.name, archive)
     cases = [(name, 'replay', view, menu, expected) for name,view,menu,expected in live
-             if not holdout or name=='real_double_timeout']
-    for names, factory, prepare_case, group in ((HOLDOUT_BASIC if holdout else BASIC,comparison_cases,prepare,'basic'),
-                                                (HOLDOUT_HARD if holdout else HARD,hard_cases,prepare_hard,'complex')):
+             if (name in ('real_double_timeout','mirror_clear_after_attacks') if recovery
+                 else not holdout or name=='real_double_timeout')]
+    basic = HOLDOUT_BASIC if holdout else BASIC
+    hard = HOLDOUT_HARD if holdout else HARD
+    if recovery:
+        basic = ('spells_before_own_tax','handbuff_dk_deny_lifesteal_race','priest_preserve_ruin_threshold',
+                 'zakajz_cost_change_lethal_order','double_damage_through_divine_shield')
+        hard = ('buff_to_preserve_the_spell_tax_aura',)
+    for names, factory, prepare_case, group in ((basic,comparison_cases,prepare,'basic'),
+                                               (hard,hard_cases,prepare_hard,'complex')):
         catalog = {c['name']:c for c in factory()}
         for name in names:
             c = catalog[name]
             view, menu = prepare_case(c)
             cases.append((name, group, view, menu, c['expected']))
-    if len(cases)!=(12 if holdout else 16) or any(not expected or not all(a in menu.values() for a in expected)
+    if len(cases)!=(8 if recovery else 12 if holdout else 16) or any(not expected or not all(a in menu.values() for a in expected)
                              for _,_,_,menu,expected in cases):
         raise ValueError('Invalid benchmark answer key')
     return cases
 
 
-def evaluate(config, output, *, holdout=False):
+def evaluate(config, output, *, holdout=False, recovery=False):
     output = Path(output)
-    cases = cases_for(output, holdout=holdout)
+    cases = cases_for(output, holdout=holdout,recovery=recovery)
     advisor = OpenAIAdvisor({**config, 'model': SOL})
     config['api_key'] = ''
     rows, blocked = [], set()
     try:
         with output.open('w') as f:
+            if recovery:
+                # One harmless schema probe. A 200 would establish acceptance,
+                # not that the model actually used a higher reasoning budget.
+                probe = {'model':'gpt-6-luna','input':'Two is greater than one.',
+                         'questions':[{'type':'predicate','name':'test','instructions':'Is this true?'}],
+                         'reasoning':{'effort':'high'}}
+                try:
+                    reply = advisor._transport(probe,endpoint='decisions')
+                    info = {'accepted':True,'echo':reply.get('reasoning')}
+                except AdvisorError as exc:
+                    info = {'accepted':False,'error':str(exc)[:160]}
+                f.write(json.dumps({'effort_probe':info})+'\n'); f.flush()
             for index,(name,group,view,menu,expected) in enumerate(cases):
                 # Identical neutral IDs and evidence for both APIs. No scores,
                 # past answer, case title or future events are sent.
@@ -120,22 +139,31 @@ def evaluate(config, output, *, holdout=False):
                 assert sol['input'] == original['input']
                 digest = hashlib.sha256(sol['input'].encode()).hexdigest()
                 arms = ('luna','raw','sol') if holdout else ('luna','sol')
+                wires = {'luna':luna,'raw':original,'sol':sol}
+                if recovery:
+                    compact,scored = recovery_inputs(sol,view,menu)
+                    wires = {'score':scored,'compact_sol':compact,'sol':sol}
+                    arms = tuple(wires)
                 order = index % len(arms)
                 for arm in arms[order:]+arms[:order]:
                     row = {'case':name,'group':group,'arm':arm,'evidence_sha256':digest,'expected':expected}
-                    wire = original if arm=='raw' else luna if arm=='luna' else sol
+                    wire = wires[arm]
                     row['wire_bytes'] = len(json.dumps(wire,separators=(',', ':')).encode())
                     if arm in blocked:
                         row['error'] = 'endpoint unavailable earlier in run'
                     else:
                         started = time.monotonic()
                         try:
-                            if arm != 'sol':
+                            if arm=='score':
+                                reply = advisor._transport(wire,endpoint='decisions')
+                                action, scores, tokens = parse_scores(reply,menu)
+                                row['candidate_scores'] = scores
+                            elif arm in ('luna','raw'):
                                 reply = advisor._transport(wire,endpoint='decisions')
                                 action, confidence, tokens = parse_choice(reply, menu)
                                 row['confidence'] = confidence
                             else:
-                                reply = advisor._transport(sol)
+                                reply = advisor._transport(wire)
                                 model = reply.get('model','')
                                 if (not (model==SOL or model.startswith(SOL+'-')) or
                                         reply.get('service_tier') not in ('fast','priority') or
@@ -164,4 +192,5 @@ def evaluate(config, output, *, holdout=False):
 
 
 if __name__ == '__main__':
-    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1],holdout=sys.argv[2:]==['--holdout'])
+    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1],holdout=sys.argv[2:]==['--holdout'],
+             recovery=sys.argv[2:]==['--recovery'])

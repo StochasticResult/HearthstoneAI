@@ -4,6 +4,7 @@ import datetime
 import fcntl
 import html
 import json
+import math
 import plistlib
 import re
 import sqlite3
@@ -155,19 +156,27 @@ def class_plan(cls, rows, catalog):
     groups = {r[1] for r in pool}
     if not groups:return None
     features = {'early_board':set(),'cheap_removal':set(),'area_damage':set()}
+    openers = collections.defaultdict(list)
     for _,label,cards,_,_,_ in pool:
+        early = 0
         for cid in cards:
             card = catalog.get('CORE_'+cid) or catalog.get(cid,{})
             text = ' '.join(card.get('text','').lower().split())
             cost = card.get('cost')
             if type(cost) is not int:continue
-            if card.get('type')=='MINION' and cost<=2:features['early_board'].add(label)
+            if card.get('type')=='MINION' and cost<=2:
+                features['early_board'].add(label)
+                early += cards[cid]
             if card.get('type')=='SPELL' and cost<=2 and re.search(r'\b(deal|destroy|return)\b',text):
                 features['cheap_removal'].add(label)
             if card.get('type')=='SPELL' and re.search(r'damage to all|destroy all minions',text):
                 features['area_damage'].add(label)
+        if sum(cards.values()) == 30:
+            openers[label].append(1 - math.comb(30-early,4)/math.comb(30,4))
     common = {k:len(v) for k,v in features.items() if len(v)>=2 and len(v)*2>=len(groups)}
     return {'class':cls,'published_archetypes':len(groups),'archetypes_showing_style':common,
+            'first_four_with_two_or_cheaper_minion_pct':round(100*sum(sum(v)/len(v) for v in openers.values())/len(openers)) if openers else None,
+            'opening_model':'Four uniform draws without mulligan; lists equally weighted within each equally weighted archetype.',
             'plan':'Start Zoo on curve. Contest early pressure. Where cheap removal is common, spread pressure across bodies; where area damage is common, keep refill if another body adds little. Update after reveals; do not sacrifice lethal to hedge.'}
 
 

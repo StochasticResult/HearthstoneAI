@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from opponent_decks import load_snapshot, parse_page, predict, refresh
+from opponent_decks import class_plan, load_snapshot, parse_page, predict, refresh
 from card_metadata import CATALOG
 from coaching import strategy_sample
 from coaching import thinking_review
@@ -102,3 +102,12 @@ class OpponentDeckTests(unittest.TestCase):
         summary=thinking_review([event,dict(event,decision_id=2),dict(event,decision_id=3,server_options_id=4)])
         self.assertEqual(summary['repeated_identical_windows'],[[1,2]])
         self.assertEqual(summary['single_option_calls'],[1,2,3])
+
+    def test_class_opening_counts_each_archetype_once(self):
+        cheap=('ROGUE','Cheap',{f'A{i}':2 for i in range(15)},100,'s','today')
+        slow=('ROGUE','Slow',{f'B{i}':2 for i in range(15)},40,'s','today')
+        catalog={c:{'type':'MINION','cost':2} for c in cheap[2]}
+        catalog.update({c:{'type':'MINION','cost':7} for c in slow[2]})
+        initial=class_plan('ROGUE',[cheap,cheap,slow],catalog)
+        self.assertEqual((initial['published_archetypes'],initial['first_four_with_two_or_cheaper_minion_pct']),(2,50))
+        self.assertNotIn('unseen_watch',initial)

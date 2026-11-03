@@ -8,6 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'runtime'),str(ROOT/'runtime/state-bridge')]
 from coach_policy import read_json, revision
 from coaching import strategy_sample
+from coach_evidence import recent
 from deck_observation import public_selected_deck
 from match_review import rows
 from matchup_drills import review_drills
@@ -51,6 +52,18 @@ def main():
                 db.execute("""INSERT OR IGNORE INTO matchups SELECT run,?,?,?,?,? FROM matches WHERE run=? AND mode='ranked'""",
                     (deck,s.get('opponent_class','UNKNOWN'),s.get('inferred_archetype') or 'unknown',
                      json.dumps(s.get('archetype_evidence',[])),s.get('opponent_build','unknown'),folder.name))
+            # Old complete archives retained the initial class but not necessarily the exact selected deck or client build.
+            games,_ = recent(args.data,'',24)
+            for game in games:
+                cls='UNKNOWN'; build='unknown'
+                for e in game.get('events',[]):
+                    change=e.get('change') or {}
+                    if change.get('client_build'):build=change['client_build']
+                    observed=(change.get('opponent_estimate') or {}).get('enemy_class')
+                    if cls=='UNKNOWN' and observed and observed!='UNKNOWN':cls=observed
+                if cls!='UNKNOWN':
+                    db.execute("""INSERT OR IGNORE INTO matchups SELECT run,'unknown',?,'unknown','[]',? FROM matches
+                                  WHERE run=? AND version=? AND mode='ranked'""",(cls,build,game['run'],game['version']))
         current=read_json(learning/'version-stats.json',512*1024,{}).get('current')
         if current:export_report(db,learning,current)
         print('Retained matchup records:',db.execute('SELECT count(*) FROM matchups').fetchone()[0])

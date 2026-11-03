@@ -94,6 +94,7 @@ def exercise(event, lists, catalog):
     return {'decision_id':event['decision_id'],'turn':view.get('game_turn'),
             'opponent_class':view.get('strategy',{}).get('matchup',{}).get('enemy_class'),
             'basis':'matched_lists' if view.get('opponent_list_hypothesis') else 'hypothetical_class_examples',
+            'scope':'One legal action and the immediate damage of one possible reply. Unknown triggers stay unscored; no hidden hand or game win rate is inferred.',
             'conditional_replies':{c:(catalog.get('CORE_'+c) or catalog[c])['name'] for c in counters},
             'better_on_all_scored_dimensions':better,'alternatives':table}
 

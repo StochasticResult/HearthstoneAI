@@ -53,6 +53,18 @@ def settings(learning):
     return result
 
 
+def app_reviews_enabled(learning):
+    # Separate from the form's preferences: saving play settings cannot opt into paid reviews.
+    path = learning / 'review-owner.json'
+    try:
+        if path.is_symlink():
+            return False
+        owner = read_json(path, 4096, {'owner': 'app'})
+    except (OSError,ValueError):
+        return False
+    return isinstance(owner, dict) and owner.get('owner') == 'app'
+
+
 def card_present(view, zone, card):
     group = view.get(zone) or []
     rows = group if isinstance(group, list) else [group]

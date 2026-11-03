@@ -85,7 +85,7 @@ class LateTurnTests(unittest.TestCase):
 
     @patch('builtins.print')
     def test_lower_effort_tracks_the_turn_clock_not_a_losing_health_total(self,_):
-        row=self.rows[-1];cases=[(5,75,'medium'),(49,75,'medium'),(50,75,'low'),(60,None,'medium'),(25,50,'low')]
+        row=self.rows[-1];cases=[(5,75,'medium'),(49,75,'medium'),(50,75,'low'),(60,None,'medium'),(25,50,'low'),(2,15,'low')]
         for elapsed,clock,desired in cases:
             with self.subTest(elapsed=elapsed,clock=clock):
                 def choose(payload):
@@ -96,6 +96,30 @@ class LateTurnTests(unittest.TestCase):
                 ai=self.advisor(choose);s=replay_state(row);s['turn_timeout_seconds']=clock
                 ai.pace_turn=s['game_turn'];ai.pace_started=time.monotonic()-elapsed
                 self.assertEqual(ai.ask(s),row['actions']['a0'])
+
+    def test_remaining_moves_budget_uses_real_swings_instead_of_attack_targets(self):
+        ai = self.advisor(lambda _: self.fail('replay must not use the network'))
+        row = self.rows[0]
+        view = ai.view(replay_state(row))
+        view['turn_timeout_seconds'] = 75
+        ai.pace_turn = view['game_turn']
+        ai.pace_started = time.monotonic() - 27
+        # The original 12th-turn calls took 9.346s and 11.405s.
+        ai.recent_medium_ms = [9346, 11405]
+        budget = ai.time_pressure(view, row['actions'])
+        self.assertEqual((budget['reason'], budget['legal_swings']), ('remaining_moves', 6))
+        self.assertGreater(budget['estimated_work_seconds'], budget['remaining_seconds_upper'])
+        self.assertEqual(ai.time_pressure(dict(view, game_type='GT_VS_AI'), row['actions']), {})
+        self.assertEqual(ai.time_pressure(dict(view, turn_timeout_seconds=None), row['actions']), {})
+        last = self.rows[-1]
+        one_source = {k:v for k,v in last['actions'].items() if v.get('kind') != 'attack' or v['source_id'] == 26}
+        self.assertGreater(sum(a.get('kind') == 'attack' for a in one_source.values()), 1)
+        self.assertEqual(ai.time_pressure(ai.view(replay_state(last)), one_source), {})
+        ai.pace_started = time.monotonic() - 3
+        self.assertEqual(ai.time_pressure(view, row['actions']), {})
+        ai.pace_started = time.monotonic() - 27
+        ai.recent_medium_ms = [3200, 3400]
+        self.assertEqual(ai.time_pressure(view, row['actions']), {})
 
     def test_primary_or_same_window_eligible_standby_and_no_spurious_timeout(self):
         cmd=[sys.executable,'-B','-c','import time;time.sleep(.05);print("sol")']

@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from coach_policy import atomic, read_json
+from coach_policy import app_reviews_enabled, atomic, read_json
 
 LIMIT = 16*1024*1024
 
@@ -99,6 +99,8 @@ def unpack(reply, expected):
 
 
 def fetch(learning, job, index, key, payload, *, send=wire, pause=time.sleep):
+    if not app_reviews_enabled(learning):
+        raise TrainingError('当前由 Codex 复盘，应用的付费复盘已暂停')
     path=learning/'coach-delivery.json'
     body=json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode()
     digest=hashlib.sha256(body).hexdigest()

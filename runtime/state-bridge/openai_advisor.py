@@ -505,6 +505,7 @@ class OpenAIAdvisor:
         self.starting_deck = None
         self.pace_turn = None
         self.pace_started = 0.0
+        self.recent_medium_ms = []
         try:
             with Path("/Applications/Hearthstone/Hearthstone.app/Contents/Info.plist").open("rb") as handle:
                 self.client_build = plistlib.loads(handle.read(65536)).get("CFBundleVersion")
@@ -743,6 +744,35 @@ class OpenAIAdvisor:
                                    'buffs. Order intended trades by the damage and attack triggers you can prevent even '
                                    'if the turn ends early. Account for effects and any buff essential to survival.'}
 
+    def time_pressure(self, view, menu):
+        clock = view.get('turn_timeout_seconds')
+        if (not self.compact_output or self.model != 'gpt-6.1-sol' or self.effort != 'medium'
+                or view.get('game_type') != 'GT_RANKED' or type(clock) is not int or not 1 <= clock <= 600
+                or self.pace_turn != view.get('game_turn') or not self.pace_started):
+            return {}
+        elapsed = int(time.monotonic() - self.pace_started)
+        remaining = max(0, clock - elapsed)
+        if (elapsed >= 15 or clock <= 20) and remaining <= 25:
+            return {'reason': 'clock', 'remaining_seconds_upper': remaining}
+        if elapsed < 12 or view.get('phase') != 'main':
+            return {}
+        attackers = {a['source_id'] for a in menu.values() if a.get('kind') == 'attack'}
+        swings = len(attackers)
+        for card in [*view.get('my_board', []), view.get('my_hero') or {}]:
+            used = card.get('attacks_this_turn')
+            if card.get('id') in attackers and type(used) is int and used >= 0:
+                limit = 4 if card.get('mega_windfury') else 2 if card.get('windfury') else 1
+                swings += max(0, limit - used - 1)
+        # Several affordable cards can all spend the same mana. Budget only one such action.
+        utility = any(a.get('kind') in ('play', 'hero_power', 'activate_location') for a in menu.values())
+        steps = min(6, swings + int(utility))
+        typical = statistics.median(self.recent_medium_ms) / 1000 if self.recent_medium_ms else 5
+        forecast = steps * (3 + min(12, max(4, typical)))
+        if steps >= 4 and remaining <= forecast:
+            return {'reason': 'remaining_moves', 'remaining_seconds_upper': remaining,
+                    'legal_swings': swings, 'estimated_work_seconds': round(forecast, 1)}
+        return {}
+
     def select(self, view, menu):
         self.decision_seq += 1
         observed_menu = menu
@@ -754,13 +784,11 @@ class OpenAIAdvisor:
         if not menu:
             raise AdvisorError('No supported action survives the observed self-damage check')
         self.note_turn_pace(view, menu)
-        clock = view.get('turn_timeout_seconds')
-        elapsed = int(time.monotonic()-self.pace_started) if self.pace_turn==view.get('game_turn') and self.pace_started else 0
-        late = (self.compact_output and self.model=='gpt-6.1-sol' and self.effort=='medium'
-                and view.get('game_type')=='GT_RANKED' and type(clock) is int and 1<=clock<=600
-                and elapsed>=15 and clock-elapsed<=25)
-        effort = 'low' if late else self.effort
-        cutoff = max(2,min(8,clock-elapsed-5)) if late and clock-elapsed<=16 else None
+        budget = self.time_pressure(view, menu)
+        effort = 'low' if budget else self.effort
+        cutoff = None
+        if budget and budget['remaining_seconds_upper'] <= 16:
+            cutoff = max(2, min(8, budget['remaining_seconds_upper'] - 5))
         if (self.compact_output and len(observed_menu)==len(menu)==1 and not view.get('unavailable_interactions')
                 and next(iter(menu.values())).get('kind')!='end_turn'):
             action = dict(next(iter(menu.values())))
@@ -890,11 +918,14 @@ class OpenAIAdvisor:
         if standby_job:
             standby_job['primary_action'] = dict(action)
         self.tokens += tokens
+        if self.model == 'gpt-6.1-sol' and effort == 'medium' and view.get('phase') == 'main':
+            self.recent_medium_ms = (self.recent_medium_ms + [elapsed_ms])[-5:]
         self.record({"event": "proposed", "observation": view, "actions": observed_menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
                      "usage_parts":usage_parts(response),"output_style":'tag' if used_tags else 'prose',
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
-                     "reasoning_effort": effort,"late_turn_effort":late, **plan_record})
+                     "reasoning_effort": effort, "late_turn_effort": bool(budget),
+                     **({'time_budget': budget} if budget else {}), **plan_record})
         print(json.dumps({"api_calls": self.calls, "api_tokens": self.tokens, "requested_model": self.model,
                           "api_elapsed_ms": elapsed_ms, "request_bytes": size,
                           "response_model": actual_model, "served_tier": response.get('service_tier'),

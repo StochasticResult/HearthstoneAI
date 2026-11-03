@@ -11,7 +11,7 @@ from pathlib import Path
 
 from coach_evidence import recent, sources
 from coach_delivery import TrainingError, begin, fetch, finish, ledger, restore
-from coach_policy import PHASES, ZONES, atomic, card_present, card_rules, read_json, revision, settings
+from coach_policy import PHASES, ZONES, app_reviews_enabled, atomic, card_present, card_rules, read_json, revision, settings
 
 DATA = Path.home()/'Library/Application Support/HearthstoneAI'
 CONFIRMED = {'confirmed', 'confirmed_choice', 'confirmed_target'}
@@ -165,6 +165,9 @@ def wait_for_resources(learning, trigger, status):
     baseline = baseline*MIB if type(baseline) in (int,float) else swap_used()
     previous, reported = None, None
     while True:
+        if not app_reviews_enabled(learning):
+            status('当前由 Codex 复盘，应用的付费复盘已暂停')
+            return False
         health = readiness(baseline,previous)
         if health['ready']:
             return True
@@ -196,8 +199,13 @@ def main():
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
             message('已有训练正在进行');return
-        prefs = settings(learning)
         now = time.time()
+        if not app_reviews_enabled(learning):
+            msg='当前由 Codex 复盘，应用的付费复盘已暂停'
+            atomic(learning/'coach-clock.json',{'last_attempt':now,'status':msg})
+            message(msg)
+            return
+        prefs = settings(learning)
         clock = read_json(learning/'coach-clock.json',4096,{})
         if args.trigger=='scheduled' and (not prefs['scheduled'] or now < clock.get('last_attempt',0)+prefs['interval_minutes']*60):
             return

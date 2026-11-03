@@ -145,6 +145,32 @@ class SelfTrainingTests(unittest.TestCase):
             api.assert_not_called()
             self.assertEqual(stream.tell(),0)
 
+    def test_codex_owns_reviews_even_if_manual_or_timer_is_triggered(self):
+        import io
+        from self_training import main
+        from coach_delivery import begin,fetch
+        from unittest.mock import Mock
+        atomic(self.learning/'review-owner.json',{'owner':'codex'})
+        atomic(self.learning/'coach-settings.json',dict(DEFAULTS,scheduled=True))
+        with patch('self_training.DATA',self.data), patch('os.nice'), patch('builtins.print') as messages, \
+                patch('self_training.wait_for_resources') as preflight, patch('self_training.train') as train_api, \
+                patch('sys.stdin',io.StringIO('never-read')) as stream:
+            for trigger in ('scheduled','manual'):
+                with patch('sys.argv',['coach','--trigger',trigger]):
+                    self.assertIsNone(main())
+            self.assertFalse(any('NEED_KEY' in str(call) for call in messages.call_args_list))
+            self.assertEqual(stream.tell(),0)
+            preflight.assert_not_called()
+            train_api.assert_not_called()
+        send=Mock(); job=begin(self.learning,DEFAULTS,[self.game],[])
+        with self.assertRaisesRegex(TrainingError,'已暂停'):
+            fetch(self.learning,job,0,'offline',response_payload(DEFAULTS,[self.game],[]),send=send)
+        send.assert_not_called()
+        from coach_policy import app_reviews_enabled
+        for invalid in (None, {}, {'owner':'unknown'}):
+            atomic(self.learning/'review-owner.json', invalid)
+            self.assertFalse(app_reviews_enabled(self.learning))
+
     def test_due_schedule_runs_once_and_resource_wait_never_reads_a_key(self):
         from self_training import main
         import io

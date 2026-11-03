@@ -217,6 +217,7 @@ class IncrementalBoard:
             game['events_at_submission'] = len(game['events'])
             if game['events']:
                 game['events'][-1].pop('first_corpse_attack', None)
+                game['events'][-1].pop('mutual_corpse_attack', None)
             self.last_end_turn_options_id = None
             index = int(sent[1])
             self.last_targeted_option = self.targeted_option(index, int(sent[3])) if sent[2] == '-1' else None
@@ -357,30 +358,49 @@ class IncrementalBoard:
             self.invalidate("state size limit exceeded")
 
     def _first_combat_corpse(self, packet):
-        """Bind a newly visible corpse to the single victim of this submitted attack."""
+        """Bind corpse tags to the combatants that died in this submitted attack."""
         game = self.game
         events, blocks = game['events'], game['blocks']
         if not events:
             return
         death = events[-1]
         death.pop('first_corpse_attack', None)
-        if (not self.last_targeted_option or len(events) < 2 or len(blocks) != 1
-                or blocks[0].get('events_before_deaths') != len(events)-1
-                or game.get('events_at_submission') != len(events)-2):
+        death.pop('mutual_corpse_attack', None)
+        death.pop('corpse_tag_attack', None)
+        start = game.get('events_at_submission')
+        if (not self.last_targeted_option or start is None or len(events)-start not in (2, 3)
+                or len(blocks) != 1 or blocks[0].get('events_before_deaths') != start+1):
             return
         group, source, target = self.last_targeted_option
-        attack = events[-2]
+        attack = events[start]
+        victim = death.get('eid')
         if (group != self.options_id or attack['type'] != 'attack' or death['type'] != 'death'
-                or death.get('eid') != target or attack.get('turn') != game['turn'] or death.get('turn') != game['turn']
+                or victim not in (source, target) or attack.get('turn') != game['turn'] or death.get('turn') != game['turn']
                 or board._ref_id(attack.get('atk_ref') or '') != source or board._ref_id(attack.get('tgt_ref') or '') != target):
             return
+        paired = len(events)-start == 3
+        if paired and (events[-2].get('corpse_tag_attack') != self.last_targeted_option
+                       or {events[-2].get('eid'), victim} != {source, target}):
+            return
         tag = board.TAG_CHANGE_RE.fullmatch(packet)
-        if tag and tag[3] == '1':
-            player = game['entities'].get(board._resolve(game, tag[1]))
-            owner = game['entities'][target]['controller']
-            if (player and owner in (1, 2) and board._ctype(player) == 'PLAYER' and board._tag_int(player, 'PLAYER_ID') == owner
-                    and player['tags'].get('CORPSES') is None and attack.get('actor') == 3-owner):
-                death['first_corpse_attack'] = self.last_targeted_option
+        if not tag:
+            return
+        player = game['entities'].get(board._resolve(game, tag[1]))
+        owner = game['entities'][victim]['controller']
+        if (not player or owner not in (1, 2) or board._ctype(player) != 'PLAYER'
+                or board._tag_int(player, 'PLAYER_ID') != owner
+                or attack.get('actor') != (owner if victim == source else 3-owner)):
+            return
+        previous = player['tags'].get('CORPSES')
+        count = 0 if previous is None else board._num(previous)
+        if count is None or count < 0 or tag[3] != str(count+1):
+            return
+        death['corpse_tag_attack'] = self.last_targeted_option
+        if ((victim == target and previous is None)
+                or (paired and events[-2].get('first_corpse_attack') == self.last_targeted_option)):
+            death['first_corpse_attack'] = self.last_targeted_option
+            if paired:
+                death['mutual_corpse_attack'] = self.last_targeted_option
 
     def _remember_departing_objective(self, match):
         # HIDE_ENTITY can erase the card ID before moving a resolved spell to
@@ -709,9 +729,10 @@ class IncrementalBoard:
             if cid:
                 known_deck.append({'id':e['id'],'card_id':cid,'generated':shred or
                                    bool(board._tag_int(e,'CREATOR') or board._tag_int(e,'COPIED_FROM_ENTITY_ID'))})
-        first_corpse = game['events'][-1].get('first_corpse_attack') if game['events'] else None
+        last_event = game['events'][-1] if game['events'] else {}
         return {
-            **({'first_corpse_attack':first_corpse} if first_corpse and first_corpse == self.last_targeted_option else {}),
+            **{k:self.last_targeted_option for k in ('first_corpse_attack','mutual_corpse_attack')
+               if self.last_targeted_option and last_event.get(k) == self.last_targeted_option},
             "phase": "target" if choosing_target else "choose_one" if choosing else "main",
             "format": game["meta"].get("FormatType"), "game_type": game["meta"].get("GameType"),
             # EXHAUSTED alone does not prove attack readiness, and ritual timing is

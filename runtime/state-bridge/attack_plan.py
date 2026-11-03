@@ -283,10 +283,12 @@ def prepare(view, menu, plan, decision_id):
               'corpses':view.get('enemy_corpses'),'allow_corpse_increment':target in dead,'confirmed_options_id':None}
     if source in dead and type(view.get('my_corpses')) is int:
         result['expected_with_own_corpse'] = predicted_fingerprint(dict(expected,my_corpses=view['my_corpses']+1),next_menu)
+    elif source in dead and target in dead and view.get('my_corpses') is None and view.get('enemy_corpses') is None:
+        result['expected_first_mutual_corpses'] = predicted_fingerprint(dict(expected,my_corpses=1),next_menu)
     return result
 
 
-def mismatch_reason(plan, view, menu, options_id, decision_id, first_corpse_attack=None):
+def mismatch_reason(plan, view, menu, options_id, decision_id, first_corpse_attack=None, mutual_corpse_attack=None):
     if not plan or plan['confirmed_options_id'] is None or plan['decision_id']!=decision_id:
         return 'missing_matching_receipt'
     if options_id is None or plan['confirmed_options_id']==options_id:
@@ -303,9 +305,13 @@ def mismatch_reason(plan, view, menu, options_id, decision_id, first_corpse_atta
         if (not plan.get('allow_corpse_increment', True) or type(corpses) is not int
                 or not (newly_observed or (type(before) is int and corpses == before+1))):
             return 'unexpected_corpse_count'
-    if fingerprint(view) not in (plan['expected'],plan.get('expected_with_own_corpse')):
-        return 'public_state_changed'
-    return None
+    current = fingerprint(view)
+    if current in (plan['expected'],plan.get('expected_with_own_corpse')):
+        return None
+    if (current == plan.get('expected_first_mutual_corpses') and before is None and corpses == 1
+            and first_corpse_attack == mutual_corpse_attack and first_corpse_attack is not None):
+        return None
+    return 'public_state_changed'
 
 
 def checked_action(plan, view, menu, options_id, decision_id):

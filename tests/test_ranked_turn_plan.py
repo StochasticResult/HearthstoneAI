@@ -167,6 +167,53 @@ class RankedTurnPlanTests(unittest.TestCase):
                 parser.feed(setup_log() + packets + next_group)
                 self.assertEqual(parser.snapshot(1, extended=True).get('first_corpse_attack'), expected)
 
+    def test_mutual_death_tags_need_both_combatants_in_one_deaths_block(self):
+        from incremental_board import IncrementalBoard
+        from test_turn_end_attack import setup_log, SEND, tags, OPTIONS
+        receipt = (76, 52, 208)
+        attack = tags(['BLOCK_START BlockType=ATTACK Entity=52 EffectCardId= EffectIndex=0 Target=208 SubOption=-1', 'BLOCK_END'])
+        deaths = tags(['BLOCK_START BlockType=DEATHS Entity=GameEntity EffectCardId= EffectIndex=0 Target=0 SubOption=-1'])
+        ours = tags(['TAG_CHANGE Entity=52 tag=ZONE value=GRAVEYARD', 'TAG_CHANGE Entity=2 tag=CORPSES value=1'])
+        theirs = tags(['TAG_CHANGE Entity=208 tag=ZONE value=GRAVEYARD', 'TAG_CHANGE Entity=3 tag=CORPSES value=1'])
+        close = tags(['BLOCK_END'])
+        next_group = (OPTIONS+'id=77\n'+OPTIONS+'option 0 type=END_TURN mainEntity= error=INVALID\n').encode()
+        for label, packets, expected in (
+            ('attacker dies first', ours+theirs, receipt),
+            ('defender dies first', theirs+ours, receipt),
+            ('split blocks', ours+close+deaths+theirs, None),
+            ('missing friendly tag', ours.splitlines(keepends=True)[0]+theirs, None),
+            ('wrong owner', theirs+ours.replace(b'Entity=2 tag=CORPSES', b'Entity=3 tag=CORPSES'), None),
+            ('different combatant', ours+theirs.replace(b'Entity=208 tag=ZONE', b'Entity=7 tag=ZONE'), None),
+            ('later submission', ours+theirs+SEND, None),
+        ):
+            with self.subTest(label=label):
+                parser = IncrementalBoard()
+                parser.feed(setup_log()+SEND+attack+deaths+packets+close+next_group)
+                state = parser.snapshot(1, extended=True)
+                self.assertEqual(state.get('mutual_corpse_attack'), expected)
+                if expected:
+                    self.assertEqual(state.get('first_corpse_attack'), expected)
+
+    def test_recorded_mutual_trade_reuses_only_when_the_full_next_state_matches(self):
+        path = Path(__file__).parent/'fixtures'/'mutual-corpse-20261103.json'
+        for case, expected in zip(json.loads(path.read_text()), (None, 'public_state_changed')):
+            with self.subTest(run=case['run']):
+                before = case['before']
+                after = {k:v for k,v in (before|case['change']).items() if k not in case['removed']}
+                first, second = case['attack'], case['followup']
+                decision = case['decision_id']
+                plan = attack_plan.continuation(before,case['menus'][0],first,[second],decision,decision)
+                plan['confirmed_options_id'], next_group = case['options']
+                proof = (plan['confirmed_options_id'],first['source_id'],first['target_id'])
+                def mismatch(view, first_proof, mutual_proof):
+                    return attack_plan.mismatch_reason(plan,view,case['menus'][1],next_group,decision,first_proof,mutual_proof)
+                self.assertEqual(mismatch(after,proof,proof), expected)
+                self.assertEqual(mismatch(after,None,None), 'unexpected_corpse_count')
+                if expected is None:
+                    self.assertEqual(mismatch(after,proof,None), 'public_state_changed')
+                    self.assertEqual(mismatch(dict(after,my_corpses=2),proof,proof), 'public_state_changed')
+                    self.assertEqual(mismatch(dict(after,mana=0),proof,proof), 'public_state_changed')
+
     @patch('builtins.print')
     def test_coin_into_previously_unaffordable_minion_rechecks_every_resource_and_option(self,_):
         original,after = [replay_state(r) for r in self.coins]

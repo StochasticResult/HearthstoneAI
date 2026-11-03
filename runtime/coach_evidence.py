@@ -17,7 +17,7 @@ FIELDS = ('game_type format phase game_turn mana mana_cap mana_spent temporary_m
           'target_effect healing_as_damage healing_double turn_pace life_tap shred_battlecry unavailable_interactions '
           'secret_context own_known_deck enemy_secret_ids calculated_resources learned_matchup_notes turn_timeout_seconds client_build').split()
 EVENT_FIELDS = ('decision_id event for_decision action actions reason model model_action policy local_rule '
-                'conditional_sequence conditional_attack evidence elapsed_ms requested_tier served_tier '
+                'conditional_sequence conditional_attack evidence server_options_id elapsed_ms requested_tier served_tier '
                 'tactical_lesson sol_action restricted_menu candidate_scores sent card_id outcome game_turn '
                 'phase basis offered planned_ids marked_ids submitted replaced_ids kept_ids model_reason '
                 'proposed_index actual_index choice_id from_decision handoff_reason late_turn_effort').split()
@@ -34,6 +34,10 @@ def compact(value):
 def public_event(row):
     # Preserve explicit false/zero for moves and receipts; compact only board fields.
     result = {k:row[k] for k in EVENT_FIELDS if k in row}
+    if row.get('local_rule') == 'verified_turn_plan_v1' and isinstance(row.get('calculation'), dict):
+        calculation = row['calculation']
+        result['evidence'] = {k:calculation[k] for k in ('from_decision', 'origin', 'previous_options_id',
+                              'options_id', 'first_corpse_attack', 'mutual_corpse_attack') if k in calculation}
     obs = row.get('observation')
     if obs is not None:
         result['board'] = {k:compact(obs[k]) for k in FIELDS if k in obs}

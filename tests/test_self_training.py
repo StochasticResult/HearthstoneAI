@@ -49,6 +49,20 @@ class SelfTrainingTests(unittest.TestCase):
         atomic(self.dest/'review.json',self.review)
         (self.dest/'decisions.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
 
+    def test_verified_combat_proof_survives_log_rotation_with_its_receipt(self):
+        proof = {'from_decision':1, 'previous_options_id':11, 'options_id':12,
+                 'first_corpse_attack':[11,30,69], 'mutual_corpse_attack':[11,30,69]}
+        self.events[1]['server_options_id'] = 11
+        self.events[3].update(local_rule='verified_turn_plan_v1', calculation=dict(proof, private_account='NEVER_EXPORT'))
+        self.write(self.events)
+        archive(self.dest, self.review, self.learning)
+        with gzip.open(self.learning/'coach-replays'/(self.name+'.json.gz'),'rt') as f:
+            events = json.load(f)['events']
+        self.assertEqual(events[1]['server_options_id'], 11)
+        self.assertEqual(events[3]['evidence'], proof)
+        self.assertEqual((events[4]['event'],events[4]['decision_id'],events[4]['action']),
+                         ('confirmed',events[3]['decision_id'],events[3]['action']))
+
     def test_archive_whole_trace_and_privacy_even_after_cleanup(self):
         archive(self.dest,self.review,self.learning)
         (self.dest/'decisions.jsonl').unlink()

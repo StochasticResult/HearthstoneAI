@@ -12,6 +12,14 @@ from session import (validate_config, SessionError, lock_session, session_direct
 
 
 class SessionTests(unittest.TestCase):
+    def test_native_selfcheck_validates_the_attack_and_reaches_the_permission_probe(self):
+        from selfcheck import main
+        result = SimpleNamespace(returncode=0,stdout='true')
+        with patch('selfcheck.subprocess.run',return_value=result) as probe, patch('builtins.print') as messages:
+            main()
+        self.assertEqual(probe.call_args.args[0][-2:],['--input','access'])
+        self.assertTrue(any('已具备事件发送权限' in str(c) for c in messages.call_args_list))
+
     def test_authenticated_login_intro_only_clicks_empty_backdrop_before_game(self):
         status = {'scene': {'mode': 2, 'sceneLoaded': True, 'transitioning': False},
                   'game_type': 0, 'format': 0, 'popup': True, 'shop_open': False,

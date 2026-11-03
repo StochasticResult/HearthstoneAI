@@ -17,7 +17,7 @@ def main():
              "enemy_hero": {"id": 2, "health": 2, "armor": 0}, "my_hand": [],
              "my_board": [{"id": 3, "card_id": "CORE_UNG_205", "position": 1, "attack": 2, "health": 1}],
              "enemy_board": [], "end_turn_allowed": True,
-             "legal_options": [{"id": 3, "targets": [2], "requires_target": True}]}
+             "legal_options": [{"id": 3, "type": "ATTACK", "targets": [2], "requires_target": True}]}
     def fake_api(payload):
         assert payload["store"] is False and payload["parallel_tool_calls"] is False
         return {"status": "completed", "model": payload["model"], "output": [{"type": "function_call", "name": "choose_action",

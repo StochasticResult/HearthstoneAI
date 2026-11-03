@@ -308,7 +308,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
                             persist()
                         focus.close()
                 finally:
-                    if client:client.close()
+                    if client:
+                        client.close(user_stopped=state['status'] == 'cancelled')
             finally:
                 try:
                     if app_wake is not None:

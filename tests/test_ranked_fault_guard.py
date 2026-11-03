@@ -1,4 +1,5 @@
 """Process-level checks using disposable sleep processes for the game and GUI."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -59,11 +60,16 @@ os._exit(17)
                     if stopping == 'thermal':
                         flag.touch()
                     elif stopping == 'quit_gui':
-                        owner.terminate();owner.wait(timeout=2)
+                        with closing(select.kqueue()) as exit_event:
+                            exit_event.control([select.kevent(guard_pid, filter=select.KQ_FILTER_PROC,
+                                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)], 0, 0)
+                            owner.terminate();owner.wait(timeout=2)
+                            self.assertTrue(exit_event.control(None, 1, 5))
+                        self.assertIsNone(target.poll())
                     else:
                         os.kill(guard_pid,signal.SIGTERM)
-                    self.assertNotEqual(target.wait(timeout=5),0)
                     if stopping != 'quit_gui':
+                        self.assertNotEqual(target.wait(timeout=5),0)
                         self.assertIsNone(owner.poll())
                 finally:
                     controller.stdin.close();controller.stdout.close()

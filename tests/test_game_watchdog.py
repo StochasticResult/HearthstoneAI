@@ -3,6 +3,8 @@ import subprocess
 import tempfile
 import time
 import json
+import os
+import signal
 from pathlib import Path
 from game_watchdog import change_fps, memory_free_percentage
 
@@ -36,6 +38,35 @@ finally:
     if child.poll() is None:
         child.terminate()
         child.wait(timeout=3)
+
+# Exercise both ranked release paths with disposable processes. The claimed
+# process must survive the guard with its original PID in each case.
+for departure in ('released to user', 'native application exited'):
+    child = subprocess.Popen(['/bin/sleep', '25'])
+    owner = subprocess.Popen(['/bin/sleep', '25'])
+    guard_proc = None
+    try:
+        guard_proc = subprocess.Popen(['/usr/bin/python3', str(guard), '--expected', '/bin/sleep',
+            '--claim-pid', str(child.pid), '--startup-seconds', '3', '--run-seconds', '0',
+            '--parent-pid', str(os.getpid()), '--native-owner-pid', str(owner.pid)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert json.loads(guard_proc.stdout.readline())['watchdog'] == 'armed'
+        assert json.loads(guard_proc.stdout.readline())['claimed_pid'] == child.pid
+        if departure == 'released to user':
+            guard_proc.send_signal(signal.SIGUSR2)
+        else:
+            owner.terminate()
+            owner.wait(timeout=3)
+        out, err = guard_proc.communicate(timeout=8)
+        assert guard_proc.returncode == 0, err
+        assert json.loads(out.strip().splitlines()[-1])['watchdog_result'] == departure
+        assert child.poll() is None
+        print('PASS retained game survives ' + departure)
+    finally:
+        for proc in (guard_proc, owner, child):
+            if proc and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=3)
 
 # A stubborn disposable child keeps cleanup in progress when a second stop
 # arrives, reproducing the native-app/session double-termination race.

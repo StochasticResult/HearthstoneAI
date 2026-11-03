@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import datetime
 import os
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import session
-from game_boundary import FaultedMatchEnd, LogBoundary, result_dismissal
+from game_boundary import FaultedMatchEnd, LogBoundary, idle_log_start, result_dismissal
 from incremental_board import IncrementalBoard, LogFollower
 from capture_practice import Capture
 from navigation import Stop, DECK_ID
@@ -18,6 +19,70 @@ from test_incremental_board import fixture, power
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_existing_lobby_starts_at_current_end_without_launching_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            began = datetime.datetime(2026, 11, 2, 22, 14, 57)
+            folder = root / began.strftime('Hearthstone_%Y_%m_%d_%H_%M_%S')
+            folder.mkdir()
+            log = folder / 'Power.log'
+            stamp = int(began.timestamp())
+            self.assertEqual(idle_log_start(stamp, root), (log, 0))
+            log.write_bytes(b'an older settled match\n')
+            client = session.PersistentClient(222, 0)
+            for mode, stage in ((3, 0), (7, 1)):
+                with patch('session.process_started', return_value=stamp), patch('session.read_status',
+                        return_value={'scene': {'mode': mode, 'sceneLoaded': True}}), patch('session.preflight') as guard, \
+                        patch('session.idle_log_start', side_effect=lambda start: idle_log_start(start, root)):
+                    self.assertEqual(client.adopt_existing(777), ['--adopt-pid', '777', '--adopt-start', str(stamp)])
+                    self.assertEqual(client.driver_log_args(), ['--log', str(log), '--start-offset', str(log.stat().st_size)])
+                    self.assertEqual(client.initial_stage, stage)
+                    guard.assert_called_once_with(existing_pid=777)
+            log.write_bytes(b'partial')
+            with self.assertRaisesRegex(Stop, 'between lines'):
+                idle_log_start(stamp, root)
+            with self.assertRaisesRegex(Stop, 'identify'):
+                idle_log_start(stamp+86400, root)
+
+    def test_only_verified_ended_match_in_same_process_can_be_readopted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / 'Power.log'
+            log.write_bytes(b'settled game\n')
+            info = log.stat()
+            marker = {'pid': 777, 'started': 100, 'outcome': 'WON', 'cursor': {'source': str(log),
+                      'device': info.st_dev, 'inode': info.st_ino, 'offset': info.st_size}}
+            state = {'scene': {'mode': 4, 'sceneLoaded': True}}
+            with patch('session.process_started', return_value=100), patch('session.read_status', return_value=state), \
+                    patch('coach_policy.read_json', return_value=marker), patch('session.preflight'), \
+                    patch('session.LogBoundary', side_effect=lambda c: LogBoundary(c, root)):
+                client = session.PersistentClient(222, 0)
+                client.adopt_existing(777)
+                self.assertEqual(client.previous, {'outcome': 'WON'})
+                with self.assertRaises(session.SessionError):
+                    session.PersistentClient(222, 0).adopt_existing(888)
+                state['mulligan_waiting'] = True
+                with self.assertRaises(session.SessionError):
+                    session.PersistentClient(222, 0).adopt_existing(777)
+                del state['mulligan_waiting']
+                with log.open('ab') as stream:
+                    stream.write(b'CREATE_GAME\n')
+                with self.assertRaisesRegex(Stop, 'new game'):
+                    session.PersistentClient(222, 0).adopt_existing(777)
+
+    def test_immediate_stop_does_not_terminate_ranked_game_guard_in_worker_finally(self):
+        client = session.PersistentClient(222, 0)
+        client.watchdog = Mock()
+        client.watchdog.poll.return_value = None
+        client.watchdog.stdout = None
+        with patch.object(client, 'prepare'), patch('session.session_directory', side_effect=session.SessionCancelled('stop')), \
+                patch('session.processes', return_value=[(777, 0, 0)]), patch('session.emit'), patch('session.stop_child') as stop:
+            with self.assertRaises(session.SessionCancelled):
+                session.run({}, 222, mode='ranked', client=client)
+            self.assertNotIn(unittest.mock.call(client.watchdog), stop.call_args_list)
+            client.close()
+            client.watchdog.send_signal.assert_called_once_with(session.signal.SIGUSR2)
+
     def test_fault_watch_uses_only_complete_authoritative_lines_in_this_game(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); path=root/'Power.log'
@@ -69,7 +134,14 @@ class BoundaryTests(unittest.TestCase):
         c.match_at_risk=False
         with patch('session.stop_child') as stop:
             c.close()
-        stop.assert_called_once_with(c.watchdog)
+        self.assertEqual(c.watchdog.send_signal.call_args.args,(session.signal.SIGUSR2,))
+        stop.assert_not_called()
+        c.match_at_risk = True
+        c.watchdog.send_signal.reset_mock()
+        with patch('session.stop_child') as stop:
+            c.close(user_stopped=True)
+        c.watchdog.send_signal.assert_called_once_with(session.signal.SIGUSR2)
+        stop.assert_not_called()
 
     def test_new_game_at_old_result_boundary_protects_client_even_during_planned_pause(self):
         c=session.PersistentClient(222,0);c.previous={'outcome':'WON'};c.launched=True

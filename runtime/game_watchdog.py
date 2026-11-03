@@ -2,9 +2,12 @@
 """Supervise a single explicitly started local game with resource safeguards.
 
 This is a sampled watchdog, not a GPU throttle or a promise against heat spikes.
-It sends no game input. On exit it closes only the exact process it claimed.
+Ranked play hands its client back on normal stops. Only the claimed game
+can be closed for a resource fault or a disposable session.
 """
 import argparse
+import datetime
+import fcntl
 import json
 import math
 import os
@@ -16,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 from resource_guard import GIB, MIB, battery_status, swap_used, thermal_state, memory_free_percentage, memory_pressure_level, memory_stop_reason
 
@@ -74,6 +78,17 @@ def stop_exact(pid, expected):
             pass
 
 
+def process_started(pid):
+    if type(pid) is not int or pid <= 1:
+        return None
+    try:
+        info = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart='], capture_output=True,
+                              text=True, timeout=3, env={**os.environ, 'LC_ALL': 'C'})
+        return int(datetime.datetime.strptime(info.stdout.strip(), '%a %b %d %H:%M:%S %Y').timestamp())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected", default=GAME_EXEC)
@@ -84,6 +99,8 @@ def main():
     parser.add_argument("--background-policy", action="store_true", help="lower the claimed process scheduling/I/O priority; not a CPU cap")
     parser.add_argument("--parent-pid", type=int, help="stop and restore settings if the session supervisor exits")
     parser.add_argument("--native-owner-pid", type=int, help="in ranked play, retain resource protection if the AI supervisor disappears")
+    parser.add_argument("--adopt-pid",type=int)
+    parser.add_argument("--adopt-start",type=int)
     parser.add_argument("--swap-baseline-mib", type=float)
     args = parser.parse_args()
     if args.run_seconds < 0:
@@ -110,13 +127,25 @@ def main():
         raise RuntimeError("preflight safety check failed: " + memory_reason)
     if not initial_ac or thermal_state() >= 1 or shutil.disk_usage("/System/Volumes/Data").free < 10 * GIB:
         raise RuntimeError("preflight safety check failed")
-    if args.claim_pid is None and processes(args.expected):
+    if args.native_owner_pid and args.expected == GAME_EXEC:
+        guard_lock = (Path.home()/'Library/Application Support/HearthstoneAI/game-guard.lock').open('a+')
+        fcntl.flock(guard_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    existing=processes(args.expected)
+    if args.adopt_pid is not None:
+        if (not args.native_owner_pid or args.expected!=GAME_EXEC or args.claim_pid is not None or not args.adopt_start
+                or [p[0] for p in existing]!=[args.adopt_pid] or process_started(args.adopt_pid)!=args.adopt_start):
+            raise RuntimeError('retained Hearthstone identity changed before adoption')
+    elif args.claim_pid is None and existing:
         raise RuntimeError("game already running; refusing to claim it")
     original_launchers = {p[0] for p in processes(LAUNCHER_EXEC)} if args.expected == GAME_EXEC else set()
     if args.temporary_fps and args.expected != GAME_EXEC:
         parser.error("temporary frame rate applies only to the game")
     owner_exit = None
     detached = False
+    release_requested = False
+    def release(_signum,_frame):
+        nonlocal release_requested
+        release_requested = True
     def detach(_signum=None, _frame=None):
         nonlocal detached
         detached = True
@@ -140,6 +169,7 @@ def main():
         owner_exit.control([select.kevent(args.native_owner_pid, filter=select.KQ_FILTER_PROC,
                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)],0,0)
         signal.signal(signal.SIGUSR1, detach)
+        signal.signal(signal.SIGUSR2, release)
     previous_fps = change_fps(OPTIONS, None, args.temporary_fps) if args.temporary_fps else None
     report({"watchdog": "armed", "pid": os.getpid(), "max_game_seconds": args.run_seconds})
     claimed = None
@@ -164,7 +194,11 @@ def main():
                 detach()
             active = processes(args.expected)
             if claimed is None:
-                matches = [p for p in active if args.claim_pid is None or p[0] == args.claim_pid]
+                selected = args.adopt_pid or args.claim_pid
+                matches = [p for p in active if selected is None or p[0]==selected]
+                if args.adopt_pid and (not matches or process_started(args.adopt_pid)!=args.adopt_start):
+                    reason='retained game identity changed'
+                    break
                 if detached and not matches:
                     reason = "supervisor exited before game launch"
                     break
@@ -234,6 +268,9 @@ def main():
                     previous_status = now
                 if reason:
                     break
+            if release_requested:
+                reason='released to user'
+                break
             time.sleep(1)
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -242,13 +279,14 @@ def main():
             # A parent can exit in the short interval after launch but before
             # the first sampling tick. Preflight proved no game was running;
             # reclaim exactly one new game here so it cannot be orphaned.
-            if claimed is None and args.expected == GAME_EXEC and not detached:
+            preserve = bool(args.native_owner_pid and reason in ('released to user','native application exited','retained game identity changed'))
+            if claimed is None and args.expected == GAME_EXEC and not detached and not preserve:
                 final_matches = processes(args.expected)
                 if len(final_matches) == 1:
                     claimed = final_matches[0][0]
-            if claimed is not None:
+            if claimed is not None and not preserve:
                 stop_exact(claimed, args.expected)
-            if args.expected == GAME_EXEC:
+            if args.expected == GAME_EXEC and not preserve:
                 for pid, _, _ in processes(LAUNCHER_EXEC):
                     if pid not in original_launchers:
                         stop_exact(pid, LAUNCHER_EXEC)
@@ -262,7 +300,7 @@ def main():
         report({"watchdog_result": reason or "interrupted", "peak_sampled_rss_mib": round(max_rss/MIB, 1), "peak_sampled_cpu_pct": round(max_cpu, 1)})
         if owner_exit is not None:
             owner_exit.close()
-    return 0 if reason in ("game exited", "short test deadline") else 2
+    return 0 if reason in ("game exited", "short test deadline", "released to user", "native application exited") else 2
 
 
 if __name__ == "__main__":

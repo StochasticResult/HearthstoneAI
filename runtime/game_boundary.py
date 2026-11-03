@@ -1,10 +1,39 @@
 """Verified log boundaries between games in one retained Hearthstone client."""
 import os
 import re
+import datetime
 from pathlib import Path
 from navigation import Stop
 
 LOG_ROOT = Path('/Applications/Hearthstone/Logs')
+
+
+def idle_log_start(started, root=LOG_ROOT):
+    """Bind the fresh reader to the verified lobby process, including its not-yet-created Power.log."""
+    dirs = []
+    for folder in root.glob('Hearthstone_*'):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        try:
+            stamp = datetime.datetime.strptime(folder.name, 'Hearthstone_%Y_%m_%d_%H_%M_%S').timestamp()
+        except ValueError:
+            continue
+        if abs(stamp - started) <= 15:
+            dirs.append(folder)
+    if len(dirs) != 1:
+        raise Stop('Cannot identify the retained client log session')
+    path = dirs[0] / 'Power.log'
+    if path.is_symlink():
+        raise Stop('Invalid retained client log')
+    if not path.exists():
+        return path, 0
+    with path.open('rb') as stream:
+        size = os.fstat(stream.fileno()).st_size
+        if size:
+            stream.seek(size - 1)
+            if stream.read(1) != b'\n':
+                raise Stop('Retained lobby log is between lines')
+    return path, size
 
 
 def cursor_source(cursor, root, offset_key):

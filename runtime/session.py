@@ -15,10 +15,10 @@ from pathlib import Path
 from input_command import input_command
 from deck_observation import save_selected_deck
 from opponent_decks import start_refresh
-from game_watchdog import GAME_EXEC, processes
+from game_watchdog import GAME_EXEC, processes, process_started
 from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
-from game_boundary import FaultedMatchEnd, LogBoundary, result_dismissal
+from game_boundary import FaultedMatchEnd, LogBoundary, idle_log_start, result_dismissal
 from ranked_focus import FocusLost, PointCovered, check_point, rejected_before_input
 
 ROOT = Path(__file__).resolve().parent
@@ -147,11 +147,12 @@ def validate_config(config):
     return result
 
 
-def preflight():
+def preflight(existing_pid=None):
     if sys.version_info < (3, 12):
         raise SessionError("本版日志解析器需要 Python 3.12 或更高版本")
-    if processes(GAME_EXEC):
-        raise SessionError("请先退出炉石；软件需要从启动前建立资源保护")
+    found = [p[0] for p in processes(GAME_EXEC)]
+    if found != ([existing_pid] if existing_pid is not None else []):
+        raise SessionError("炉石进程身份未核实，保留当前游戏")
     required = [Path(FRAMEWORK), Path(GAME_EXEC), Path(BATTLENET_EXEC), Path(input_command()[0]), ROOT / "mirror-status"]
     if any(not p.is_file() for p in required):
         raise SessionError("缺少炉石、HSTracker 或程序组件")
@@ -252,6 +253,8 @@ class PersistentClient:
         self.focus = self.on_foreground_change = None
         self.last_focus_state = None
         self.covered_point = None
+        self.idle_log = None
+        self.initial_stage = 1
 
     def foreground_ready(self):
         if self.focus is None:
@@ -303,14 +306,46 @@ class PersistentClient:
                 raise SessionError('游戏进程身份改变')
             self.pid = event['claimed_pid']
 
+    def adopt_existing(self, pid):
+        started = process_started(pid)
+        if not started:
+            raise SessionError('无法核实炉石启动时间，保留现状')
+        status = read_status() or {}
+        mode = (status.get('scene') or {}).get('mode')
+        if not scene_ready(status) or any(status.get(k) for k in ('popup', 'shop_open', 'game_menu')):
+            raise SessionError('炉石界面未就绪，保留客户端；回到大厅后可开始')
+        if mode in (3, 7):
+            self.idle_log = idle_log_start(started)
+            self.initial_stage = 0 if mode == 3 else 1
+        elif mode == 4 and not status.get('mulligan_waiting'):
+            from coach_policy import read_json
+            previous = read_json(DATA/'learning/retained-game.json', 8192, {})
+            if (not isinstance(previous, dict) or previous.get('pid') != pid or previous.get('started') != started
+                    or previous.get('outcome') not in ('WON', 'LOST', 'TIED') or not isinstance(previous.get('cursor'), dict)):
+                raise SessionError('炉石当前对局尚未核实结算，保留客户端；回到大厅后可开始')
+            self.boundary = LogBoundary(previous['cursor'])
+            self.previous = {'outcome': previous['outcome']}
+        else:
+            raise SessionError('炉石还在对局或其他界面，保留客户端；回到大厅后可开始')
+        preflight(existing_pid=pid)
+        self.pid, self.launched = pid, True
+        return ['--adopt-pid', str(pid), '--adopt-start', str(started)]
+
     def prepare(self):
         if self.watchdog is None:
             self.lock = lock_session()
-            preflight()
+            adopt = []
+            active = processes(GAME_EXEC) if self.parent_pid else []
+            if active:
+                if len(active) != 1:
+                    raise SessionError('发现多个炉石客户端，保留现状')
+                adopt = self.adopt_existing(active[0][0])
+            else:
+                preflight()
             owner_args = ['--native-owner-pid',str(self.parent_pid)] if self.parent_pid else []
             self.watchdog = subprocess.Popen([sys.executable, str(ROOT/'game_watchdog.py'),
                 '--startup-seconds','120','--run-seconds','0','--temporary-fps','30',
-                '--parent-pid',str(os.getpid()),'--swap-baseline-mib',str(self.swap_baseline/(1024**2))] + owner_args,
+                '--parent-pid',str(os.getpid()),'--swap-baseline-mib',str(self.swap_baseline/(1024**2))] + owner_args + adopt,
                 stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             armed=read_json_line(self.watchdog,10)
             guard_event(json.dumps(armed).encode(),'游戏守护')
@@ -318,6 +353,8 @@ class PersistentClient:
                 raise SessionError('游戏资源保护启动失败')
             self.streams={self.watchdog.stdout:getattr(self.watchdog,'_pending_line_bytes',b'')}
             self.sources={self.watchdog.stdout:'游戏守护'}
+            if self.previous:
+                self.return_to_menu()
         else:
             self.return_to_menu()
 
@@ -380,6 +417,9 @@ class PersistentClient:
     def driver_log_args(self):
         if not self.launched:
             return ['--new-session']
+        if self.idle_log:
+            path,offset=self.idle_log
+            return ['--log',str(path),'--start-offset',str(offset)]
         if self.boundary is None:
             self.match_at_risk = True
             raise SessionError('缺少下一局日志边界')
@@ -397,6 +437,8 @@ class PersistentClient:
             raise SessionError('单局日志边界无效')
         self.boundary=LogBoundary(json.loads(path.read_text()))
         self.previous=review
+        self.idle_log=None
+        self.initial_stage=1
         self.match_at_risk = review.get('outcome') not in ('WON','LOST','TIED')
 
     def hold_after_ai_fault(self, dest, streams, sources, entered_game):
@@ -451,19 +493,35 @@ class PersistentClient:
                     return
             time.sleep(.5)
 
-    def close(self):
+    def close(self, user_stopped=False):
         try:
             if self.boundary and self.parent_pid and not self.match_at_risk and self.watchdog and self.watchdog.poll() is None:
                 try:
                     self.boundary.check()
                 except (OSError, SupervisorError):
                     self.match_at_risk = True
-            if self.match_at_risk and self.parent_pid and self.watchdog and self.watchdog.poll() is None:
+            if self.match_at_risk and not user_stopped and self.parent_pid and self.watchdog and self.watchdog.poll() is None:
                 # Even a second exception during fault observation must not
                 # turn AI teardown into SIGTERM for a live ranked game.
                 try:
                     self.watchdog.send_signal(signal.SIGUSR1)
                 except ProcessLookupError:
+                    pass
+            elif self.parent_pid and self.watchdog and self.watchdog.poll() is None:
+                from coach_policy import atomic
+                if not self.match_at_risk and self.pid and self.boundary and self.previous:
+                    stamp=process_started(self.pid)
+                    if stamp:
+                        try:
+                            atomic(DATA/'learning/retained-game.json', {'pid': self.pid, 'started': stamp,
+                                  'outcome': self.previous.get('outcome'), 'cursor': {'source': str(self.boundary.path),
+                                  'device': self.boundary.identity[0], 'inode': self.boundary.identity[1], 'offset': self.boundary.offset}})
+                        except OSError:
+                            emit('未保存结算记录；炉石仍将保留，回到大厅后可再次开始')
+                try:
+                    self.watchdog.send_signal(signal.SIGUSR2)
+                    self.watchdog.wait(timeout=6)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
                     pass
             else:
                 stop_child(self.watchdog)
@@ -585,7 +643,7 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
             emit("已向战网请求启动炉石，正在等待实际游戏进程和主界面")
         else:
             emit('本局复用炉石客户端，仅新建 AI 与解析后台',game_pid=client.pid)
-        stage, last_click, focused = (1 if reuse else 0), 0, reuse
+        stage, last_click, focused = (client.initial_stage if reuse else 0), 0, reuse
         previous_scene = None
         tail = (dest / "actions.log").open("rb")
         log_buffer = b""
@@ -706,7 +764,9 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         retained=bool(client and finished)
-        keep_guard = retained or bool(client and client.parent_pid and client.match_at_risk)
+        # The ranked controller releases or detaches its guard. A match worker
+        # must never send SIGTERM to that guard, even on an immediate user stop.
+        keep_guard = retained or bool(client and client.parent_pid)
         for child in (driver, None if keep_guard else watchdog, caffeine):
             stop_child(child)
         for child, label in ((watchdog, "游戏守护"), (driver, "AI 守护")):

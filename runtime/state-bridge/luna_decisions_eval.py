@@ -237,11 +237,59 @@ def verify_rescue(config, output):
         advisor.close()
 
 
+def replay_state(row):
+    state = copy.deepcopy(row['observation'])
+    options = {}
+    for a in row['actions'].values():
+        if 'source_id' in a:
+            option = options.setdefault(a['source_id'],{'id':a['source_id'],'type':'POWER','targets':[]})
+            if 'target_id' in a:
+                option['targets'].append(a['target_id'])
+    state.update(own_turn=True,options_id=row['server_options_id'],end_turn_allowed=True,legal_options=list(options.values()))
+    if action_menu(state)!=row['actions']:
+        raise ValueError('Archived legal menu could not be reconstructed')
+    return state
+
+
+def replay_turn_plan(advisor, name, steps):
+    advisor.confirmed = []
+    advisor.pending_attack = None
+    advisor.pace_turn = None
+    advisor.consecutive_timeouts = 0
+    transport = advisor.transport
+    report = {'case':name,'arm':'turn_plan','matched_receipts':0,'checked_followups':0}
+    def would_replan(_):
+        raise AdvisorError('fresh decision required at this boundary')
+    try:
+        for i,row in enumerate(steps):
+            state = replay_state(row)
+            action = advisor.ask(state)
+            if i==0:
+                event = advisor.last_event
+                report.update(action=action,model=event.get('model'),served_tier=event.get('served_tier'),
+                              elapsed_ms=event.get('elapsed_ms'),sequence=event.get('conditional_sequence',[]))
+                advisor.transport = would_replan
+            elif advisor.last_event.get('local_rule')=='verified_turn_plan_v1':
+                report['checked_followups'] += 1
+            if action!=row['confirmed_action']:
+                break  # No historical receipt to carry into the next position.
+            report['matched_receipts'] += 1
+            advisor.confirm(action,state)
+            if not advisor.pending_attack:
+                break
+    except AdvisorError as exc:
+        report['error'] = str(exc)[:160]
+    finally:
+        advisor.transport = transport
+    return report
+
+
 def verify_shared_lessons(config, output):
     """Use the selected primary and the Decisions adapter on the same public inputs."""
     output = Path(output)
     trade, tax = json.loads(read_bounded(output.parent/'standby-ranked-20261102.json',128*1024))
     draw = json.loads(read_bounded(output.parent/'shared-freeze-out-20261102.json',64*1024))
+    plans = json.loads(read_bounded(output.parent/'ranked-turn-plan-20261102.json',128*1024))
     harder = copy.deepcopy(tax['observation'])
     for foe in harder['enemy_board']:
         if foe.get('taunt'):
@@ -298,6 +346,10 @@ def verify_shared_lessons(config, output):
                           'system_hits':sum(bool(r.get('system_hit')) for r in rows if r['arm']==a),
                           'controls_rewritten':sum(bool(r.get('tactical_lesson')) for r in rows if r['arm']==a and r['control'])}
                        for a in ('primary','backup')}
+            for label in ('steps','coin_steps'):
+                check = replay_turn_plan(advisor,label,plans[label])
+                report.write(json.dumps(check)+'\n')
+                summary[label] = {k:check[k] for k in ('matched_receipts','checked_followups')}
             report.write(json.dumps({'summary':summary})+'\n')
     finally:
         advisor.close()

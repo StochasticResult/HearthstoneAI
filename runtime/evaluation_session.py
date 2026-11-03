@@ -23,7 +23,7 @@ SUITES = {
     'luna-decisions-holdout-v1': ('decisions-sol-holdout','luna_decisions_eval.py',36,690),
     'luna-decisions-recovery-v1': ('decisions-sol-recovery','luna_decisions_eval.py',25,480),
     'luna-rescue-replay-v1': ('decisions-rescue-replay','luna_decisions_eval.py',8,80),
-    'shared-lessons-v1': ('shared-lessons-evaluation','luna_decisions_eval.py',10,130),
+    'shared-lessons-v1': ('shared-lessons-evaluation','luna_decisions_eval.py',12,165),
 }
 
 

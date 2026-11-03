@@ -24,7 +24,7 @@ if args.suite=='shared-lessons-v1':
     target = data/SUITES[args.suite][0]
     target.mkdir(mode=0o700,parents=True,exist_ok=True)
     fixtures = Path(__file__).resolve().parents[1]/'tests'/'fixtures'
-    for name in ('standby-ranked-20261102.json','shared-freeze-out-20261102.json'):
+    for name in ('standby-ranked-20261102.json','shared-freeze-out-20261102.json','ranked-turn-plan-20261102.json'):
         with (fixtures/name).open('rb') as src:
             public = src.read(128*1024+1)
         if len(public)>128*1024:

@@ -248,7 +248,8 @@ Never claim a guaranteed win from an uncertain line.
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 
 
-def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tier=None, effort='low', orders=None):
+def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tier=None, effort='low', orders=None,
+                    plan_prefixes=()):
     if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
         raise AdvisorError("Invalid model ID")
     if service_tier not in (None, 'default', 'priority') or effort not in EFFORTS:
@@ -312,7 +313,23 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         payload['service_tier'] = service_tier
     if model.startswith(("gpt-5", "gpt-6", "o3", "o4")):
         payload["reasoning"] = {"effort": effort}
+    if plan_prefixes:
+        body['turn_plan'] = {'predictable_first_attacks':list(plan_prefixes),
+            'instructions':'Choose the best action as usual. When it is a listed attack, also give your intended '
+                'sequence in follow_up_ids using up to six distinct currently available action IDs. Consecutive '
+                'predictable attacks may be followed by one play or hero power. Plan as far as the public position '
+                'allows; use [] for a single step. The client checks every server receipt, position and legal menu.'}
+        params = payload['tools'][0]['parameters']
+        ids = [key for key,a in menu.items() if a.get('kind') in ('attack','play','hero_power')]
+        params['properties']['follow_up_ids'] = {'type':'array','items':{'type':'string','enum':ids}}
+        params['required'].append('follow_up_ids')
+        payload['input'] = json.dumps(body,ensure_ascii=True,separators=(',',':'))
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode()
+    if len(encoded)>MAX_INPUT_BYTES and plan_prefixes:
+        del body['turn_plan'], params['properties']['follow_up_ids']
+        params['required'].remove('follow_up_ids')
+        payload['input'] = json.dumps(body,ensure_ascii=True,separators=(',',':'))
+        encoded = json.dumps(payload,ensure_ascii=True,separators=(',',':')).encode()
     if len(encoded) > MAX_INPUT_BYTES:
         # A wide board repeats the same action field names many times. Use a
         # self-describing table without removing any legal action or target.
@@ -355,7 +372,7 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
     return payload, len(encoded)
 
 
-def parse_response(response, menu):
+def parse_response(response, menu, *, with_plan=False):
     if response.get("status") != "completed" or response.get("error"):
         raise AdvisorError("The API response did not complete; no action was sent")
     calls = [item for item in response.get("output", []) if item.get("type") == "function_call"]
@@ -363,6 +380,17 @@ def parse_response(response, menu):
         raise AdvisorError("The API did not return exactly one supported action")
     try:
         args = json.loads(calls[0]["arguments"])
+        tail = []
+        if with_plan and isinstance(args,dict):
+            ids = args.pop('follow_up_ids',[])
+            if (isinstance(ids,list) and len(ids)<=6 and all(isinstance(a,str) and a in menu for a in ids)
+                    and len(set(ids))==len(ids) and args.get('action_id') not in ids):
+                for aid in ids:
+                    if menu[aid].get('kind') not in ('attack','play','hero_power'):
+                        break
+                    tail.append(dict(menu[aid]))
+                    if menu[aid]['kind']!='attack':
+                        break
         if set(args) != {"action_id", "reason"} or not isinstance(args["reason"], str):
             raise ValueError()
         action = menu[args["action_id"]]
@@ -372,7 +400,8 @@ def parse_response(response, menu):
     tokens = usage.get("total_tokens")
     if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0:
         raise AdvisorError("API token accounting is missing")
-    return dict(action), args["reason"][:240], tokens
+    answer = (dict(action), args["reason"][:240], tokens)
+    return (*answer,tail) if with_plan else answer
 
 
 class OpenAIAdvisor:
@@ -447,6 +476,10 @@ class OpenAIAdvisor:
                 self.latencies = (self.latencies + [event['elapsed_ms']])[-256:]
             if event.get('local_rule'):
                 self.summary['local_calculations'] += 1
+            if event.get('conditional_sequence'):
+                self.summary['turn_plans_chosen'] = self.summary.get('turn_plans_chosen',0)+1
+            if event.get('local_rule')=='verified_turn_plan_v1':
+                self.summary['turn_plan_steps'] = self.summary.get('turn_plan_steps',0)+1
             if event.get('policy') == 'sol_timeout_backup_v1':
                 self.summary['decisions_proposed'] = self.summary.get('decisions_proposed',0) + 1
             model = event.get('model')
@@ -463,6 +496,8 @@ class OpenAIAdvisor:
                 self.summary[count] = self.summary.get(count,0) + 1
         elif kind == 'api_timeout':
             self.summary['api_timeouts'] = self.summary.get('api_timeouts', 0) + 1
+        elif kind=='turn_plan_discarded':
+            self.summary['turn_plans_discarded'] = self.summary.get('turn_plans_discarded',0)+1
         elif kind in ('decision_assist_declined','decision_assist_shadow'):
             key = 'decisions_declined' if kind=='decision_assist_declined' else 'decisions_shadow'
             self.summary[key] = self.summary.get(key,0)+1
@@ -605,18 +640,23 @@ class OpenAIAdvisor:
                          "action": {"kind": "end_turn"}, "reason": "only legal supported action"})
             return {"kind": "end_turn"}
         pairs = attack_plan.options(view, menu)
+        coins = attack_plan.coin_options(view,menu)
         orders = buff_before_tax(view,menu)
-        offered = {**menu, **pairs} if pairs else menu
+        prefixes = attack_plan.predictable_attacks(view,menu) if len(menu)>2 else {}
+        offered = {**menu, **pairs, **{key:value[0] for key,value in coins.items()}} if pairs or coins else menu
         instructions = self.instructions
         if pairs:
             instructions += (' An attack_plan names two independent attacks in the menu. Choose it only if you intend '
                              'both in that order. Only the first is sent now. The second requires server confirmation '
                              'and a fresh board and menu matching the expected first combat. Single actions remain available.')
+        if coins:
+            instructions += (' Choose a coin_plan when you want The Coin followed by its named minion. The Coin alone '
+                             'is sent first. The minion requires the exact predicted state and new legal server menu.')
         try:
             payload, size = request_payload(self.model, view, offered, instructions,
-                                           service_tier=self.service_tier, effort=self.effort,orders=orders)
+                                           service_tier=self.service_tier, effort=self.effort,orders=orders,plan_prefixes=prefixes)
         except ContextTooLarge:
-            if not pairs:
+            if not pairs and not coins:
                 raise
             offered = menu
             payload, size = request_payload(self.model, view, menu, self.instructions,
@@ -661,12 +701,27 @@ class OpenAIAdvisor:
         actual_model = response.get("model")
         if not isinstance(actual_model, str) or not (actual_model == self.model or actual_model.startswith(self.model + "-")):
             raise AdvisorError("API response model does not match the requested model")
-        action, reason, tokens = parse_response(response, offered)
+        tail = []
+        if 'follow_up_ids' in payload['tools'][0]['parameters']['properties']:
+            action,reason,tokens,tail = parse_response(response,offered,with_plan=True)
+        else:
+            action,reason,tokens = parse_response(response,offered)
         plan_record = {'offered_attack_pairs':list(pairs)} if offered is not menu else {}
         if action.get('kind') == 'attack_plan':
             self.pending_attack = attack_plan.prepare(view, menu, action, self.decision_seq)
             plan_record['conditional_attack'] = self.pending_attack['second']
             action = self.pending_attack['first']
+        elif action.get('kind') == 'coin_plan':
+            predicted = next(p for macro,p in coins.values() if macro==action)
+            second = action['then_if_affordable']
+            action = menu[action['first']]
+            self.pending_attack = dict(predicted,first=action,second=second,origin=self.decision_seq,
+                                       decision_id=self.decision_seq)
+            plan_record['conditional_sequence'] = [second]
+        elif tail:
+            self.pending_attack = attack_plan.continuation(view,menu,action,tail,self.decision_seq,self.decision_seq)
+            if self.pending_attack:
+                plan_record['conditional_sequence'] = tail
         revised,lesson = review_action(menu,action,orders)
         if lesson:
             plan_record.update(model_action=action,model_reason=reason,tactical_lesson=lesson)
@@ -701,10 +756,21 @@ class OpenAIAdvisor:
         plan, self.pending_attack = self.pending_attack, None
         followup = None if gaps else attack_plan.checked_action(plan, view, menu, state.get('options_id'), self.decision_seq)
         if followup:
-            return self.local_action(view, menu, {'rule':'confirmed_attack_plan_v1', 'action':followup,
-                'reason':'按已选计划执行第二次交换。首击已确认，当前公开局面和合法选项与预期相符。',
-                'evidence':{'from_decision':plan['decision_id'], 'first':plan['first'],
-                            'previous_options_id':plan['confirmed_options_id'], 'options_id':state['options_id']}})
+            sequence = 'origin' in plan
+            chosen = self.local_action(view,menu,{'rule':'verified_turn_plan_v1' if sequence else 'confirmed_attack_plan_v1',
+                'action':followup,'reason':'上一步已确认，牌面和合法菜单与预期一致，执行已选的后续动作。',
+                'evidence':{'from_decision':plan['decision_id'],'origin':plan.get('origin',plan['decision_id']),
+                            'first':plan['first'],'previous_options_id':plan['confirmed_options_id'],
+                            'options_id':state['options_id']}})
+            if sequence and plan['remaining']:
+                self.pending_attack = attack_plan.continuation(view,menu,chosen,plan['remaining'],
+                                                              self.decision_seq,plan['origin'])
+                if self.pending_attack:
+                    self.pending_attack['offered_options_id'] = state['options_id']
+            return chosen
+        if plan and 'origin' in plan:
+            self.record({'event':'turn_plan_discarded','origin':plan['origin'],'from_decision':plan['decision_id'],
+                         'game_turn':view.get('game_turn'),'reason':'receipt, public state or legal window did not match'})
         from tactical_checks import forced_face_attack
         proof = None if gaps else forced_face_attack(state, menu)
         if proof:

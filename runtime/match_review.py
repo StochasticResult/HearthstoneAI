@@ -93,6 +93,9 @@ def summarize(dest):
                'decisions_shadow': sum(r.get('event') == 'decision_assist_shadow' for r in decisions),
                'decisions_declined': sum(r.get('event') == 'decision_assist_declined' for r in decisions),
                'lesson_corrections': dict(Counter(role for r in decisions if (role:=lesson_role(r)))),
+               'turn_plans_chosen': sum(bool(r.get('conditional_sequence')) for r in proposed),
+               'turn_plan_steps': sum(r.get('local_rule')=='verified_turn_plan_v1' for r in proposed),
+               'turn_plans_discarded': sum(r.get('event')=='turn_plan_discarded' for r in decisions),
                'requested_mode': next((r['game_mode'] for r in events if r.get('game_mode') in ('practice', 'ranked')), None),
                'first_decision_game_turn': next((r['observation'].get('game_turn') for r in proposed if isinstance(r.get('observation'), dict)), None),
                'models': sorted({r['model'] for r in proposed if isinstance(r.get('model'), str)}),
@@ -131,7 +134,8 @@ def summarize(dest):
         summary['external_choices'] = compact.get('external_choices', len(external))
         summary['withdrawn_decisions'] = compact.get('withdrawn_decisions', len(withdrawn))
         summary['api_timeouts'] = compact.get('api_timeouts', summary['api_timeouts'])
-        for key in ('decisions_proposed','decisions_shadow','decisions_declined'):
+        for key in ('decisions_proposed','decisions_shadow','decisions_declined',
+                    'turn_plans_chosen','turn_plan_steps','turn_plans_discarded'):
             summary[key] = compact.get(key,summary[key])
         summary['lesson_corrections'] = compact.get('lesson_corrections',summary['lesson_corrections'])
         for key in ('api_responses', 'api_tokens', 'confirmed_decisions', 'unconfirmed_decisions',

@@ -10,6 +10,7 @@ from resource_guard import (GIB, MIB, battery_status, thermal_state, swap_used,
 
 RESOURCE_CHECK_SECONDS = 15
 MAX_WARNING_SWAPOUT_MIB_PER_MINUTE = 256
+HEAVY_PAGING = 'active paging under memory pressure'
 
 
 def swapout_bytes():
@@ -38,7 +39,11 @@ def warning_paging(previous):
         return 'observing current paging', sample
     rate = delta / MIB * 60 / elapsed
     sample['swapout_mib_per_minute'] = round(rate, 1)
-    reason = 'active paging under memory pressure' if rate > MAX_WARNING_SWAPOUT_MIB_PER_MINUTE else None
+    reason = HEAVY_PAGING if rate > MAX_WARNING_SWAPOUT_MIB_PER_MINUTE else None
+    previous_rate = previous.get('swapout_mib_per_minute')
+    if (reason and previous.get('memory_pressure_level') == 2 and HEAVY_PAGING in previous.get('reasons', ())
+            and isinstance(previous_rate, (int, float))):
+        sample['sustained_paging_mib_per_minute'] = [previous_rate, sample['swapout_mib_per_minute']]
     return reason, sample
 
 
@@ -55,7 +60,7 @@ def cleanup(data, keep=5):
     return {'old_runs_removed': removed, 'collected_objects': gc.collect(), 'at': time.time()}
 
 
-def readiness(baseline, previous=None):
+def readiness(baseline, previous=None, *, ranked=False):
     """Stricter admission checks apply only when no game is in progress."""
     ac, battery = battery_status()
     current_swap = swap_used()
@@ -65,7 +70,7 @@ def readiness(baseline, previous=None):
     reasons = []
     # Keep the original baseline for diagnostics. Allocated system swap can
     # stay high after pressure has cleared, even with no game process alive.
-    memory = memory_stop_reason(current_swap, baseline, pressure, available, growth=None)
+    memory = memory_stop_reason(current_swap, baseline, pressure, available, growth=None, defer_maintenance=ranked)
     if memory:
         reasons.append(memory)
     if thermal >= 1:
@@ -75,7 +80,7 @@ def readiness(baseline, previous=None):
     if disk < 10*GIB:
         reasons.append('disk reserve')
     paging = {}
-    if pressure == 2 and not reasons:
+    if pressure == 2 and (not reasons or (ranked and not memory)):
         wait_reason, paging = warning_paging(previous)
         if wait_reason:
             reasons.append(wait_reason)
@@ -88,12 +93,12 @@ def readiness(baseline, previous=None):
 
 WAIT_LABELS = {
     'critical system memory pressure': '系统内存压力严重',
-    'system memory availability threshold': '可用内存指标低于 20%',
+    'system memory availability threshold': '系统可用内存指标过低',
     'unknown system memory status': '等待系统内存读数',
     'waiting for nominal thermal state': '等待电脑降温',
     'waiting for AC power': '等待接通电源',
     'disk reserve': '磁盘可用空间不足 10 GiB',
     'swapout reading unavailable': '等待系统换页读数',
     'observing current paging': '内存压力告警，观察 15 秒换页活动',
-    'active paging under memory pressure': '内存压力告警，系统正在大量换页',
+    HEAVY_PAGING: '内存压力告警，系统正在大量换页',
 }

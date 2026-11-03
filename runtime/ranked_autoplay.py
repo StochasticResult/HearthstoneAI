@@ -11,6 +11,7 @@ from pathlib import Path
 from match_review import save
 from resource_guard import swap_used, MIB
 from maintenance import cleanup, readiness, RESOURCE_CHECK_SECONDS, WAIT_LABELS
+from game_watchdog import BOUNDARY_RECYCLE
 from navigation import stop_child
 from app_awake import AppWake
 
@@ -160,10 +161,11 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
                 return False
             if client:
                 client.tick()
-                client.recycle_at_boundary()
-            sample = readiness(baseline, previous=previous_sample)
-            previous_sample = sample
+            sample = readiness(baseline, previous=previous_sample, ranked=True)
             state['resources'] = sample
+            if client:
+                client.recycle_at_boundary(sample)
+            previous_sample = sample
             if sample['ready']:
                 state.update(status='running', stop_reason=None)
                 persist()
@@ -265,6 +267,8 @@ def run_autoplay(config, parent_pid, data, run_one, emit, pause=time.sleep, clie
                     raise
                 state.update(status='waiting_for_resources', stop_reason=None, current_game=None, game_pid=None,
                              last_client_recovery={'reason':reason,'pid':old_pid,'at':time.time()})
+                if reason == BOUNDARY_RECYCLE:
+                    state['last_client_recovery']['resources'] = state['resources']
                 persist()
                 emit('等待资源复核，满足条件后自动续排', client_recovery=reason, previous_game_pid=old_pid)
                 pause(RESOURCE_CHECK_SECONDS)

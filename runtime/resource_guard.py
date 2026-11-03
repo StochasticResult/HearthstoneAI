@@ -197,8 +197,11 @@ def main():
     p.add_argument("--max-output-mib", type=int, default=4)
     p.add_argument("--parent-pid", type=int)
     p.add_argument("--defer-maintenance", action="store_true", help="gameplay only: defer ordinary storage/swap maintenance until game end")
+    p.add_argument("--ranked-system-memory", action="store_true", help="native ranked worker: report RSS and enforce system memory emergencies")
     p.add_argument("command", nargs=argparse.REMAINDER)
     a = p.parse_args()
+    if a.ranked_system_memory and (not a.defer_maintenance or not a.parent_pid):
+        p.error("ranked system memory policy requires a supervised gameplay worker")
     if a.timeout < 0:
         p.error("timeout must be nonnegative")
     if a.max_output_mib < 1:
@@ -224,7 +227,8 @@ def main():
                "swap_baseline_mib": round(swap_baseline / MIB, 1)}
     print(json.dumps({"preflight": initial}), flush=True)
     memory_reason = memory_stop_reason(initial_swap, swap_baseline, initial['memory_pressure_level'],
-                                      initial['memory_free_pct'], maximum_swap, growth_limit)
+                                      initial['memory_free_pct'], maximum_swap, growth_limit,
+                                      defer_maintenance=a.ranked_system_memory)
     if initial["free_gib"] < a.min_free_gib or initial["thermal_state"] >= 2 or not ac or memory_reason:
         print("Preflight failed: " + (memory_reason or "insufficient disk, elevated thermal state, or no AC"), file=sys.stderr)
         return 2
@@ -281,13 +285,14 @@ def main():
                                                        maximum_swap, growth_limit,
                                                        defer_maintenance=a.defer_maintenance)
                     maintenance_reason = memory_stop_reason(used_swap, swap_baseline, pressure, free_pct,
-                                                            maximum_swap, growth_limit)
+                                                            maximum_swap, growth_limit,
+                                                            defer_maintenance=a.ranked_system_memory)
                     if pressure != previous_pressure:
                         print(json.dumps({'memory_pressure_level': pressure, 'pressure_transition': True,
                                           'swap_mib': round(used_swap/MIB,1)}), flush=True)
                         previous_pressure = pressure
                     consecutive_high_cpu = consecutive_high_cpu + 1 if cpu > a.max_cpu else 0
-                    if rss > a.max_rss_mib * MIB:
+                    if not a.ranked_system_memory and rss > a.max_rss_mib * MIB:
                         reason = "process group memory limit"
                     elif disk_stop_reason(free, a.min_free_gib * GIB, defer_maintenance=a.defer_maintenance):
                         reason = "disk reserve"

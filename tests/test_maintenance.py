@@ -59,6 +59,27 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(recovered['swapout_mib_per_minute'], 4)
         self.assertEqual(recovered['swap_growth_mib'], first['swap_growth_mib'])
 
+    def test_ranked_admission_uses_pressure_and_recent_paging_with_small_headroom(self):
+        with boundary_readings(pressure=1,available=15), patch('maintenance.swapout_bytes') as activity:
+            self.assertTrue(readiness(0,ranked=True)['ready'])
+            self.assertFalse(readiness(0)['ready'])
+            activity.assert_not_called()
+        with boundary_readings(pressure=2,available=15), \
+             patch('maintenance.swapout_bytes',side_effect=[3*GIB,3*GIB,3*GIB+128*MIB,3*GIB+256*MIB]), \
+             patch('maintenance.time.monotonic',side_effect=[100,115,130,145]):
+            start=readiness(0,ranked=True)
+            quiet=readiness(0,start,ranked=True)
+            busy=readiness(0,quiet,ranked=True)
+            still_busy=readiness(0,busy,ranked=True)
+        self.assertTrue(quiet['ready'])
+        self.assertEqual(busy['reasons'],['active paging under memory pressure'])
+        self.assertNotIn('sustained_paging_mib_per_minute',busy)
+        self.assertEqual(still_busy['swapout_mib_per_minute'],512)
+        self.assertEqual(still_busy['sustained_paging_mib_per_minute'],[512,512])
+        for conditions in ({'available':9},{'pressure':4},{'pressure':0}):
+            with self.subTest(conditions=conditions), boundary_readings(**conditions):
+                self.assertFalse(readiness(0,ranked=True)['ready'])
+
     def test_missing_reset_or_stale_page_counters_wait_for_fresh_evidence(self):
         with boundary_readings(pressure=2), \
              patch('maintenance.swapout_bytes', side_effect=[ValueError(), 3*GIB, 2*GIB, 2*GIB, 2*GIB]), \
@@ -69,6 +90,17 @@ class MaintenanceTests(unittest.TestCase):
                 sample = readiness(1363.7*MIB, sample)
                 self.assertEqual(sample['reasons'], ['observing current paging'])
             self.assertTrue(readiness(1363.7*MIB, sample)['ready'])
+
+    def test_ranked_recycle_requires_two_measured_warning_intervals(self):
+        previous = dict(swapout_bytes=3*GIB, paging_sampled_at=100,
+                        memory_pressure_level=2, reasons=['active paging under memory pressure'])
+        for sample in (previous, dict(previous, memory_pressure_level=1, swapout_mib_per_minute=512)):
+            with self.subTest(sample=sample), boundary_readings(pressure=2), \
+                 patch('maintenance.swapout_bytes', return_value=3*GIB+128*MIB), \
+                 patch('maintenance.time.monotonic', return_value=115):
+                current = readiness(0, sample, ranked=True)
+            self.assertEqual(current['swapout_mib_per_minute'], 512)
+            self.assertNotIn('sustained_paging_mib_per_minute', current)
 
     def test_healthy_paging_never_overrides_resource_protections(self):
         for conditions in ({'pressure':4}, {'pressure':0}, {'available':19}, {'disk':9*GIB},
@@ -174,7 +206,7 @@ class MaintenanceTests(unittest.TestCase):
                 self.assertEqual(summary['unconfirmed_decisions'],[3])
                 self.assertEqual(summary['api_responses'],3)
 
-    def test_ranked_game_rss_spike_waits_for_the_boundary_but_critical_pressure_still_stops(self):
+    def test_ranked_game_rss_spike_is_diagnostic_but_critical_pressure_still_stops(self):
         import game_watchdog as guard
         signals = (signal.SIGTERM,signal.SIGINT,signal.SIGHUP,signal.SIGUSR1,signal.SIGUSR2)
         old_handlers = {s:signal.getsignal(s) for s in signals}
@@ -199,7 +231,8 @@ class MaintenanceTests(unittest.TestCase):
                      contextlib.redirect_stdout(io.StringIO()) as out:
                     self.assertEqual(guard.main(), 2 if critical else 0)
                 records = [json.loads(l) for l in out.getvalue().splitlines()]
-                self.assertEqual(sum(r.get('recycle_after_game') is True for r in records), 1)
+                self.assertFalse(any(r.get('recycle_after_game') for r in records))
+                self.assertEqual(records[-1]['peak_sampled_rss_mib'],1811)
                 self.assertEqual(records[-1]['watchdog_result'], 'critical system memory pressure' if critical else 'released to user')
                 self.assertEqual(close.call_count, int(critical))
         finally:
@@ -231,10 +264,33 @@ class MaintenanceTests(unittest.TestCase):
         finally:
             for sig,handler in handlers.items():signal.signal(sig,handler)
 
+    def test_healthy_ranked_worker_can_exceed_the_offline_rss_budget(self):
+        import resource_guard as guard
+        handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
+        try:
+            for ranked in (True,False):
+                with self.subTest(ranked=ranked), tempfile.TemporaryDirectory() as tmp:
+                    args=['guard','--log',str(Path(tmp)/'actions.log'),'--max-rss-mib','200','--defer-maintenance']
+                    if ranked:args+=['--ranked-system-memory','--parent-pid',str(os.getppid())]
+                    args+=['--','/bin/sleep','0.4']
+                    with patch('sys.argv',args),patch.object(guard,'group_usage',return_value=(350*MIB,10,1)), \
+                         patch.object(guard,'battery_status',return_value=(True,80)),patch.object(guard,'swap_used',return_value=0), \
+                         patch.object(guard,'memory_free_percentage',return_value=47),patch.object(guard,'memory_pressure_level',return_value=1), \
+                         patch.object(guard,'thermal_state',return_value=0), \
+                         patch.object(guard.shutil,'disk_usage',return_value=SimpleNamespace(free=12*GIB)), \
+                         contextlib.redirect_stdout(io.StringIO()) as out:
+                        self.assertEqual(guard.main(),0 if ranked else 124)
+                    final=json.loads(out.getvalue().splitlines()[-1])['result']
+                    self.assertEqual(final['peak_sampled_rss_mib'],350)
+                    self.assertEqual(final['reason'],None if ranked else 'process group memory limit')
+        finally:
+            for sig,handler in handlers.items():signal.signal(sig,handler)
+
     def test_critical_pressure_still_terminates_only_the_isolated_child(self):
         import resource_guard as guard
         with tempfile.TemporaryDirectory() as tmp:
-            args=['guard','--log',str(Path(tmp)/'actions.log'),'--timeout','0','--defer-maintenance','--','/bin/sleep','15']
+            args=['guard','--log',str(Path(tmp)/'actions.log'),'--timeout','0','--defer-maintenance',
+                  '--ranked-system-memory','--parent-pid',str(os.getppid()),'--','/bin/sleep','15']
             handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}
             pressure=iter([1])
             try:
@@ -248,7 +304,6 @@ class MaintenanceTests(unittest.TestCase):
                     self.assertEqual(guard.main(),124)
                 rows=list(map(json.loads,output.getvalue().splitlines()))
                 self.assertEqual(rows[-1]['result']['reason'],'critical system memory pressure')
-                import os
                 with self.assertRaises(ProcessLookupError):
                     os.kill(rows[1]['started_pid'],0)
             finally:

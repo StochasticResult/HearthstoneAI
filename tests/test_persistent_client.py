@@ -26,31 +26,32 @@ class BoundaryTests(unittest.TestCase):
         client.watchdog = Mock()
         client.boundary = Mock()
         client.previous = {'outcome':'WON','game_pid':777,'match_workers_closed':True}
-        with patch('session.processes',return_value=[(777,1356*session.MIB,0)]) as processes, \
+        normal={'reasons':[], 'memory_pressure_level':1}
+        busy={'memory_pressure_level':2, 'swapout_mib_per_minute':512}
+        sustained=dict(busy,sustained_paging_mib_per_minute=[468,512])
+        with patch('session.processes',return_value=[(777,2400*session.MIB,0)]) as processes, \
              patch('ranked_autoplay.read_small',return_value=None) as request,patch('session.emit'):
-            client.recycle_at_boundary()
+            for sample in (normal,busy,dict(sustained,memory_pressure_level=1)):
+                client.recycle_at_boundary(sample)
             client.watchdog.send_signal.assert_not_called()
-            client.observe({'game_pid':777,'recycle_after_game':True},'游戏守护')
             client.match_at_risk = True
-            client.recycle_at_boundary()
+            client.recycle_at_boundary(sustained)
             client.watchdog.send_signal.assert_not_called()
             client.match_at_risk = False
             client.boundary.check.side_effect = Stop('a new game')
-            with self.assertRaises(Stop):client.recycle_at_boundary()
+            with self.assertRaises(Stop):client.recycle_at_boundary(sustained)
             client.watchdog.send_signal.assert_not_called()
             client.boundary.check.side_effect = None
             request.return_value = {'reason':'user_requested_stop'}
-            with self.assertRaises(AfterGameStop):client.recycle_at_boundary()
+            with self.assertRaises(AfterGameStop):client.recycle_at_boundary(sustained)
             client.watchdog.send_signal.assert_not_called()
             request.return_value = None
-            with self.assertRaisesRegex(session.SessionError,'局间回收'):client.recycle_at_boundary()
+            processes.return_value=[(777,1356*session.MIB,0)]
+            with self.assertRaisesRegex(session.SessionError,'局间回收'):client.recycle_at_boundary(sustained)
             client.watchdog.send_signal.assert_called_once_with(signal.SIGHUP)
-            client.recycle_pending=False
-            processes.return_value=[(777,1774*session.MIB,0)]
-            with self.assertRaisesRegex(session.SessionError,'局间回收'):client.recycle_at_boundary()
             processes.return_value=[(778,1811*session.MIB,0)]
-            with self.assertRaisesRegex(session.SessionError,'身份改变'):client.recycle_at_boundary()
-            self.assertEqual(client.watchdog.send_signal.call_count,2)
+            with self.assertRaisesRegex(session.SessionError,'身份改变'):client.recycle_at_boundary(sustained)
+            client.watchdog.send_signal.assert_called_once()
 
     def test_only_a_verified_closed_resource_guard_can_reset_the_client(self):
         client = session.PersistentClient(os.getppid(),0)

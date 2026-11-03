@@ -15,7 +15,7 @@ from pathlib import Path
 from input_command import input_command
 from deck_observation import save_selected_deck
 from opponent_decks import start_refresh
-from game_watchdog import GAME_EXEC, GAME_RSS_BOUNDARY_MIB, RECOVERABLE_GAME_STOPS, processes, process_started
+from game_watchdog import GAME_EXEC, RECOVERABLE_GAME_STOPS, processes, process_started
 from resource_guard import MIB
 from navigation import FRAMEWORK, Stop as SupervisorError, login_intro_page, next_navigation, next_ranked_navigation, read_json_line, stop_child
 from game_mode import expected_type
@@ -80,8 +80,6 @@ def guard_event(line, source):
         message = "AI 守护结束：%s（退出码 %s）" % (result.get("reason") or "子进程退出", result.get("exit_code"))
     elif "restored_target_fps" in event:
         message = "已恢复原帧率：%s FPS" % event["restored_target_fps"]
-    elif event.get("recycle_after_game"):
-        message = "炉石占用达到局后回收线，继续当前对局"
     elif "claimed_pid" in event:
         message = "已确认炉石进程启动"
     elif "rss_mib" in event:
@@ -258,7 +256,6 @@ class PersistentClient:
         self.covered_point = None
         self.idle_log = None
         self.initial_stage = 1
-        self.recycle_pending = False
         self.guard_reason = None
 
     def foreground_ready(self):
@@ -312,28 +309,25 @@ class PersistentClient:
             if self.pid is not None and self.pid != event['claimed_pid']:
                 raise SessionError('游戏进程身份改变')
             self.pid = event['claimed_pid']
-        if event.get('recycle_after_game') and self.pid and event.get('game_pid') == self.pid:
-            self.recycle_pending = True
         if 'watchdog_result' in event:
             self.guard_reason = event['watchdog_result']
 
-    def recycle_at_boundary(self):
-        if (not self.parent_pid or self.match_at_risk or not self.pid or not self.watchdog or not self.boundary
+    def recycle_at_boundary(self, sample):
+        if (not sample.get('sustained_paging_mib_per_minute') or sample.get('memory_pressure_level') != 2
+                or not self.parent_pid or self.match_at_risk or not self.pid or not self.watchdog or not self.boundary
                 or not self.previous or self.previous.get('outcome') not in ('WON','LOST','TIED')
                 or self.previous.get('game_pid') != self.pid or self.previous.get('match_workers_closed') is not True):
             return
         active = processes(GAME_EXEC)
         if len(active) != 1 or active[0][0] != self.pid:
             raise SessionError('局间炉石进程身份改变，保留现状')
-        rss_mib = active[0][1] / MIB
-        if not self.recycle_pending and rss_mib < GAME_RSS_BOUNDARY_MIB:
-            return
         from ranked_autoplay import AfterGameStop, read_small
         if read_small(DATA/'learning/pause-after-game.json'):
             raise AfterGameStop()
         self.boundary.check()
-        emit('已核实上一局结算，回收炉石内存后自动续排', game_pid=self.pid,
-             boundary_rss_mib=round(rss_mib,1), crossed_in_game=self.recycle_pending)
+        emit('已核实上一局结算，系统持续大量换页，回收炉石后自动续排', game_pid=self.pid,
+             boundary_rss_mib=round(active[0][1]/MIB,1), memory_pressure_level=sample['memory_pressure_level'],
+             swapout_mib_per_minute=sample['sustained_paging_mib_per_minute'])
         self.watchdog.send_signal(signal.SIGHUP)
         self.watchdog.wait(timeout=12)
         raise SessionError('局间回收已结束，重新检查资源')
@@ -359,7 +353,7 @@ class PersistentClient:
     def reset_guard(self):
         self.close()
         self.watchdog = self.pid = self.previous = self.boundary = self.idle_log = None
-        self.launched = self.match_at_risk = self.recycle_pending = False
+        self.launched = self.match_at_risk = False
         self.guard_reason = self.covered_point = self.last_focus_state = None
         self.initial_stage = 1
         if self.focus:
@@ -421,7 +415,6 @@ class PersistentClient:
                 self.return_to_menu()
         else:
             self.return_to_menu()
-        self.recycle_at_boundary()
 
     def tick(self):
         if self.parent_pid and os.getppid() != self.parent_pid:
@@ -670,8 +663,10 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
         managed_focus = client.focus if client is not None else None
         if managed_focus is not None:
             log_args += ['--foreground-lease', managed_focus.file.name]
+        memory_policy = (['--ranked-system-memory'] if mode == 'ranked' and client and parent_pid
+                         else ['--max-rss-mib', '200'])
         driver = subprocess.Popen([sys.executable, str(ROOT / "resource_guard.py"),
-            "--log", str(dest / "actions.log"), "--timeout", "0", "--max-rss-mib", "200", "--max-cpu", "130",
+            "--log", str(dest / "actions.log"), "--timeout", "0", *memory_policy, "--max-cpu", "130",
             "--defer-maintenance", "--parent-pid", str(os.getpid())] + baseline_args + ["--", "/usr/bin/nice", "-n", "10", sys.executable,
             str(ROOT / "state-bridge/practice_driver.py")] + log_args + ["--evidence", str(dest / "Power.log"),
             "--deck-snapshot", str(dest / "selected-deck.json"),

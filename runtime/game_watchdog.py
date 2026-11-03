@@ -27,7 +27,6 @@ GAME_EXEC = "/Applications/Hearthstone/Hearthstone.app/Contents/MacOS/Hearthston
 LAUNCHER_EXEC = "/Applications/Hearthstone/Hearthstone Beta Launcher.app/Contents/MacOS/Hearthstone Beta Launcher"
 OPTIONS = os.path.expanduser("~/Library/Preferences/Blizzard/Hearthstone/options.txt")
 GAME_RSS_LIMIT_MIB = 1800
-GAME_RSS_BOUNDARY_MIB = GAME_RSS_LIMIT_MIB * 95 // 100
 BOUNDARY_RECYCLE = 'postgame memory recycle'
 RECOVERABLE_GAME_STOPS = {BOUNDARY_RECYCLE, 'game memory threshold', 'critical system memory pressure',
     'system memory availability threshold', 'unknown system memory status', 'serious or critical thermal state',
@@ -128,7 +127,8 @@ def main():
     swap_baseline = initial_swap if args.swap_baseline_mib is None else args.swap_baseline_mib * MIB
     free_memory_pct = memory_free_percentage()
     previous_pressure = memory_pressure_level()
-    preflight_reason = memory_stop_reason(initial_swap, swap_baseline, previous_pressure, free_memory_pct, growth=None)
+    preflight_reason = memory_stop_reason(initial_swap, swap_baseline, previous_pressure, free_memory_pct,
+                                          growth=None, defer_maintenance=bool(args.native_owner_pid))
     if not initial_ac:
         preflight_reason = 'waiting for AC power'
     elif thermal_state() >= 1:
@@ -192,7 +192,6 @@ def main():
     report({"watchdog": "armed", "pid": os.getpid(), "max_game_seconds": args.run_seconds})
     claimed = None
     claimed_start = None
-    recycle_reported = False
     start = time.monotonic()
     game_start = None
     previous_status = start
@@ -246,8 +245,7 @@ def main():
                 max_rss = max(max_rss, rss); max_cpu = max(max_cpu, cpu)
                 # %CPU counts cores. Startup routinely uses 3-4 cores even
                 # in successfully completed games; that is not overheating.
-                # Sustained load is recorded for boundary maintenance. Actual
-                # heat, process RAM and power remain independent safeguards.
+                # Thermal state and system memory pressure are sampled independently.
                 high_cpu_since = (high_cpu_since or now) if cpu > 250 and now-game_start >= 60 else None
                 ac, pct = battery_status()
                 if now - last_memory_check >= 5:
@@ -257,7 +255,8 @@ def main():
                 pressure = memory_pressure_level()
                 memory_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct,
                                                    defer_maintenance=True)
-                maintenance_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct, growth=None)
+                maintenance_reason = memory_stop_reason(current_swap, swap_baseline, pressure, free_memory_pct,
+                                                        growth=None, defer_maintenance=bool(args.native_owner_pid))
                 tstate = thermal_state()
                 free_disk = shutil.disk_usage('/System/Volumes/Data').free
                 if not maintenance_reason and tstate == 1:
@@ -266,9 +265,6 @@ def main():
                     maintenance_reason = 'sustained game CPU load'
                 if not maintenance_reason and free_disk < 10*GIB:
                     maintenance_reason = 'disk reserve'
-                if args.native_owner_pid and rss > GAME_RSS_LIMIT_MIB*MIB and not recycle_reported:
-                    report({'recycle_after_game':True, 'game_pid':claimed, 'rss_mib':round(rss/MIB,1)})
-                    recycle_reported = True
                 if pressure != previous_pressure:
                     report({'memory_pressure_level': pressure, 'pressure_transition': True,
                             'swap_mib': round(current_swap/MIB,1)})

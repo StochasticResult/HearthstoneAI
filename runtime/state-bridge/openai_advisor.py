@@ -25,7 +25,7 @@ from coach_policy import hints, read_json
 import attack_plan
 from decision_standby import DecisionStandby
 from card_metadata import CATALOG
-from resource_facts import shred_battlecry_menu
+from resource_facts import blasphemy_pressure, shred_battlecry_menu
 from spell_order import buff_before_tax, review_action
 DEFAULT_MODEL = "gpt-6.1-sol"
 MAX_OUTPUT = 1536
@@ -375,6 +375,13 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         encoded = json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()
     if len(encoded) > MAX_INPUT_BYTES:
         raise ContextTooLarge("Decision context exceeds the request size limit")
+    pressure = blasphemy_pressure(view,menu)
+    if pressure:
+        wire = json.dumps(dict(body,blasphemy_pressure=pressure),ensure_ascii=True,separators=(',',':'))
+        candidate = dict(payload,input=wire)
+        size = len(json.dumps(candidate,ensure_ascii=True,separators=(',',':')).encode())
+        if size<=MAX_INPUT_BYTES:
+            return candidate,size
     return payload, len(encoded)
 
 

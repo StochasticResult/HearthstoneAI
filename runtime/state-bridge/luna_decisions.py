@@ -6,7 +6,7 @@ import time
 from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES
 from spell_order import buff_before_tax, review_action
 from card_metadata import CATALOG
-from resource_facts import shred_battlecry_menu
+from resource_facts import blasphemy_damage, blasphemy_pressure, shred_battlecry_menu
 
 MODEL = 'gpt-6-luna'
 
@@ -130,7 +130,6 @@ def _previews(view, menu):
     friendly = {x['id']:x for x in view.get('my_board',[])}
     enemies = {x['id']:x for x in view.get('enemy_board',[])}
     hand = {x['id']:x for x in view.get('my_hand',[])}
-    costs = [x.get('cost') for x in hand.values()]
     hero = view.get('enemy_hero') or {}
     result = {}
     playable = {a.get('source_id') for a in menu.values() if a.get('kind')=='play'}
@@ -163,24 +162,10 @@ def _previews(view, menu):
             elif other and all(type(v) is int for v in (unit.get('health'),other.get('health'),other.get('attack'))):
                 result[aid] = {'defender_hp_after_hit':_hitpoints(other,unit['attack'],unit.get('poisonous')),
                                'attacker_hp_after_counter':_hitpoints(unit,other['attack'],other.get('poisonous'))}
-        if (a.get('kind')!='play' or hand.get(source,{}).get('card_id')!='BE_086'
-                or any(type(c) is not int for c in costs)
-                or any(type(x.get('health')) is not int for x in enemies.values())):
-            continue
-        waves = 2 if hand[source]['cost']==max(costs) else 1
-        power = sum(x.get('spell_damage') or 0 for x in friendly.values() if not x.get('dormant') and not x.get('silenced'))
-        per = 2+power
-        remaining, triggers = {}, []
-        for eid,x in enemies.items():
-            hits = 0 if x.get('immune') or x.get('dormant') else max(0,waves-int(bool(x.get('divine_shield'))))
-            hp = max(0,x['health']-hits*per)
-            remaining[eid] = hp
-            if hp==0 and (x.get('deathrattle') or x.get('reborn')):
-                triggers.append(eid)
-        result[aid] = {'waves':waves,'damage_per_wave_before_replacements':per,
-                       'original_enemy_minion_hp_after_spell_before_triggers':remaining,
-                       'destroyed_with_deathrattle_or_reborn':triggers,
-                       'enemy_hero_damage_before_other_effects':0 if hero.get('immune') else per*max(0,waves-int(bool(hero.get('divine_shield'))))}
+        if played.get('card_id')=='BE_086':
+            damage = blasphemy_damage(view,played)
+            if damage:
+                result[aid] = damage
     return result
 
 
@@ -205,6 +190,9 @@ def recovery_inputs(sol, view, menu, *, orders=None):
                             'Compare its next moves against all candidates. Prioritize certain lethal, then surviving '
                             'visible threats. Respect timing, costs, Taunt, Lifesteal and possible triggers.',
                             'levels':levels} for aid in menu]}
+    if 'blasphemy_pressure' in ev and any(len(json.dumps(p,separators=(',', ':')).encode()) > MAX_INPUT_BYTES for p in (compact,scored)):
+        del ev['blasphemy_pressure']
+        compact['input'] = scored['input'] = json.dumps(ev,ensure_ascii=True,separators=(',', ':'))
     if len(json.dumps(compact,separators=(',', ':')).encode()) > MAX_INPUT_BYTES:
         raise ContextTooLarge('Sol recovery input exceeds the existing limit')
     return compact, scored
@@ -321,6 +309,12 @@ def tactical_payload(view, menu, *, orders=None):
                              'choices':[{'value':aid,'description':label} for aid,label in labels.items()]}]}
     if not 2<=len(menu)<=255 or len(json.dumps(payload,separators=(',', ':')).encode())>MAX_INPUT_BYTES:
         raise ContextTooLarge('Tactical Decisions request exceeds the supported menu or size')
+    pressure = blasphemy_pressure(view,menu)
+    if pressure:
+        richer = dict(payload,input=json.dumps(dict(evidence,blasphemy_pressure=pressure),
+                                              ensure_ascii=True,separators=(',',':')))
+        if len(json.dumps(richer,separators=(',',':')).encode()) <= MAX_INPUT_BYTES:
+            return richer
     return payload
 
 

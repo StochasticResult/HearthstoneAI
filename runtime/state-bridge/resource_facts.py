@@ -13,6 +13,67 @@ def coin_result(mana, cost, cap):
             'wasted_at_cap': max(0, mana - cost + 1 - cap)}
 
 
+def blasphemy_damage(view, card):
+    """Printed waves and health changes before deathrattles, Reborn or other triggers."""
+    hand, foes = view.get('my_hand',[]), view.get('enemy_board',[])
+    costs = [row.get('cost') for row in hand]
+    if (card.get('card_id')!='BE_086' or not costs or type(card.get('cost')) is not int
+            or any(type(n) is not int for n in costs) or any(type(x.get('health')) is not int for x in foes)):
+        return None
+    waves = 2 if card['cost']==max(costs) else 1
+    per = 2+sum(x.get('spell_damage') or 0 for x in view.get('my_board',[])
+               if not x.get('dormant') and not x.get('silenced'))
+    remaining, triggers = {}, []
+    for x in foes:
+        hits = 0 if x.get('immune') or x.get('dormant') else max(0,waves-int(bool(x.get('divine_shield'))))
+        remaining[x['id']] = max(0,x['health']-hits*per)
+        if not remaining[x['id']] and (x.get('deathrattle') or x.get('reborn')):
+            triggers.append(x['id'])
+    hero = view.get('enemy_hero') or {}
+    return {'waves':waves,'damage_per_wave_before_replacements':per,
+            'original_enemy_minion_hp_after_spell_before_triggers':remaining,
+            'destroyed_with_deathrattle_or_reborn':triggers,
+            'enemy_hero_damage_before_other_effects':0 if hero.get('immune') else per*max(0,waves-int(bool(hero.get('divine_shield'))))}
+
+
+def blasphemy_pressure(view, menu):
+    """One potential face swing per current attacker behind ordinary Taunts."""
+    cards = {c['id']:c for c in view.get('my_hand',[]) if c.get('card_id')=='BE_086'}
+    plays = {k:cards[a['source_id']] for k,a in menu.items()
+             if a.get('kind')=='play' and a.get('source_id') in cards}
+    if not plays or view.get('phase')!='main' or view.get('enemy_secret_count')!=0 or view.get('unavailable_interactions'):
+        return {}
+    hero = view.get('enemy_hero') or {}
+    if (hero.get('immune') is not False or hero.get('divine_shield') or hero.get('modifiers')!=[]
+            or hero.get('unknown_modifier_count') or view.get('enemy_player_effects') or view.get('my_player_effects')):
+        return {}
+    defs = view.get('card_definitions',{})
+    taunts = {u['id'] for u in view.get('enemy_board',[]) if u.get('taunt') and not u.get('stealth') and not u.get('dormant')}
+    if not taunts or any((not u.get('silenced') and defs.get(u.get('card_id'),{}).get('text') not in ('','Taunt'))
+                         or u.get('unknown_modifier_count') or u.get('modifiers')!=[] for u in view.get('enemy_board',[])):
+        return {}
+    attacks = [a for a in menu.values() if a.get('kind')=='attack']
+    blocked = {a['source_id'] for a in attacks if a.get('target_id') in taunts}
+    blocked -= {a['source_id'] for a in attacks if a.get('target_id')==hero.get('id')}
+    ready = {u['id']:u['attack'] for u in view.get('my_board',[]) if u['id'] in blocked
+             and type(u.get('attack')) is int and u['attack']>0 and not any(u.get(flag) for flag in
+             ('rush','frozen','exhausted','dormant','cant_attack','cant_attack_heroes','unknown_modifier_count'))}
+    if not ready:
+        return {}
+    result = {}
+    for key,card in plays.items():
+        damage = blasphemy_damage(view,card)
+        if not damage or damage['destroyed_with_deathrattle_or_reborn']:
+            continue
+        hp = damage['original_enemy_minion_hp_after_spell_before_triggers']
+        if all(hp[t]==0 for t in taunts):
+            result[key] = {'waves':damage['waves'],'spell_face_damage':damage['enemy_hero_damage_before_other_effects'],
+                           'taunts_cleared':sorted(taunts),'one_face_swing_by_source':ready,
+                           'potential_followup_face_damage':sum(ready.values()),
+                           'scope':'If the spell resolves as printed and no other effect intervenes. Verify fresh attack targets after resolution.'}
+    return result
+
+
 def shred_battlecry_menu(view, menu, catalog):
     """Separate an engine-legal play from one known to kill our hero on resolution."""
     if view.get('phase')!='main':

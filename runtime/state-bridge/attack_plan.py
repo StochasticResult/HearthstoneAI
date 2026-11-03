@@ -66,7 +66,7 @@ def fingerprint(view):
 
 
 def menu_key(menu):
-    return frozenset(json.dumps(a,sort_keys=True,separators=(',',':')) for a in menu.values())
+    return tuple(sorted(json.dumps(a,sort_keys=True,separators=(',',':')) for a in menu.values()))
 
 
 def predicted_fingerprint(expected, next_menu):

@@ -5,11 +5,16 @@ import time
 
 from openai_advisor import AdvisorError, ContextTooLarge, MAX_INPUT_BYTES
 from spell_order import buff_before_tax, review_action
+from card_metadata import CATALOG
+from resource_facts import shred_battlecry_menu
 
 MODEL = 'gpt-6-luna'
 
 def prepare_backup(sol, view, menu, transport, *, orders=None):
     """Prepare from this exact window now; the returned call can be dispatched later."""
+    view, menu = shred_battlecry_menu(view,menu,CATALOG)
+    if not menu:
+        return lambda:{'sent':False,'error':'no safe supported action'}
     if len(menu)==1:
         return lambda: {'action':next(iter(menu.values())),'mode':'forced','sent':False}
     clears = emergency_clears(view,menu)

@@ -24,6 +24,7 @@ SUITES = {
     'luna-decisions-recovery-v1': ('decisions-sol-recovery','luna_decisions_eval.py',25,480),
     'luna-rescue-replay-v1': ('decisions-rescue-replay','luna_decisions_eval.py',8,80),
     'shared-lessons-v1': ('shared-lessons-evaluation','luna_decisions_eval.py',12,165),
+    'shred-safety-v1': ('shred-safety-evaluation','luna_decisions_eval.py',2,45),
 }
 
 
@@ -72,7 +73,8 @@ def run_evaluation(config, root, data, parent_pid, emit, stop_child, suite="stra
             str(root / "state-bridge" / script), str(dest / "results.jsonl")]
             + {'sol-fast-efforts-v1':['--fast-efforts'], 'luna-decisions-holdout-v1':['--holdout'],
                'luna-decisions-recovery-v1':['--recovery'],
-               'luna-rescue-replay-v1':['--verify-rescue'],'shared-lessons-v1':['--shared-lessons']}.get(suite, []),
+               'luna-rescue-replay-v1':['--verify-rescue'],'shared-lessons-v1':['--shared-lessons'],
+               'shred-safety-v1':['--lethal-shred']}.get(suite, []),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         guard.stdin.write((json.dumps(config) + "\n").encode()); guard.stdin.close()
         config["api_key"] = ""

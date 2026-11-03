@@ -20,11 +20,13 @@ args = parser.parse_args()
 data = Path.home() / "Library/Application Support/HearthstoneAI"
 data.mkdir(mode=0o700, parents=True, exist_ok=True)
 os.umask(0o077)
-if args.suite=='shared-lessons-v1':
+public_fixtures={'shared-lessons-v1':('standby-ranked-20261102.json','shared-freeze-out-20261102.json','ranked-turn-plan-20261102.json'),
+                 'shred-safety-v1':('velocidrake-shreds-20261102.json',)}
+if args.suite in public_fixtures:
     target = data/SUITES[args.suite][0]
     target.mkdir(mode=0o700,parents=True,exist_ok=True)
     fixtures = Path(__file__).resolve().parents[1]/'tests'/'fixtures'
-    for name in ('standby-ranked-20261102.json','shared-freeze-out-20261102.json','ranked-turn-plan-20261102.json'):
+    for name in public_fixtures[args.suite]:
         with (fixtures/name).open('rb') as src:
             public = src.read(128*1024+1)
         if len(public)>128*1024:

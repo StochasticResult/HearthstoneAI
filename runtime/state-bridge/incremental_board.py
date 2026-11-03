@@ -83,6 +83,7 @@ class IncrementalBoard:
         self.last_end_turn_options_id = None
         self.last_targeted_option = None
         self.public_card_memory = {}
+        self.revealed_deck_shreds = {}
         self.resolved_objectives = {}
         self.identity_changes = set()
         self.saw_mulligan = False
@@ -190,6 +191,7 @@ class IncrementalBoard:
             self.last_end_turn_options_id = None
             self.last_targeted_option = None
             self.public_card_memory = {}
+            self.revealed_deck_shreds = {}
             self.resolved_objectives = {}
             self.identity_changes = set()
             self.saw_mulligan = False
@@ -367,7 +369,7 @@ class IncrementalBoard:
         """
         game = self.game
         eid = game.get('cur')
-        for pattern in (board.TAG_CHANGE_RE, board.HIDE_ENTITY_RE, board.SHOW_ENTITY_RE):
+        for pattern in (board.TAG_CHANGE_RE, board.HIDE_ENTITY_RE, board.SHOW_ENTITY_RE, board.CHANGE_ENTITY_RE):
             match = pattern.match(payload)
             if match:
                 eid = board._ref_id(match.group(1)) or game['names'].get(match.group(1))
@@ -378,6 +380,18 @@ class IncrementalBoard:
         if not ent:
             return
         zone, cid, owner = ent.get('zone'), ent.get('cardId'), ent.get('controller')
+        # A generated Shred is explicitly shown before its shuffle animation
+        # hides it again in the SAME deck. Remember presence, never position.
+        # Leaving that deck, an identity change, or a conflicting reveal ends it.
+        if eid in self.revealed_deck_shreds and (zone!='DECK' or owner!=self.revealed_deck_shreds[eid]
+                or payload.startswith(('CHANGE_ENTITY','FULL_ENTITY')) or (cid and cid!='TIME_025t')
+                or (payload.startswith('HIDE_ENTITY') and not payload.endswith('tag=ZONE value=DECK'))):
+            self.revealed_deck_shreds.pop(eid,None)
+        if zone=='DECK' and cid=='TIME_025t' and owner in (1,2) and payload.startswith('SHOW_ENTITY'):
+            creator = board._tag_int(ent,'DISPLAYED_CREATOR') or board._tag_int(ent,'CREATOR')
+            source = game['entities'].get(creator,{})
+            if source.get('controller')==owner and source.get('cardId') in ('TIME_025','TIME_026'):
+                self.revealed_deck_shreds[eid]=owner
         if payload.startswith('CHANGE_ENTITY'):
             if owner:
                 self.identity_changes.add(owner)
@@ -653,9 +667,13 @@ class IncrementalBoard:
                     known_hand.append(row)
                 elif eid in enemy_secret_ids and is_secret_card(memory['card_id']):
                     known_secrets.append(row)
-        known_deck = [{'id': e['id'], 'card_id': e['cardId'],
-                       'generated': bool(board._tag_int(e, 'CREATOR') or board._tag_int(e, 'COPIED_FROM_ENTITY_ID'))}
-                      for e in board._in_zone(game, own_player_id, 'DECK') if e.get('cardId')]
+        known_deck = []
+        for e in board._in_zone(game, own_player_id, 'DECK'):
+            shred = self.revealed_deck_shreds.get(e['id'])==own_player_id
+            cid = e.get('cardId') or ('TIME_025t' if shred else None)
+            if cid:
+                known_deck.append({'id':e['id'],'card_id':cid,'generated':shred or
+                                   bool(board._tag_int(e,'CREATOR') or board._tag_int(e,'COPIED_FROM_ENTITY_ID'))})
         return {
             "phase": "target" if choosing_target else "choose_one" if choosing else "main",
             "format": game["meta"].get("FormatType"), "game_type": game["meta"].get("GameType"),

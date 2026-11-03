@@ -239,13 +239,11 @@ def verify_rescue(config, output):
 
 def replay_state(row):
     state = copy.deepcopy(row['observation'])
-    options = {}
-    for a in row['actions'].values():
-        if 'source_id' in a:
-            option = options.setdefault(a['source_id'],{'id':a['source_id'],'type':'POWER','targets':[]})
-            if 'target_id' in a:
-                option['targets'].append(a['target_id'])
-    state.update(own_turn=True,options_id=row['server_options_id'],end_turn_allowed=True,legal_options=list(options.values()))
+    # Retain every menu entry, including distinct engine options with identical
+    # visible source/target. The replay must round-trip the archived action IDs.
+    options = [{'id':a['source_id'],'type':'POWER','targets':[a['target_id']] if 'target_id' in a else []}
+               for a in row['actions'].values() if 'source_id' in a]
+    state.update(own_turn=True,options_id=row['server_options_id'],end_turn_allowed=True,legal_options=options)
     if action_menu(state)!=row['actions']:
         raise ValueError('Archived legal menu could not be reconstructed')
     return state
@@ -355,9 +353,36 @@ def verify_shared_lessons(config, output):
         advisor.close()
 
 
+def verify_lethal_shred(config, output):
+    output=Path(output)
+    case=json.loads(read_bounded(output.parent/'velocidrake-shreds-20261102.json',64*1024))
+    view=case['observation']
+    menu=blind_menu('shred-battlecry-v1',case['actions'])
+    advisor=CaptureAdvisor(config)
+    config['api_key']=''
+    advisor.standby.close()
+    advisor.standby=None
+    try:
+        advisor.select(view,menu)
+        primary=advisor.last_event
+        sol,_=request_payload(advisor.model,view,menu,service_tier=advisor.service_tier,effort=advisor.effort)
+        backup=prepare_backup(sol,view,menu,advisor.decisions_transport)()
+        blocked=primary['observation']['shred_battlecry']['withheld_sources']
+        rows=[{'arm':arm,**{k:r[k] for k in ('model','elapsed_ms','action','served_tier','error') if k in r}}
+              for arm,r in [('primary',primary),('backup',backup)]]
+        summary={'known_shreds_at_least':primary['observation']['shred_battlecry']['known_shreds_at_least'],
+                 'both_selected_nonfatal_alternative':all(r.get('action') in menu.values() and not (
+                      r['action'].get('kind')=='play' and r['action'].get('source_id') in blocked) for r in rows)}
+        output.write_text(''.join(json.dumps(r)+'\n' for r in [*rows,{'summary':summary}]))
+    finally:
+        advisor.close()
+
+
 if __name__ == '__main__':
     config = json.loads(sys.stdin.readline(4097))
-    if sys.argv[2:]==['--shared-lessons']:
+    if sys.argv[2:]==['--lethal-shred']:
+        verify_lethal_shred(config,sys.argv[1])
+    elif sys.argv[2:]==['--shared-lessons']:
         verify_shared_lessons(config,sys.argv[1])
     elif sys.argv[2:]==['--verify-rescue']:
         verify_rescue(config,sys.argv[1])

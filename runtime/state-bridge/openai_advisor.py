@@ -24,6 +24,7 @@ from coaching import lesson_role
 import attack_plan
 from decision_standby import DecisionStandby
 from card_metadata import CATALOG
+from resource_facts import shred_battlecry_menu
 from spell_order import buff_before_tax, review_action
 DEFAULT_MODEL = "gpt-6.1-sol"
 MAX_OUTPUT = 1536
@@ -631,18 +632,24 @@ class OpenAIAdvisor:
 
     def select(self, view, menu):
         self.decision_seq += 1
+        observed_menu = menu
+        view,menu = shred_battlecry_menu(view,menu,CATALOG)
+        unsafe = (view.get('shred_battlecry') or {}).get('withheld_sources',[])
+        if not menu:
+            raise AdvisorError('No supported action survives the observed self-damage check')
         self.note_turn_pace(view, menu)
         # With no playable card, attack or power, the observed menu may
         # contain only end turn. There is no model decision to purchase.
         if len(menu) == 1 and next(iter(menu.values())) == {"kind": "end_turn"}:
             print(json.dumps({"automatic_action": "end_turn", "reason": "Only end turn is available"}), flush=True)
-            self.record({"event": "proposed", "observation": view, "actions": menu,
-                         "action": {"kind": "end_turn"}, "reason": "only legal supported action"})
+            self.record({"event": "proposed", "observation": view, "actions": observed_menu,
+                         "action": {"kind": "end_turn"}, "reason": "only safe supported action" if unsafe else "only legal supported action"})
             return {"kind": "end_turn"}
-        pairs = attack_plan.options(view, menu)
-        coins = attack_plan.coin_options(view,menu)
+        critical_drake = bool(view.get('shred_battlecry'))
+        pairs = {} if critical_drake else attack_plan.options(view, menu)
+        coins = {} if critical_drake else attack_plan.coin_options(view,menu)
         orders = buff_before_tax(view,menu)
-        prefixes = attack_plan.predictable_attacks(view,menu) if len(menu)>2 else {}
+        prefixes = attack_plan.predictable_attacks(view,menu) if len(menu)>2 and not critical_drake else {}
         offered = {**menu, **pairs, **{key:value[0] for key,value in coins.items()}} if pairs or coins else menu
         instructions = self.instructions
         if pairs:
@@ -687,7 +694,7 @@ class OpenAIAdvisor:
                          'consecutive_timeouts':self.consecutive_timeouts})
             backup = self.standby.take(standby_job) if standby_job else None
             if backup and backup.get('action') in menu.values():
-                return self.accept_backup(view,menu,backup)
+                return self.accept_backup(view,observed_menu,backup)
             if backup is not None:
                 self.record_unused_backup(self.decision_seq,backup,None)
             raise
@@ -732,7 +739,7 @@ class OpenAIAdvisor:
         if standby_job:
             standby_job['primary_action'] = dict(action)
         self.tokens += tokens
-        self.record({"event": "proposed", "observation": view, "actions": menu, "action": action,
+        self.record({"event": "proposed", "observation": view, "actions": observed_menu, "action": action,
                      "reason": reason, "model": actual_model, "tokens": tokens, "elapsed_ms": elapsed_ms,
                      "requested_tier": self.service_tier or 'auto', "served_tier": response.get('service_tier'),
                      "reasoning_effort": self.effort, **plan_record})
@@ -756,6 +763,10 @@ class OpenAIAdvisor:
         plan, self.pending_attack = self.pending_attack, None
         mismatch = ('unavailable_interaction' if gaps else
                     attack_plan.mismatch_reason(plan,view,menu,state.get('options_id'),self.decision_seq))
+        if plan and not mismatch:
+            _,safe = shred_battlecry_menu(view,menu,CATALOG)
+            if plan['second'] not in safe.values():
+                mismatch='known_fatal_self_damage'
         followup = plan['second'] if not mismatch else None
         if followup:
             sequence = 'origin' in plan

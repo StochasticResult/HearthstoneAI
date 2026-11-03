@@ -54,6 +54,35 @@ class TapTests(unittest.TestCase):
         v['my_hero_power']['card_id']='HERO_08bp'
         self.assertIsNone(life_tap_facts(v,m,CATALOG))
 
+    def test_shreds_with_an_unreconciled_deck_reach_both_model_inputs(self):
+        from luna_decisions import tactical_payload
+        v,m=priest()
+        v.update(my_hero={'id':68,'health':7,'armor':0,'immune':False,'modifiers':[]},
+                 my_board=[],enemy_board=[body(61,8,11,frozen=True)],my_deck_count=16,
+                 my_player_effects=[],own_known_deck=[{'id':86,'card_id':'TIME_025t'},
+                     {'id':127,'card_id':'TIME_025t'}, {'id':86,'card_id':'TIME_025t'}])
+        menu={'tap':TAP,'end':END}
+        facts=life_tap_facts(v,menu,CATALOG)
+        self.assertNotIn('verified_shreds_in_deck',facts)
+        self.assertEqual(facts['known_shreds_at_least'],2)
+        self.assertEqual(facts['effective_health_tap_before_other_effects'],5)
+        branch=facts['if_one_shred_at_printed_damage']
+        self.assertEqual((branch['effective_health'],branch['margin_after_example_trades']),(2,2))
+        primary,_=request_payload('gpt-6.1-sol',dict(v,life_tap=facts),menu)
+        backup=tactical_payload(dict(v,life_tap=facts),menu)
+        self.assertEqual(json.loads(primary['input'])['observation']['life_tap'],facts)
+        self.assertEqual(json.loads(backup['input'])['public_position']['life_tap'],facts)
+        self.assertIn(TAP,json.loads(primary['input'])['actions'].values())
+
+        exact=dict(v, strategy={'deck':{'reconciled_remaining_counts':{'TIME_025t':3}}})
+        both=life_tap_facts(exact,menu,CATALOG)
+        self.assertEqual((both['verified_shreds_in_deck'],both['known_shreds_at_least']),(3,3))
+        for change in ({'own_known_deck':[]}, {'my_deck_count':0}, {'my_hand':[{}]*10},
+                       {'my_player_effects':[{'card_id':'TIME_064e'}]},
+                       {'my_hero':dict(v['my_hero'],modifiers=[{'card_id':'unknown'}])},
+                       {'my_board':[body(3,1,1,spell_damage=1)]}):
+            self.assertNotIn('if_one_shred_at_printed_damage',life_tap_facts(dict(v,**change),menu,CATALOG))
+
     def test_frozen_dormant_shield_reborn_and_shared_attackers(self):
         v,m=priest();v.update(my_board=[body(203,5,5)],enemy_board=[body(185,6,1,frozen=True),body(186,6,1,dormant=True),
             body(188,4,1,divine_shield=True),body(189,2,1,reborn=True),body(108,1,1,windfury=True)])

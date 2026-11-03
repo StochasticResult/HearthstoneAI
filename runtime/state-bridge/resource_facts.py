@@ -74,6 +74,14 @@ def blasphemy_pressure(view, menu):
     return result
 
 
+def known_shred_count(view, remaining):
+    """Both observations describe the same deck and can include the same cards."""
+    ids = {c['id'] for c in view.get('own_known_deck', []) if c.get('card_id') == 'TIME_025t'
+           and type(c.get('id')) is int and c['id'] > 0}
+    exact = remaining.get('TIME_025t', 0) if isinstance(remaining, dict) else 0
+    return max(len(ids), exact if type(exact) is int else 0)
+
+
 def shred_battlecry_menu(view, menu, catalog):
     """Separate an engine-legal play from one known to kill our hero on resolution."""
     if view.get('phase')!='main':
@@ -86,10 +94,8 @@ def shred_battlecry_menu(view, menu, catalog):
     if (type(hp) is not int or type(armor) is not int or hp<=0 or armor<0 or hp+armor>3 or hero.get('immune') is not False
             or type(view.get('my_deck_count')) is not int):
         return view,menu
-    known={row['id'] for row in view.get('own_known_deck',[]) if row.get('card_id')=='TIME_025t' and 'id' in row}
     exact=((view.get('strategy') or {}).get('deck') or {}).get('reconciled_remaining_counts')
-    exact_count=exact.get('TIME_025t',0) if isinstance(exact,dict) else 0
-    known_count=max(len(known),exact_count if type(exact_count) is int else 0)
+    known_count=known_shred_count(view, exact)
     absent=view['my_deck_count']==0 or (isinstance(exact,dict) and not known_count)
     # Before making a hard exclusion check the printed effects and rule out damage
     # prevention or battlecry suppression on unfamiliar boards. Otherwise explain the risk.

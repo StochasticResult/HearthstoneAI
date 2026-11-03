@@ -1,4 +1,5 @@
 """Small counterfactual for a currently legal Life Tap, using only public cards."""
+from resource_facts import known_shred_count
 
 def life_tap_facts(view, menu, catalog):
     power = view.get('my_hero_power') or {}
@@ -84,6 +85,18 @@ def life_tap_facts(view, menu, catalog):
     remaining = deck_info.get('reconciled_remaining_counts')
     if isinstance(remaining, dict) and remaining.get('TIME_025t'):
         costs['verified_shreds_in_deck'] = remaining['TIME_025t']
+    known = known_shred_count(view, remaining)
+    if 0 < known <= deck:
+        costs['known_shreds_at_least'] = known
+        text = ' '.join((catalog.get('TIME_025t', {}).get('text') or '').split())
+        if (known < deck and draws == 1 and len(hand) < 10 and hero.get('immune') is False
+                and hero.get('modifiers') == [] and not hero.get('unknown_modifier_count') and not hero.get('divine_shield')
+                and view.get('my_player_effects') == []
+                and all(c.get('spell_damage') == 0 for c in friendly if not c.get('dormant') and not c.get('silenced'))
+                and text == 'Casts When Drawn Deal $3 damage to your hero.'):
+            health = budget - hit - 3
+            costs['if_one_shred_at_printed_damage'] = {'effective_health':health, 'margin_after_example_trades':health-after,
+                'scope':'One Shred casts for 3; excludes additional Shreds, replacement draws and other effects. Deck order unknown.'}
     if len(hand) + draws > 10:
         costs['hand_slots_before_drawing'] = max(0, 10-len(hand))
     # Compare an actual possible draw with the visible damage. In particular,

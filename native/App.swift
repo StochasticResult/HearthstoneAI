@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Security
+import LocalAuthentication
 
 final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
@@ -20,6 +21,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var pending = Data()
     var terminating = false
     let service = "local.hearthstoneai.openai"
+    lazy var training = TrainingPanel(owner: self)
 
     var runtime: URL {
         // Local development updates replace only this user-owned runtime;
@@ -55,6 +57,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         let item = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "策略与自训练…", action: #selector(showTraining), keyEquivalent: ",").target = self
         appMenu.addItem(withTitle: "退出 Hearthstone AI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.submenu = appMenu
         menu.addItem(item)
@@ -83,7 +86,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyField.widthAnchor.constraint(equalToConstant: 360).isActive = true
         modelField.setAccessibilityLabel("OpenAI 模型")
         modelField.widthAnchor.constraint(equalToConstant: 250).isActive = true
-        modelField.stringValue = UserDefaults.standard.string(forKey: "model") ?? "gpt-6.1-sol"
+        modelField.stringValue = UserDefaults.standard.string(forKey: "model") ?? "gpt-6.1-sol fast medium"
         keyStatus.font = .systemFont(ofSize: 11)
         keyStatus.textColor = .secondaryLabelColor
         let save = button("存入钥匙串", #selector(saveKey))
@@ -116,7 +119,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let stack = NSStackView(views: [title, subtitle, note, beta,
             row([label("API Key"), keyField, save]), row([keyStatus, forget]),
             row([label("模型"), modelField]), row([startButton, practiceButton, stopAfterGameButton]),
-            row([stopButton, checkButton]),
+            row([stopButton, checkButton, button("策略与自训练…", #selector(showTraining)),
+                 button("立即训练", #selector(trainNow))]),
             status, resources, scroll, row([permission, logs])])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -130,8 +134,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        training.startTimer()
     }
 
+    @objc func showTraining() { training.show() }
+    @objc func trainNow() { training.run(manual: true) }
     func keyQuery() -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: "default"]
@@ -159,10 +166,15 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyStatus.stringValue = result == errSecSuccess || result == errSecItemNotFound ? "本应用保存的密钥已删除" : "删除失败（\(result)）"
     }
 
-    func readKey() -> String? {
+    func readKey(interactive: Bool = true) -> String? {
         let typed = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !typed.isEmpty { return typed }
         var query = keyQuery()
+        if !interactive {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var output: CFTypeRef?
@@ -319,6 +331,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        training.shutdown()
         guard process != nil else { return .terminateNow }
         terminating = true
         stop()

@@ -511,7 +511,12 @@ def run(config, parent_pid, mode="practice", swap_baseline=None, client=None):
         _event_log = EventLog(dest / "session-events.jsonl")
         from build_identity import current_build
         from match_review import save
+        from coach_policy import snapshot
         build=current_build(ROOT)
+        policy = snapshot(DATA/'learning')
+        save(dest/'run-policy.json',policy)
+        build['coach_revision'] = policy['revision']
+        build['play_settings'] = {k:policy[k] for k in ('multi_step','standby','standby_delay')}
         build['inference'] = {'model':config.get('model','gpt-6.1-sol'),
                               'tier':config.get('service_tier','auto'),
                               'effort':config.get('reasoning_effort','low')}

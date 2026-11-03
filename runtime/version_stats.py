@@ -38,6 +38,7 @@ def connect(learning):
     connection.execute('PRAGMA journal_mode=DELETE')
     connection.execute('PRAGMA temp_store=FILE')
     connection.execute('CREATE TABLE IF NOT EXISTS matches (run TEXT PRIMARY KEY, version TEXT NOT NULL, mode TEXT NOT NULL, outcome TEXT NOT NULL, models TEXT NOT NULL)')
+    connection.execute('CREATE TABLE IF NOT EXISTS match_policies (run TEXT PRIMARY KEY, revision TEXT NOT NULL)')
     return connection
 
 
@@ -63,6 +64,12 @@ def export_report(connection,learning,current):
     export={'schema':1,'rate_definition':RATE_DEFINITION,'current':current,
             'legacy_note':'Unversioned counts include only retained historical records; older deleted records cannot be reconstructed.',
             'versions':grouped(connection),'export_limit':100,'all_results_database':'match-stats.sqlite3'}
+    rows = connection.execute("""SELECT version,mode,revision,SUM(outcome='WON'),SUM(outcome='LOST'),
+        SUM(outcome='TIED'),SUM(outcome='INCOMPLETE') FROM matches JOIN match_policies USING(run)
+        GROUP BY version,mode,revision ORDER BY MAX(run) DESC LIMIT 100""")
+    export['coach_policies'] = [dict(version=v,mode=m,revision=p,wins=w,losses=l,draws=d,incomplete_runs=i,
+                                     decisive_games=w+l,win_rate_pct=round(100*w/(w+l),2) if w+l else None)
+                                for v,m,p,w,l,d,i in rows]
     from match_review import save
     save(Path(learning)/'version-stats.json',export)
 
@@ -96,6 +103,8 @@ def record(learning, summary, history=(), *, strategy_sample=None):
             for old in history:
                 connection.execute('INSERT OR IGNORE INTO matches VALUES (?,?,?,?,?)',result_row(old))
             row=result_row(summary)
+            if summary.get('coach_revision'):
+                connection.execute('INSERT OR REPLACE INTO match_policies VALUES (?,?)',(row[0],summary['coach_revision']))
             connection.execute('''INSERT INTO matches VALUES (?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET
                 version=excluded.version,mode=excluded.mode,outcome=excluded.outcome,models=excluded.models''',row)
             if strategy_sample is not None and (strategy_sample['observed_own_turns'] or 'opening' in strategy_sample):

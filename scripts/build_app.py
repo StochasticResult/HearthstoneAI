@@ -36,7 +36,7 @@ def main():
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements",
                     str(ROOT / "native/Mirror.entitlements.plist"), str(ROOT / "runtime/mirror-status")], check=True)
     subprocess.run(["/usr/bin/xcrun", "swiftc", "-parse-as-library", "-num-threads", "1", str(ROOT / "native/App.swift"),
-                    str(ROOT / "native/InputCommands.swift"),
+                    str(ROOT / "native/InputCommands.swift"), str(ROOT / "native/Training.swift"),
                     "-o", str(macos / "HearthstoneAI")], check=True)
     shutil.copytree(ROOT / "runtime", resources / "runtime", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     build_awake(resources / "runtime/app-awake")

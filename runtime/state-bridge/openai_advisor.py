@@ -21,6 +21,7 @@ from pathlib import Path
 # path must also contain the runtime's audit writer, as the game driver does.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from coaching import lesson_role
+from coach_policy import hints, read_json
 import attack_plan
 from decision_standby import DecisionStandby
 from card_metadata import CATALOG
@@ -326,6 +327,10 @@ def request_payload(model, view, menu, instructions=INSTRUCTIONS, *, service_tie
         params['required'].append('follow_up_ids')
         payload['input'] = json.dumps(body,ensure_ascii=True,separators=(',',':'))
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode()
+    if len(encoded)>MAX_INPUT_BYTES and 'learned_matchup_notes' in observation:
+        del observation['learned_matchup_notes']
+        payload['input'] = json.dumps(body,ensure_ascii=True,separators=(',',':'))
+        encoded = json.dumps(payload,ensure_ascii=True,separators=(',',':')).encode()
     if len(encoded)>MAX_INPUT_BYTES and plan_prefixes:
         del body['turn_plan'], params['properties']['follow_up_ids']
         params['required'].remove('follow_up_ids')
@@ -434,6 +439,9 @@ class OpenAIAdvisor:
         self.audit = None
         self.audit_bytes = 0
         self.audit_path = Path(audit_path) if audit_path is not None else None
+        self.play_policy = read_json(self.audit_path.with_name('run-policy.json'),32768,{}) if self.audit_path else {}
+        self.overflow = None
+        self.overflow_bytes = 0
         self.audit_limit = 2 * 1024 * 1024
         self.latencies = []
         # Fixed-size counters survive the detailed-log cap. No credentials or
@@ -446,7 +454,8 @@ class OpenAIAdvisor:
         self.decision_seq = 0
         self.pending_attack = None
         self.consecutive_timeouts = 0
-        self.standby = DecisionStandby(self.record_unused_backup) if self.decisions_transport else None
+        self.standby = (DecisionStandby(self.record_unused_backup, delay=self.play_policy.get('standby_delay',8))
+                        if self.decisions_transport and self.play_policy.get('standby',True) else None)
         self.last_backup_id = None
         if audit_path is not None:
             import os
@@ -517,6 +526,21 @@ class OpenAIAdvisor:
             self.audit_bytes += size
         else:
             self.summary['diagnostics_capped'] = True
+            if self.overflow_bytes < 2*1024*1024:
+                from coach_evidence import public_event
+                import os
+                try:
+                    public = public_event({'decision_id':self.decision_seq, **event})
+                    data = (json.dumps(public,ensure_ascii=False,separators=(',',':'))+'\n').encode()
+                    self.overflow_bytes += len(data)
+                    if self.overflow_bytes <= 2*1024*1024:
+                        if self.overflow is None:
+                            path = self.audit_path.with_name('coach-overflow.jsonl')
+                            self.overflow = path.open('wb')
+                            os.chmod(path,0o600)
+                        self.overflow.write(data)
+                except (OSError,ValueError):
+                    self.overflow_bytes = 2*1024*1024
 
     def observe_deck(self, deck):
         if not isinstance(deck, dict) or not isinstance(deck.get("cards"), list) or not deck["cards"]:
@@ -634,6 +658,9 @@ class OpenAIAdvisor:
         self.decision_seq += 1
         observed_menu = menu
         view,menu = shred_battlecry_menu(view,menu,CATALOG)
+        lessons = hints(self.play_policy, view)
+        if lessons:
+            view = dict(view, learned_matchup_notes=lessons)
         unsafe = (view.get('shred_battlecry') or {}).get('withheld_sources',[])
         if not menu:
             raise AdvisorError('No supported action survives the observed self-damage check')
@@ -646,10 +673,11 @@ class OpenAIAdvisor:
                          "action": {"kind": "end_turn"}, "reason": "only safe supported action" if unsafe else "only legal supported action"})
             return {"kind": "end_turn"}
         critical_drake = bool(view.get('shred_battlecry'))
-        pairs = {} if critical_drake else attack_plan.options(view, menu)
-        coins = {} if critical_drake else attack_plan.coin_options(view,menu)
+        may_plan = self.play_policy.get('multi_step',True) and not critical_drake
+        pairs = attack_plan.options(view, menu) if may_plan else {}
+        coins = attack_plan.coin_options(view,menu) if may_plan else {}
         orders = buff_before_tax(view,menu)
-        prefixes = attack_plan.predictable_attacks(view,menu) if len(menu)>2 and not critical_drake else {}
+        prefixes = attack_plan.predictable_attacks(view,menu) if len(menu)>2 and may_plan else {}
         offered = {**menu, **pairs, **{key:value[0] for key,value in coins.items()}} if pairs or coins else menu
         instructions = self.instructions
         if pairs:
@@ -668,7 +696,7 @@ class OpenAIAdvisor:
             offered = menu
             payload, size = request_payload(self.model, view, menu, self.instructions,
                                            service_tier=self.service_tier, effort=self.effort,orders=orders)
-        for field in ('life_tap', 'turn_pace'):
+        for field in ('life_tap', 'turn_pace', 'learned_matchup_notes'):
             if field in view and ('"' + field + '":') not in payload['input']:
                 view = {k: v for k, v in view.items() if k != field}
         # The user removed cumulative API quotas. Keep actual accounting,
@@ -915,6 +943,8 @@ class OpenAIAdvisor:
             self.standby = None
         self.key = ""
         if self.audit:
+            if self.overflow:
+                self.overflow.close()
             self.audit.close()
             self.audit = None
             from match_review import save

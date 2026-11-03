@@ -213,6 +213,10 @@ def write_review(dest, learning, *, game_closed=None, game_preserved=False, matc
     build=read_build(dest/'run-version.json')
     summary['runtime_version']=build['version_id']
     summary['version_identity_verified']=build['identity_verified']
+    from coach_policy import read_json
+    pinned = read_json(dest/'run-policy.json', 32768, {})
+    if pinned.get('revision'):
+        summary['coach_revision'] = pinned['revision']
     if game_closed is not None:
         summary['game_closed'] = game_closed
     summary.update(game_preserved=game_preserved,match_workers_closed=match_workers_closed,game_pid=game_pid)
@@ -244,4 +248,10 @@ def write_review(dest, learning, *, game_closed=None, game_preserved=False, matc
     save(dest / 'review.json', summary)
     save(history_path, history)
     save(queue_path, (previous(queue_path, 1024 * 1024) + cases)[-10:])
+    # Optional coach storage cannot change the result or the ranked lifecycle.
+    try:
+        from coach_evidence import archive
+        archive(dest, summary, learning)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # The trainer can still read a complete retained run directly.
     return summary

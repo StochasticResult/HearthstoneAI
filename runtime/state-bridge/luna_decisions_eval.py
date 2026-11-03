@@ -12,7 +12,7 @@ import time
 from hard_cases import hard_cases, prepare as prepare_hard
 from incremental_board import IncrementalBoard
 from life_tap import life_tap_facts
-from luna_decisions import decision_payload, parse_choice
+from luna_decisions import decision_payload, parse_choice, tactical_payload
 from model_comparison import comparison_cases, prepare
 from openai_advisor import (AdvisorError, CATALOG, OpenAIAdvisor, action_menu,
                             enrich, parse_response, public_view, request_payload)
@@ -23,6 +23,10 @@ BASIC = ('take_visible_lethal', 'current_cost_lessons_lethal', 'freeze_buffed_we
 HARD = ('coin_tax_spellpower_and_highest_cost', 'lifesteal_overkill_survival_target',
         'reborn_heals_twice_and_windfury', 'take_a_calculated_not_guaranteed_out',
         'generated_card_is_not_archetype_evidence', 'reserve_two_slots_for_next_ritual_wave')
+HOLDOUT_BASIC = ('enable_double_blasphemy','freeze_visible_threat','cthun_discover_lethal',
+                 'cthun_recover_full_board','double_damage_through_divine_shield','kazakus_prior_effects_and_deadline')
+HOLDOUT_HARD = ('buff_before_sacrificing_own_tax','two_auras_buff_before_enemy_aura_dies',
+                'priest_two_ruins_spent','priest_two_moonwells_spent','weapon_trigger_versus_visible_eight_damage')
 
 
 def read_bounded(path, limit):
@@ -71,9 +75,9 @@ def real_cases(runs):
     return results
 
 
-def cases_for(output):
+def cases_for(output, *, holdout=False):
     # Keep the public snapshots independently of the five-run rotating logs.
-    archive = output.parent/'public-replays-v1.json'
+    archive = output.parent.parent/'decisions-sol-evaluation'/'public-replays-v1.json'
     if archive.exists():
         live = json.loads(read_bounded(archive, 512*1024))
     else:
@@ -81,23 +85,24 @@ def cases_for(output):
         with tempfile.NamedTemporaryFile(mode='w', dir=output.parent, delete=False) as f:
             json.dump(live, f, ensure_ascii=False)
         os.replace(f.name, archive)
-    cases = [(name, 'replay', view, menu, expected) for name,view,menu,expected in live]
-    for names, factory, prepare_case, group in ((BASIC,comparison_cases,prepare,'basic'),
-                                                (HARD,hard_cases,prepare_hard,'complex')):
+    cases = [(name, 'replay', view, menu, expected) for name,view,menu,expected in live
+             if not holdout or name=='real_double_timeout']
+    for names, factory, prepare_case, group in ((HOLDOUT_BASIC if holdout else BASIC,comparison_cases,prepare,'basic'),
+                                                (HOLDOUT_HARD if holdout else HARD,hard_cases,prepare_hard,'complex')):
         catalog = {c['name']:c for c in factory()}
         for name in names:
             c = catalog[name]
             view, menu = prepare_case(c)
             cases.append((name, group, view, menu, c['expected']))
-    if len(cases)!=16 or any(not expected or not all(a in menu.values() for a in expected)
+    if len(cases)!=(12 if holdout else 16) or any(not expected or not all(a in menu.values() for a in expected)
                              for _,_,_,menu,expected in cases):
         raise ValueError('Invalid benchmark answer key')
     return cases
 
 
-def evaluate(config, output):
+def evaluate(config, output, *, holdout=False):
     output = Path(output)
-    cases = cases_for(output)
+    cases = cases_for(output, holdout=holdout)
     advisor = OpenAIAdvisor({**config, 'model': SOL})
     config['api_key'] = ''
     rows, blocked = [], set()
@@ -110,18 +115,23 @@ def evaluate(config, output):
                 random.Random('zoo-pair-v1/'+name).shuffle(actions)
                 menu = {'m%d'%i:a for i,a in enumerate(actions)}
                 sol,_ = request_payload(SOL,view,menu,service_tier='priority',effort='medium')
-                luna = decision_payload(sol,menu)
-                assert sol['input'] == luna['input']
+                original = decision_payload(sol,menu)
+                luna = tactical_payload(view,menu) if holdout else original
+                assert sol['input'] == original['input']
                 digest = hashlib.sha256(sol['input'].encode()).hexdigest()
-                for arm in (('luna','sol') if index%2==0 else ('sol','luna')):
+                arms = ('luna','raw','sol') if holdout else ('luna','sol')
+                order = index % len(arms)
+                for arm in arms[order:]+arms[:order]:
                     row = {'case':name,'group':group,'arm':arm,'evidence_sha256':digest,'expected':expected}
+                    wire = original if arm=='raw' else luna if arm=='luna' else sol
+                    row['wire_bytes'] = len(json.dumps(wire,separators=(',', ':')).encode())
                     if arm in blocked:
                         row['error'] = 'endpoint unavailable earlier in run'
                     else:
                         started = time.monotonic()
                         try:
-                            if arm == 'luna':
-                                reply = advisor._transport(luna,endpoint='decisions')
+                            if arm != 'sol':
+                                reply = advisor._transport(wire,endpoint='decisions')
                                 action, confidence, tokens = parse_choice(reply, menu)
                                 row['confidence'] = confidence
                             else:
@@ -142,7 +152,7 @@ def evaluate(config, output):
                     rows.append(row)
                     f.write(json.dumps(row,ensure_ascii=False)+'\n'); f.flush()
             summary = {}
-            for arm in ('sol','luna'):
+            for arm in arms:
                 results = [r for r in rows if r['arm']==arm]
                 completed = [r for r in results if 'action' in r]
                 summary[arm] = {'cases':len(results),'valid':len(completed),
@@ -154,4 +164,4 @@ def evaluate(config, output):
 
 
 if __name__ == '__main__':
-    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1])
+    evaluate(json.loads(sys.stdin.readline(4097)),sys.argv[1],holdout=sys.argv[2:]==['--holdout'])

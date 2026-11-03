@@ -8,14 +8,17 @@ def _one_less_health(modifier, catalog):
     return card.get('type') == 'ENCHANTMENT' and card.get('text') == '-1 Health.'
 
 
-def _only_ectoplasm_markers(effects, catalog):
-    if effects == []:
-        return True
-    marker = catalog.get('CAP_805e', {})
+def _preserves_shred_damage(effect, catalog):
+    card_id = effect.get('card_id') if isinstance(effect, dict) else None
+    card = catalog.get(card_id, {}) if isinstance(card_id, str) else {}
+    if card.get('type') != 'ENCHANTMENT':
+        return False
+    if card.get('text') == 'Your spells cost (1) more this turn.':
+        return effect.keys() <= {'card_id','script_data_1','count'}
+    if effect != {'card_id':'CAP_805e'} or card.get('text'):
+        return False
     resummon = ' '.join((catalog.get('CAP_805t', {}).get('text') or '').split())
-    return (isinstance(effects, list) and all(effect == {'card_id':'CAP_805e'} for effect in effects)
-            and marker.get('type') == 'ENCHANTMENT' and not marker.get('text')
-            and resummon == 'Resummon all friendly minions that were slimed.')
+    return resummon == 'Resummon all friendly minions that were slimed.'
 
 
 def life_tap_facts(view, menu, catalog):
@@ -108,10 +111,11 @@ def life_tap_facts(view, menu, catalog):
         text = ' '.join((catalog.get('TIME_025t', {}).get('text') or '').split())
         # The observed hero Health already includes a plain -1 Health enchantment.
         modifiers = hero.get('modifiers')
+        effects = view.get('my_player_effects')
         if (known < deck and draws == 1 and len(hand) < 10 and hero.get('immune') is False
                 and isinstance(modifiers, list) and all(_one_less_health(m, catalog) for m in modifiers)
                 and not hero.get('unknown_modifier_count') and not hero.get('divine_shield')
-                and _only_ectoplasm_markers(view.get('my_player_effects'), catalog)
+                and isinstance(effects, list) and all(_preserves_shred_damage(e, catalog) for e in effects)
                 and all(c.get('spell_damage') == 0 for c in friendly if not c.get('dormant') and not c.get('silenced'))
                 and text == 'Casts When Drawn Deal $3 damage to your hero.'):
             health = budget - hit - 3

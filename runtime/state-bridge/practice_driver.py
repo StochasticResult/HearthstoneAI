@@ -859,6 +859,9 @@ class Driver:
         before_attacks = board._tag_int(self.parser.game["entities"].get(source_id, {"tags": {}}), "NUM_ATTACKS_THIS_TURN")
         before_events = len(self.parser.game.get('events', ()))
         before_submissions = self.parser.sent_options
+        plain_minion = (RUN_MODE == 'ranked' and kind == 'drag' and advice['kind'] == 'play'
+                        and advice.get('target_id') is None and any(c['id'] == source_id and c.get('card_type') == 'MINION'
+                                                                   for c in state['my_hand']))
         if kind == "click":
             self.execute_end_turn(own,state)
         elif kind in ('click_power','ability_target'):
@@ -872,7 +875,7 @@ class Driver:
                 click(second)
             self.wait_until(lambda: bool(self.game_result()) or
                 (self.parser.sent_options>sent_before and self.parser.options_id!=state['options_id']),10)
-        elif kind == "drag" and advice["kind"] != "attack":
+        elif kind == "drag" and advice["kind"] != "attack" and not plain_minion:
             drag(first, second)
         elif kind == "battlecry":
             drag(first, (735, 510))
@@ -909,10 +912,15 @@ class Driver:
         if advice["kind"] == "play":
             # A played card may immediately open Discover, in which case
             # snapshot() intentionally blocks until that choice resolves.
-            self.wait_until(lambda: self.parser.sent_options == before_submissions + 1 and
-                            (kind != 'battlecry' or self.parser.last_targeted_option == (state['options_id'],source,advice['target_id'])) and
-                            self.parser.game is not None and not self.parser.partial and
-                            all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")), 10)
+            def played():
+                return (self.parser.sent_options == before_submissions + 1 and not self.parser.partial
+                        and self.parser.game is not None
+                        and (kind != 'battlecry' or self.parser.last_targeted_option == (state['options_id'],source,advice['target_id']))
+                        and all(c["id"] != source for c in board._in_zone(self.parser.game, own, "HAND")))
+            if plain_minion:
+                self.execute_checked_drag(own,state,advice,first,second,before_submissions,before_events,played)
+            else:
+                self.wait_until(played, 10)
         elif advice["kind"] == "attack":
             turn = board._num(state.get('game_turn'))
             def attacked():
@@ -934,24 +942,25 @@ class Driver:
                     return False
                 entity = game["entities"].get(source)
                 return bool(entity and board._tag_int(entity, "NUM_ATTACKS_THIS_TURN") > before_attacks)
-            self.execute_attack_drag(own, state, advice, first, second, before_submissions, before_events, attacked)
+            self.execute_checked_drag(own, state, advice, first, second, before_submissions, before_events, attacked)
         print("confirmed", advice["kind"], flush=True)
         print(json.dumps({"action_timing": {"kind": advice["kind"],
             "decision_ms": round((input_started-decision_started)*1000),
             "input_confirmation_ms": round((time.monotonic()-input_started)*1000)}}), flush=True)
         self.advisor.confirm(advice, state)
 
-    def execute_attack_drag(self, own, state, advice, first, second, sent, event_count, attacked):
+    def execute_checked_drag(self, own, state, advice, first, second, sent, event_count, confirmed):
+        play = advice['kind'] == 'play'
         minion = next((c for c in state['my_board'] if c['id'] == advice['source_id']), {})
         single_swing = (minion.get('windfury') is False and minion.get('mega_windfury') is False
                         and minion.get('attacks_this_turn') == 0)
-        cursor = click_log_cursor(self.follower.path) if RUN_MODE == 'ranked' and single_swing else None
+        cursor = click_log_cursor(self.follower.path) if RUN_MODE == 'ranked' and (play or single_swing) else None
         started = time.time()
         drag(first, second)
         finished = time.time()
-        if cursor:
+        if cursor or play:
             try:
-                self.wait_until(attacked, 2)
+                self.wait_until(confirmed, 2)
                 return
             except ActionUnconfirmed:
                 pass
@@ -961,16 +970,50 @@ class Driver:
                 return (game is not None and game is self.identity_game and self.owner == own and not self.parser.partial
                         and self.parser.sent_options == sent and self.parser.options_id == state['options_id']
                         and len(game.get('events', ())) == event_count and not self.parser.pending_choice(own))
-            if same_window() and client_rejected_drag(cursor, started, finished):
+            rejected = client_rejected_drag(cursor, started, finished)
+            if play and self.parser.sent_options == sent:
+                observation = {'event':'play_drag_observed','action':advice,'game_turn':state['game_turn'],
+                               'options_id':state['options_id'],'sent_before':sent,'same_window':same_window(),
+                               'gesture_started':started,'gesture_finished':finished,'from':first,'to':second,
+                               'client_log_available':cursor is not None,'client_rejected_drag':rejected}
+                if observation['same_window'] and not rejected:
+                    try:
+                        ui = mirror()
+                    except (NotReady, Stop, OSError, ValueError, subprocess.SubprocessError):
+                        ui = {}
+                    board_ui = ui.get('board')
+                    side = board_ui.get('friendly') if isinstance(board_ui, dict) else None
+                    if isinstance(side, dict):
+                        observation['friendly_slot_under_pointer'] = side.get('mousedOverSlot')
+                        cards = side.get('boardCards')
+                        if isinstance(cards, list):
+                            observation['board_card_under_pointer'] = next((c.get('entityId') for c in cards[:7]
+                                                                          if isinstance(c, dict) and c.get('hovered')), None)
+                    observation['popup'] = ui.get('popup')
+                self.advisor.record(observation)
+            if same_window() and rejected:
                 self.revalidate(own, state, advice)
+                if play:
+                    first = self.verify_hand_point(own,state,advice['source_id'],first)
+                    self.revalidate(own,state,advice)
                 checked_geometry()
                 self.poll()
                 if same_window() and signature(self.snapshot(own)) == signature(state):
-                    self.advisor.record({'event': 'attack_input_retry', 'action': advice,
+                    self.advisor.record({'event': 'play_input_retry' if play else 'attack_input_retry', 'action': advice,
                                          'game_turn': state['game_turn'], 'options_id': state['options_id'],
                                          'reason': 'client_rejected_drag'})
                     drag(first, second)
-        self.wait_until(attacked, 10)
+                    if play:
+                        def retried_play():
+                            if (not confirmed() or self.parser.game is not self.identity_game
+                                    or self.identity_game.get('untargeted_power_submission') != (state['options_id'], advice['source_id'])):
+                                return False
+                            return any(e.get('type') == 'play' and e.get('turn') == board._num(state['game_turn'])
+                                       and e.get('actor') == own and e.get('eid') == advice['source_id']
+                                       for e in self.identity_game['events'][event_count:])
+                        self.wait_until(retried_play, 10)
+                        return
+        self.wait_until(confirmed, 8 if play else 10)
 
     def execute_mulligan(self, own, choice, attempt):
         game = self.parser.game

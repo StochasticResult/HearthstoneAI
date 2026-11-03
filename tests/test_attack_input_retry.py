@@ -38,11 +38,13 @@ class AttackInputRetryTests(unittest.TestCase):
     def run_gesture(self, gesture, acknowledged):
         with patch('practice_driver.RUN_MODE', 'ranked'), patch('practice_driver.time.time', side_effect=[self.start, self.start+.5]), \
                 patch('practice_driver.drag', side_effect=gesture) as send, patch('practice_driver.checked_geometry'):
-            try:
-                self.d.execute_attack_drag(2, self.state, self.action, (682, 510), (735, 365), 4, 0, acknowledged)
-                return send.call_count, True
-            except ActionUnconfirmed:
-                return send.call_count, False
+            public_ui = {'board':{'friendly':{'mousedOverSlot':3,'boardCards':[{'entityId':19,'hovered':True}]}},'popup':False}
+            with patch('practice_driver.mirror', return_value=public_ui):
+                try:
+                    self.d.execute_checked_drag(2, self.state, self.action, (682, 510), (735, 365), 4, 0, acknowledged)
+                    return send.call_count, True
+                except ActionUnconfirmed:
+                    return send.call_count, False
 
     def test_222520_rejected_shard_drag_is_retried_once_with_the_same_target(self):
         calls = []
@@ -92,6 +94,56 @@ class AttackInputRetryTests(unittest.TestCase):
         self.assertFalse(thinking_review([retry, receipt])['attack_input_retries'][0]['confirmed'])
         receipt['action'] = self.action
         self.assertTrue(thinking_review([retry, receipt])['attack_input_retries'][0]['confirmed'])
+
+    def test_plain_minion_retakes_its_hand_point_only_after_a_gesture_rejection(self):
+        self.action = {'kind':'play','source_id':21}
+        self.d.verify_hand_point = Mock(return_value=(665,815))
+        for label in ('confirmed','wrong_source','wrong_turn','wrong_submission','silent','late_submission','new_group'):
+            with self.subTest(label=label):
+                calls=[]
+                self.log.write_bytes(b'')
+                self.d.parser.sent_options,self.d.parser.options_id=4,8
+                self.d.identity_game['events']=[]
+                self.d.advisor.record.reset_mock()
+                def rehover(*_):
+                    if label=='late_submission': self.d.parser.sent_options=5
+                    if label=='new_group': self.d.parser.options_id=9
+                    return (665,815)
+                self.d.verify_hand_point.side_effect=rehover
+                def send(start,end):
+                    calls.append((start,end))
+                    if len(calls)==1 and label!='silent':
+                        self.log.write_bytes(WARNING)
+                    if len(calls)==2:
+                        self.d.parser.sent_options=5
+                        self.d.identity_game['untargeted_power_submission']=(9 if label=='wrong_submission' else 8,21)
+                        self.d.identity_game['events'].append({'type':'play','actor':2,
+                            'turn':4 if label=='wrong_turn' else 3, 'eid':19 if label=='wrong_source' else 21})
+                count,ok=self.run_gesture(send,lambda:self.d.parser.sent_options==5)
+                expected_retry=label in ('confirmed','wrong_source','wrong_turn','wrong_submission')
+                self.assertEqual(count,2 if expected_retry else 1)
+                self.assertEqual(ok,label in ('confirmed','late_submission'))
+                if expected_retry:self.assertEqual(calls[1][0],(665,815))
+                logged=[call.args[0] for call in self.d.advisor.record.call_args_list]
+                self.assertEqual(logged[0]['event'],'play_drag_observed')
+                self.assertEqual(logged[0]['client_rejected_drag'],label!='silent')
+                if label=='silent':
+                    self.assertEqual((logged[0]['friendly_slot_under_pointer'],logged[0]['board_card_under_pointer']),(3,19))
+                self.assertEqual(any(r['event']=='play_input_retry' for r in logged),expected_retry)
+
+    def test_review_keeps_silence_expiry_and_retry_receipt_separate(self):
+        play={'kind':'play','source_id':21}
+        observed={'event':'play_drag_observed','game_turn':'5','decision_id':11,'options_id':13,'action':play,
+                  'same_window':True,'client_rejected_drag':False}
+        expired=dict(observed,event='expired_without_submission')
+        row=thinking_review([observed,expired])['play_drag_observations'][0]
+        self.assertEqual((row['retry_requested'],row['outcome']),(False,'expired_without_submission'))
+        retry=dict(observed,event='play_input_retry')
+        wrong={'decision_id':11,'event':'confirmed','action':dict(play,source_id=20)}
+        row=thinking_review([observed,retry,wrong])['play_drag_observations'][0]
+        self.assertEqual((row['retry_requested'],row['outcome']),(True,None))
+        row=thinking_review([observed,retry,dict(wrong,action=play)])['play_drag_observations'][0]
+        self.assertEqual((row['retry_requested'],row['outcome']),(True,'confirmed'))
 
     def test_log_evidence_requires_one_fresh_complete_warning_in_the_gesture_interval(self):
         for suffix in (b'', WARNING[:-1], WARNING*2, b'chat '+WARNING, WARNING.replace(b'22:27:18', b'22:27:17')):

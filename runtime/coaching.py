@@ -20,7 +20,21 @@ def thinking_review(events):
     retries = [{'decision': r.get('decision_id'), 'turn': r.get('game_turn'),
                 'confirmed': confirmed_attacks.get(r.get('decision_id')) == r['action']}
                for r in events if r.get('event') == 'attack_input_retry' and isinstance(r.get('action'), dict)]
+    play_drags = {}
     for e in events:
+        did, kind = e.get('decision_id'), e.get('event')
+        if kind == 'play_drag_observed':
+            play_drags[did] = {k:e.get(k) for k in ('decision_id','game_turn','options_id','action','same_window','sent_before',
+                                                    'gesture_started','gesture_finished','client_log_available','client_rejected_drag',
+                                                    'friendly_slot_under_pointer','board_card_under_pointer','popup')}
+            play_drags[did].update(retry_requested=False,outcome=None)
+        elif did in play_drags and e.get('action') == play_drags[did]['action']:
+            row = play_drags[did]
+            if kind == 'play_input_retry' and e.get('options_id') == row['options_id']:
+                row['retry_requested'] = True
+            elif (kind in ('confirmed','expired_without_submission','resumed_after_uncertain_input')
+                  and e.get('options_id',row['options_id']) == row['options_id']):
+                row['outcome'] = kind
         if e.get('event')!='proposed' or e.get('policy')=='sol_timeout_backup_v1' or type(e.get('elapsed_ms')) is not int:
             continue
         v=e.get('observation') or {}; menu=e.get('actions') or {}
@@ -36,6 +50,7 @@ def thinking_review(events):
             previous[key]=did
     return {'paid_primary':len(paid),'identified_main_windows':identified,'single_option_calls':single[-8:],'repeated_identical_windows':repeated[-8:],
             'attack_input_retries': retries[-8:],
+            **({'play_drag_observations':list(play_drags.values())[-8:]} if play_drags else {}),
             'slowest_for_review':sorted(paid,key=lambda p:-p['ms'])[:3],
             'confirmed_plan_followups':sum(e.get('local_rule')=='verified_turn_plan_v1' and e.get('decision_id') in receipts
                                           for e in events if e.get('event')=='proposed'),

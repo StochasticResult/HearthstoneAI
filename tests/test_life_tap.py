@@ -28,6 +28,25 @@ def priest():
 
 
 class TapTests(unittest.TestCase):
+    def test_stacked_spell_tax_does_not_change_shred_damage(self):
+        view, _ = priest()
+        tax = {'card_id':'SCH_713e','script_data_1':1,'count':2}
+        view.update(my_hero={'health':10,'armor':0,'immune':False,'modifiers':[]},
+                    my_board=[],enemy_board=[body(12,6,5)],my_deck_count=12,
+                    strategy={'deck':{'reconciled_remaining_counts':{'TIME_025t':4}}})
+        menu = {'tap':TAP,'end':END}
+        def facts(effects, catalog=CATALOG):
+            return life_tap_facts(dict(view,my_player_effects=effects), menu, catalog)
+        for effects in ([tax], [tax,{'card_id':'CAP_805e'}]):
+            result = facts(effects)
+            self.assertEqual(result['effective_health_tap_before_other_effects'], 8)
+            branch = result['if_one_shred_at_printed_damage']
+            self.assertEqual((branch['effective_health'],branch['margin_after_example_trades']), (5,-1))
+        self.assertNotIn('if_one_shred_at_printed_damage', facts([tax,{'card_id':'UNKNOWN'}]))
+        for changed in ({'type':'ENCHANTMENT','text':'Your spells deal double damage.'},
+                        {'type':'SPELL','text':'Your spells cost (1) more this turn.'}):
+            self.assertNotIn('if_one_shred_at_printed_damage', facts([tax],dict(CATALOG,SCH_713e=changed)))
+
     def test_ectoplasm_marker_keeps_the_shred_draw_estimate(self):
         view, _ = priest()
         effect = {'card_id':'CAP_805e'}

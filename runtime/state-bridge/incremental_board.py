@@ -221,6 +221,12 @@ class IncrementalBoard:
             self.last_end_turn_options_id = None
             index = int(sent[1])
             self.last_targeted_option = self.targeted_option(index, int(sent[3])) if sent[2] == '-1' else None
+            game.pop('untargeted_power_submission', None)
+            if sent.group(2, 3) == ('-1', '0') and self.options_id is not None:
+                sources = [o['id'] for o in self.options if o['index'] == index and o['type'] == 'POWER'
+                           and o['error'] == 'NONE' and not o.get('has_sub_options') and not o['targets']]
+                if len(sources) == 1 and type(sources[0]) is int:
+                    game['untargeted_power_submission'] = (self.options_id, sources[0])
             if (sent.group(2, 3) == ('-1', '0') and
                     any(o.get('index') == index and o['type'] == 'END_TURN' and not o.get('has_sub_options')
                         and o['id'] is None and not o['targets'] and o['error'] in ('NONE','INVALID')

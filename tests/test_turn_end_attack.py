@@ -188,3 +188,20 @@ class TurnEndAttackTests(unittest.TestCase):
             a.note_turn_pace(self.view,m);a.note_turn_pace(self.view,m)
         self.assertEqual(self.view['turn_pace']['legal_taunt_attacks_now'],[[52,208]])
         self.assertNotIn('legal_face_attackers_now',self.view['turn_pace'])
+        self.assertNotIn('removals_before_other_effects',self.view['turn_pace'])  # Reborn
+
+    def test_late_turn_shows_which_of_two_legal_taunts_one_attack_can_remove(self):
+        attacker = self.view['my_board'][0]
+        target = self.view['enemy_board'][0]
+        attacker.update(attack=13, health=13)
+        target.update(reborn=False, attack=20, health=12)
+        self.view['enemy_board'].append(dict(target, id=207, health=20))
+        menu = {'wounded':ATTACK, 'healthy':dict(ATTACK,target_id=207),'end':{'kind':'end_turn'}}
+        advisor = OpenAIAdvisor({'api_key':'offline-test-placeholder'})
+        with patch('openai_advisor.time.monotonic', side_effect=[100.,168.]):
+            advisor.note_turn_pace(self.view,menu)
+            advisor.note_turn_pace(self.view,menu)
+        pace = self.view['turn_pace']
+        self.assertEqual(pace['legal_taunt_attacks_now'],[[52,208],[52,207]])
+        self.assertEqual(pace.get('removals_before_other_effects'),
+                         [{'attacker_id':52,'target_id':208,'target_attack':20,'target_health':12}])

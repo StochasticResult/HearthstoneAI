@@ -762,18 +762,19 @@ class OpenAIAdvisor:
             if trades:
                 view['turn_pace'] = {'seconds_since_first_decision': elapsed, 'legal_taunt_attacks_now': trades,
                     'compare': 'The listed attacks are legal now. If you already intend a necessary trade, weigh taking '
-                               'it before optional draw or setup. Re-evaluate after each hit for Reborn, triggers and '
+                               'it before optional draw or setup. Compare what the first hit removes if time expires. '
+                               'Re-evaluate after each hit for Reborn, triggers and '
                                'changed targets. Drawing first may be necessary for an immediate out.'}
-            else:
-                hits = sorted(attack_plan.removals(view, menu).values(), key=lambda pair: (-pair[1]['attack'], pair[0]['attack']))
-                if hits:
+            hits = sorted(attack_plan.removals(view, menu).values(), key=lambda pair: (-pair[1]['attack'], pair[0]['attack']))
+            if hits:
+                if not trades:
                     view['turn_pace'] = {'seconds_since_first_decision': elapsed,
-                        'removals_before_other_effects': [
-                            {'attacker_id':a['id'], 'target_id':t['id'], 'target_attack':t['attack'],
-                             'target_health':t['health']} for a,t in hits[:12]],
                         'compare': 'When defending, secure a dangerous attacker you can already remove before optional '
                                    'buffs. Order intended trades by the damage and attack triggers you can prevent even '
                                    'if the turn ends early. Account for effects and any buff essential to survival.'}
+                view['turn_pace']['removals_before_other_effects'] = [
+                    {'attacker_id':a['id'], 'target_id':t['id'], 'target_attack':t['attack'],
+                     'target_health':t['health']} for a,t in hits[:12]]
 
     def remaining_turn_seconds(self, view):
         clock = view.get('turn_timeout_seconds')

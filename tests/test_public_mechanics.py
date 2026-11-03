@@ -89,6 +89,38 @@ class PublicMechanicsTests(unittest.TestCase):
         self.assertTrue(public[52])
         self.assertNotIn(48, public)
 
+    def test_revealed_sigil_conditions_expire_but_public_play_remains(self):
+        # run-20261102-161731: the PLAY source was anonymous. SHOW_ENTITY
+        # identified the spell and supplied its zone and SIGIL tag together.
+        p = self.parser(entity(47, '', 'SPELL', 2, 'HAND'))
+        p.feed(power('TAG_CHANGE Entity=47 tag=SECRET value=0').encode())
+        p.feed((power('SHOW_ENTITY - Updating Entity=47 CardID=CATA_528')
+                + power('  tag=ZONE value=SECRET') + power('  tag=SIGIL value=1')).encode())
+        state = p.snapshot(1, extended=True)
+        view = OpenAIAdvisor({'api_key':'offline-test-placeholder'}).view(state)
+        self.assertEqual([c['card_id'] for c in view['enemy_objectives']], ['CATA_528'])
+        self.assertEqual(view['enemy_secret_count'], 0)
+        self.assertNotIn('secret_context', view)
+        self.assertEqual(view['card_definitions']['CATA_528']['name'], 'Sigil of the Seas')
+        p.feed(entity(48, 'EX1_287', 'SPELL', 2, 'SECRET', SECRET=1))
+        p.feed(entity(49, 'CATA_528', 'SPELL', 2, 'SECRET', SIGIL=1, CREATOR=58))
+        p.feed(entity(50, 'CATA_528', 'SPELL', 1, 'SECRET', SIGIL=1))
+        # Include a generated effect that expires before a snapshot is requested.
+        p.feed((power('HIDE_ENTITY - Entity=47 tag=ZONE value=SETASIDE')
+                + power('TAG_CHANGE Entity=49 tag=ZONE value=GRAVEYARD')
+                + power('HIDE_ENTITY - Entity=50 tag=ZONE value=SETASIDE')).encode())
+        state = p.snapshot(1, extended=True)
+        self.assertEqual(state['enemy_objectives'], [])
+        self.assertEqual(state['enemy_secret_ids'], [48])
+        self.assertEqual(state['enemy_known_secrets'], [])
+        self.assertEqual([(c['id'], c['generated']) for c in state['opponent_public_cards']
+                          if c['card_id'] == 'CATA_528'], [(47, False), (49, True)])
+        self.assertNotIn('EX1_287', json.dumps(public_view(state)))
+        p.feed(power('HIDE_ENTITY - Entity=48 tag=ZONE value=SETASIDE').encode())
+        self.assertNotIn('EX1_287', json.dumps(public_view(p.snapshot(1, extended=True))))
+        p.feed(fixture())
+        self.assertNotIn('CATA_528', json.dumps(public_view(p.snapshot(1, extended=True))))
+
     def test_public_objective_markers_require_consistent_spell_identity(self):
         for cid, ctype, tags, public in (
                 ('END_011', 'SPELL', {'OBJECTIVE':1}, True),
@@ -96,6 +128,11 @@ class PublicMechanicsTests(unittest.TestCase):
                 ('JAIL_327', 'SPELL', {'QUEST_PROGRESS_TOTAL':3, 'SECRET':0}, False),
                 ('JAIL_327', 'SPELL', {'PALADIN_AURA':1, 'SECRET':1}, False),
                 ('JAIL_327', 'SPELL', {'OBJECTIVE':1, 'SECRET':'invalid'}, False),
+                ('CATA_528', 'SPELL', {'SIGIL':1, 'SECRET':1}, False),
+                ('CATA_528', 'SPELL', {'SECRET':0, 'SIGIL':0}, False),
+                ('CATA_528', 'MINION', {'SIGIL':1}, False),
+                ('EX1_287', 'SPELL', {'SIGIL':1}, False),
+                ('', 'SPELL', {'SIGIL':1}, False),
                 ('END_011', 'MINION', {'OBJECTIVE':1}, False),
                 ('EX1_287', 'SPELL', {'OBJECTIVE':1}, False),
                 ('', 'SPELL', {'PALADIN_AURA':1}, False)):

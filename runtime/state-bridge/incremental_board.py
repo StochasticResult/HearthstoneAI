@@ -31,7 +31,7 @@ class UnsafeState(Exception):
 
 
 def is_public_objective(entity, played_publicly):
-    """Public auras and countdowns can enter the secret zone without a play event."""
+    """Face-up effects can enter the secret zone without a named play event."""
     cid = entity.get('cardId')
     secret_tag = entity['tags'].get('SECRET')
     secret = board._num(secret_tag)
@@ -42,7 +42,7 @@ def is_public_objective(entity, played_publicly):
     if CATALOG[cid].get('type') != 'SPELL':
         return False
     if (board._ctype(entity) == 'SPELL'
-            and any(board._tag_int(entity, tag) == 1 for tag in ('OBJECTIVE', 'PALADIN_AURA'))):
+            and any(board._tag_int(entity, tag) == 1 for tag in ('OBJECTIVE', 'PALADIN_AURA', 'SIGIL'))):
         return True
     return secret == 0 and board._tag_int(entity, 'OBJECTIVE_COUNTDOWN') > 0
 
@@ -83,6 +83,7 @@ class IncrementalBoard:
         self.last_end_turn_options_id = None
         self.last_targeted_option = None
         self.public_card_memory = {}
+        self.resolved_objectives = {}
         self.identity_changes = set()
         self.saw_mulligan = False
 
@@ -189,6 +190,7 @@ class IncrementalBoard:
             self.last_end_turn_options_id = None
             self.last_targeted_option = None
             self.public_card_memory = {}
+            self.resolved_objectives = {}
             self.identity_changes = set()
             self.saw_mulligan = False
             self.visual_step = None
@@ -325,21 +327,37 @@ class IncrementalBoard:
             return
         if payload is None:
             return
+        packet = payload.strip()
+        if packet.startswith('HIDE_ENTITY'):
+            self._remember_departing_objective(board.HIDE_ENTITY_RE.match(packet))
+        elif packet.startswith('TAG_CHANGE') and ' tag=ZONE value=' in packet and not packet.endswith(' value=SECRET'):
+            self._remember_departing_objective(board.TAG_CHANGE_RE.match(packet))
         if payload[:1] in (" ", "\t"):
-            stripped = payload.strip()
-            tag = board.TAG_LINE_RE.match(stripped)
+            tag = board.TAG_LINE_RE.match(packet)
             if tag:
                 if game["cur"] is not None:
                     board._apply_tag(game, game["cur"], tag.group(1), tag.group(2))
             else:
                 game["cur"] = None
-                board._handle_packet(game, stripped)
+                board._handle_packet(game, packet)
         else:
             game["cur"] = None
             board._handle_packet(game, payload)
-        self._remember_public_card(payload.strip())
+        self._remember_public_card(packet)
         if len(game["entities"]) > MAX_ENTITIES or len(game["events"]) > MAX_EVENTS or len(game["blocks"]) > MAX_BLOCK_DEPTH:
             self.invalidate("state size limit exceeded")
+
+    def _remember_departing_objective(self, match):
+        # HIDE_ENTITY can erase the card ID before moving a resolved spell to
+        # SETASIDE. Keep only its already public identity, never its new location.
+        if not match:
+            return
+        eid = board._ref_id(match.group(1))
+        card = self.game['entities'].get(eid)
+        if card and card.get('zone') == 'SECRET' and is_public_objective(card, ()):
+            self.resolved_objectives[eid] = (card.get('controller'), {
+                'id': eid, 'card_id': card['cardId'],
+                'generated': bool(board._tag_int(card, 'CREATOR') or board._tag_int(card, 'COPIED_FROM_ENTITY_ID'))})
 
     def _remember_public_card(self, payload):
         """Keep public provenance, never promote a raw opponent-hand ID.
@@ -609,14 +627,15 @@ class IncrementalBoard:
         public_eids.update(e["id"] for e in enemy_board+enemy_locations)
         visible_objectives = {effect['id'] for effect in enemy_objectives}
         public_eids.update(visible_objectives)
-        public_cards = []
+        public_cards = {eid: row for eid, (owner, row) in self.resolved_objectives.items()
+                        if owner == rival['controller']}
         for eid in sorted(e for e in public_eids if isinstance(e, int)):
             e = game["entities"].get(eid)
             if (e and e.get("controller") == rival["controller"] and e.get("cardId")
                     and (eid in visible_objectives or e.get("zone") not in ("HAND", "DECK", "SECRET", "SETASIDE"))
                     and board._ctype(e) in ("MINION", "SPELL", "WEAPON", "LOCATION", "HERO")):
-                public_cards.append({"id": eid, "card_id": e["cardId"],
-                    "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))})
+                public_cards[eid] = {"id": eid, "card_id": e["cardId"],
+                    "generated": bool(board._tag_int(e, "CREATOR") or board._tag_int(e, "COPIED_FROM_ENTITY_ID"))}
         seen_own = [{"id": e["id"], "card_id": e["cardId"]} for e in game["entities"].values()
             if e.get("controller") == own_player_id and e.get("cardId")
             and e.get("zone") in ("HAND", "PLAY", "GRAVEYARD", "SECRET", "REMOVEDFROMGAME", "SETASIDE")
@@ -678,7 +697,7 @@ class IncrementalBoard:
             "enemy_mana_crystals": board._tag_int(rival, "RESOURCES"),
             "enemy_corpses": board._num(rival["tags"].get("CORPSES")),
             "my_corpses": board._num(own["tags"].get("CORPSES")),
-            "opponent_public_cards": public_cards[-40:],
+            "opponent_public_cards": [public_cards[eid] for eid in sorted(public_cards)[-40:]],
             "own_seen_original": sorted(seen_own, key=lambda e: e["id"])[-60:],
             "own_known_deck": known_deck[:60],
             "deck_tracking_from_mulligan": self.saw_mulligan,
